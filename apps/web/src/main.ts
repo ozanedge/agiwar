@@ -1,6 +1,6 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, Text } from "pixi.js";
-import type { Camp, DoctrineId, ServerMsg, Snapshot, UnitState } from "../../../shared/types.js";
+import { Application, Container, Graphics } from "pixi.js";
+import type { Camp, DoctrineId, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
@@ -11,7 +11,8 @@ const noticeEl = document.getElementById("notice")!;
 const readoutEl = document.getElementById("readout")!;
 const campsEl = document.getElementById("camps")!;
 
-let latest: Snapshot | null = null;
+let latestState: StateMsg | null = null;
+let latestCamps: Camp[] = [];
 let hovered: UnitState | null = null;
 let cell = 16;
 
@@ -27,7 +28,8 @@ function connect() {
   ws = new WebSocket(WS_URL);
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
-    if (msg.type === "snapshot") { latest = msg; render(msg); syncCamps(msg.camps); }
+    if (msg.type === "state") { latestState = msg; render(msg); }
+    else if (msg.type === "camps") { latestCamps = msg.camps; syncCamps(msg.camps); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
   };
   ws.onclose = () => setTimeout(connect, 1000);
@@ -44,7 +46,7 @@ function showNotice(text: string, level: string) {
 }
 
 // ---- rendering ----
-function render(s: Snapshot) {
+function render(s: StateMsg) {
   cell = Math.floor(Math.min(app.screen.width / s.gridW, app.screen.height / s.gridH));
   world.removeChildren();
 
@@ -85,10 +87,10 @@ function render(s: Snapshot) {
 }
 
 function updateReadout() {
-  if (!hovered || !latest) { readoutEl.textContent = "hover a unit to inspect its doctrine"; return; }
+  if (!hovered || !latestState) { readoutEl.textContent = "hover a unit to inspect its doctrine"; return; }
   const u = hovered;
-  const overridden = u.overrideUntil > latest.tick;
-  const secs = overridden ? Math.ceil((u.overrideUntil - latest.tick) / 10) : 0;
+  const overridden = u.overrideUntil > latestState.tick;
+  const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;
   const cls = DOCTRINE_CLASS[u.camp];
   readoutEl.innerHTML =
     `unit #${u.id} · ${u.owner === 0 ? "yours" : "enemy"} · hp ${u.hp}/${u.maxHp}<br>` +
@@ -131,7 +133,7 @@ function buildCamps(camps: Camp[]) {
     (document.getElementById(`spawn-${c.id}`) as HTMLButtonElement).onclick = () => sendCmd({ type: "spawn", camp: c.id });
   }
 }
-setInterval(() => { if (latest) syncCamps(latest.camps); }, 250); // live cooldown countdown
+setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown
 
 // ---- field general buttons ----
 for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) {

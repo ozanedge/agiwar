@@ -5,7 +5,7 @@
 | Role | Count | Cadence | Output | LLM |
 |---|---|---|---|---|
 | Camp generals | 3 | On edit, **3-min cooldown** | Compiled `BehaviorSpec` → native doctrine for all troops in that camp | Rare (compile-on-edit) |
-| Field general | 1 | Every **15 s** | Time-boxed override orders | Steady, low (~4 calls/min) |
+| Field general | 1 | **Event-gated, 30 s floor** | Time-boxed override orders | Haiku 4.5, only on material change |
 | Tactical sim | — | Every tick (server) | Actual movement & targeting | None (deterministic) |
 
 ## Two-layer control
@@ -30,11 +30,31 @@ The LLM can only emit fields in `BehaviorSpec`, and every field is **clamped ser
 (`shared/spec.ts#clampSpec`). "Make my units invincible" is not expressible, so prompt injection
 cannot break balance — it can only move legal dials.
 
-## Cost
+## Cost engineering (the field general is the whole bill)
 
+Infra is a flat ~$185/mo (the dedicated EKS cluster). The variable cost is dominated by the
+field general — a per-player LLM loop. A naive "every 15s, Sonnet, 24/7" implementation is
+~$8k/mo at 10 concurrent players. The same gameplay, built correctly, is a few hundred. So:
+
+- **Event-gated, not a metronome** (`server/src/fieldgeneral.ts`). The field general only calls
+  the LLM when the battlefield *materially changes* (coarse signature over unit count, enemy
+  contacts, base hp, army hp). A stalemate or idle field costs **$0**. This is the biggest lever
+  and also makes the general feel reactive rather than clock-driven.
+- **30s minimum interval** floor between calls, even when things are changing.
+- **Haiku 4.5** for the field general (~3× cheaper than Sonnet; doctrine-level orders don't need
+  Sonnet). Camp compiles stay on **Sonnet 4.6** (rare, cooldown-throttled, quality matters there).
+- **Bedrock prompt caching** on the static system prompt (future-proofing — only saves once the
+  cached prefix exceeds Bedrock's minimum size, so today's savings come from gating + Haiku).
 - Camp compiles throttled by the 3-min cooldown (worst case ~1/min across 3 camps).
-- Field general: predictable ~4 LLM calls/min/player.
-- Model: Sonnet 4.6 on Bedrock (matches the skynetops runner). Camp compile can drop to Haiku 4.5 later.
+
+Tunables (env): `FIELD_GENERAL=off`, `FG_MIN_INTERVAL_MS`, `FG_MODEL_ID`.
+
+## Egress
+
+The sim runs at `TICK_HZ` (10) but broadcasts at `NET_HZ` (5), and **camps are sent only on
+change** (not their prompt strings every tick). Naive 10Hz full-snapshot broadcast was ~$100–150/mo
+of AWS egress at 10 concurrent 24/7; this trims it to ~$20. Next step if needed: delta-encode unit
+positions instead of full state.
 
 ## Infrastructure (decision: brand-new EKS cluster — max isolation)
 

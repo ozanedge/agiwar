@@ -57,26 +57,42 @@ export interface BaseState {
   maxHp: number;
 }
 
-/** Full snapshot streamed server -> client each network tick. */
-export interface Snapshot {
-  type: "snapshot";
+/** Lightweight world state, broadcast at the (lower) network rate. Deliberately
+ *  excludes camps — those are static between edits, so shipping their prompt strings
+ *  every tick was pure egress waste. */
+export interface StateMsg {
+  type: "state";
   tick: number;
   gridW: number;
   gridH: number;
   units: UnitState[];
   bases: BaseState[];
-  camps: Camp[];
   you: number; // which player index this client controls
 }
 
-/** server -> client one-off notices (cooldown rejection, compile result, etc). */
+/** Camp doctrines, sent only when they change (compile) + once on connect. */
+export interface CampsMsg {
+  type: "camps";
+  camps: Camp[];
+}
+
+/** server -> client one-off notices (cooldown rejection, compile result, field order, etc). */
 export interface Notice {
   type: "notice";
   level: "info" | "error";
   text: string;
 }
 
-export type ServerMsg = Snapshot | Notice;
+export type ServerMsg = StateMsg | CampsMsg | Notice;
+
+/** The field general's structured decision (LLM output, clamped before use).
+ *  "hold" = issue no order; units keep running their native doctrine. */
+export interface FieldGeneralDecision {
+  action: "hold" | "rally" | "defend" | "push";
+  target: DoctrineId | "all";
+  durationSec: number;
+  reason: string;
+}
 
 /** client -> server commands. Deliberately sparse — this is a low-APM game. */
 export type ClientMsg =
