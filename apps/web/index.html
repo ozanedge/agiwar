@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>agiwar — doctrine RTS</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0f14; color: #cdd6e0; }
+      #app { display: grid; grid-template-columns: 1fr 320px; height: 100vh; }
+      #stage { position: relative; overflow: hidden; }
+      #side { border-left: 1px solid #1d2733; padding: 12px; overflow-y: auto; }
+      h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .5px; }
+      .sub { color: #6b7a8d; margin: 0 0 12px; }
+      .camp { border: 1px solid #1d2733; border-radius: 6px; padding: 8px; margin-bottom: 10px; }
+      .camp h3 { margin: 0 0 6px; font-size: 13px; }
+      textarea { width: 100%; height: 64px; background: #0e141b; color: #cdd6e0; border: 1px solid #243140; border-radius: 4px; padding: 6px; resize: vertical; font: inherit; }
+      button { background: #1b2532; color: #cdd6e0; border: 1px solid #2c3a4c; border-radius: 4px; padding: 5px 9px; cursor: pointer; }
+      button:hover:not(:disabled) { background: #243446; }
+      button:disabled { opacity: .45; cursor: not-allowed; }
+      .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+      .spec { color: #7f8fa3; font-size: 11px; margin-top: 6px; white-space: pre; }
+      .cool { color: #e0a45a; font-size: 11px; }
+      #readout { position: absolute; left: 10px; bottom: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 8px 10px; max-width: 360px; pointer-events: none; }
+      .agg { color: #ff6b6b; } .rec { color: #5aa9ff; } .def { color: #5ad17a; }
+      #notice { position: absolute; left: 10px; top: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 6px 10px; }
+      .field h3 { margin: 14px 0 6px; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <div id="notice"></div>
+        <div id="readout">hover a unit to inspect its doctrine</div>
+      </div>
+      <div id="side">
+        <h1>agiwar</h1>
+        <p class="sub">Edit a general's doctrine. Watch the army change. 3-min retrain cooldown.</p>
+        <div id="camps"></div>
+        <div class="field">
+          <h3>Field General (time-boxed overrides)</h3>
+          <div class="row">
+            <button data-order="push">Push all → enemy base</button>
+            <button data-order="defend">Recall all → defend</button>
+          </div>
+          <p class="sub" style="margin-top:6px">Overrides last ~10s, then units revert to their native training.</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

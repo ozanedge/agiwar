@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agiwar-server
+  labels: { app: agiwar-server }
+spec:
+  # Stateful realtime sim: keep a single replica for now (one authoritative game
+  # process). Horizontal scale comes later via a room/matchmaking layer.
+  replicas: 1
+  selector:
+    matchLabels: { app: agiwar-server }
+  template:
+    metadata:
+      labels: { app: agiwar-server }
+    spec:
+      containers:
+        - name: server
+          image: REPLACE_WITH_ECR_IMAGE # e.g. <AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/agiwar-server:latest
+          ports:
+            - containerPort: 8787
+          env:
+            - { name: PORT, value: "8787" }
+            - { name: AWS_REGION, value: "us-west-2" }
+            - { name: BEDROCK_MODEL_ID, value: "anthropic.claude-sonnet-4-6" }
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+          readinessProbe:
+            tcpSocket: { port: 8787 }
+            initialDelaySeconds: 5

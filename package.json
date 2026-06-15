@@ -1,0 +1,13 @@
+{
+  "name": "agiwar",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Low-APM doctrine RTS: you author AI generals, they train autonomous armies.",
+  "workspaces": ["apps/web", "server"],
+  "scripts": {
+    "dev:server": "npm --workspace @agiwar/server run dev",
+    "dev:web": "npm --workspace @agiwar/web run dev",
+    "dev": "echo 'Run in two terminals: npm run dev:server  &  npm run dev:web'",
+    "typecheck": "npm --workspace @agiwar/server run typecheck"
+  }
+}
