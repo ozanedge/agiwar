@@ -10,14 +10,20 @@ const ATTACK_RANGE = 1; // Chebyshev cells
 const ATTACK_DMG = 2;
 const UNIT_HP = 20;
 const BASE_HP = 200;
-const SENSOR = 14; // how far a unit can "see" an enemy at all
+const SENSOR = 14; // how far a unit can "see" an enemy for targeting
+const VISION = 11; // fog-of-war: how far a unit reveals enemies to its owner
+
+/** Everything that belongs to one player: their three camp generals and their field general. */
+export interface PlayerState {
+  camps: Camp[];
+  fieldGeneral: FieldGeneral;
+}
 
 export interface GameState {
   tick: number;
   units: UnitState[];
   bases: BaseState[];
-  camps: Camp[];
-  fieldGeneral: FieldGeneral;
+  players: PlayerState[]; // index = player/owner
   nextUnitId: number;
 }
 
@@ -40,18 +46,23 @@ function makeCamp(id: DoctrineId, label: string): Camp {
   return { id, label, prompt: PRESET_PROMPTS[id], spec: { ...PRESET_SPECS[id] }, cooldownUntil: 0, compiling: false };
 }
 
+function makePlayer(): PlayerState {
+  return {
+    camps: [
+      makeCamp("aggressive", "Gen. Vance · Aggressive"),
+      makeCamp("recon", "Gen. Okafor · Recon"),
+      makeCamp("defensive", "Gen. Reyes · Defensive"),
+    ],
+    fieldGeneral: { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT },
+  };
+}
+
 export function newGame(): GameState {
-  const camps = [
-    makeCamp("aggressive", "Gen. Vance · Aggressive"),
-    makeCamp("recon", "Gen. Okafor · Recon"),
-    makeCamp("defensive", "Gen. Reyes · Defensive"),
-  ];
   const bases: BaseState[] = [
     { owner: 0, x: 4, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W - 5, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  const fieldGeneral: FieldGeneral = { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT };
-  return { tick: 0, units: [], bases, camps, fieldGeneral, nextUnitId: 1 };
+  return { tick: 0, units: [], bases, players: [makePlayer(), makePlayer()], nextUnitId: 1 };
 }
 
 export function spawnUnit(g: GameState, owner: number, camp: DoctrineId): void {
@@ -74,7 +85,7 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId): void {
  *  doctrine; otherwise the unit runs its camp's compiled doctrine. */
 function effectiveSpec(g: GameState, u: UnitState): BehaviorSpec {
   if (u.overrideUntil > g.tick && (u as any)._ovr) return (u as any)._ovr as BehaviorSpec;
-  const camp = g.camps.find((c) => c.id === u.camp);
+  const camp = g.players[u.owner]?.camps.find((c) => c.id === u.camp);
   return camp ? camp.spec : PRESET_SPECS[u.camp];
 }
 
@@ -168,6 +179,27 @@ export function step(g: GameState) {
   }
   for (const u of g.units) decide(g, u);
   g.units = g.units.filter((u) => u.hp > 0);
+}
+
+/** Public (wire) shape of a unit — drops the internal `_ovr` spec so it never leaks. */
+function pub(u: UnitState): UnitState {
+  return {
+    id: u.id, owner: u.owner, camp: u.camp, x: u.x, y: u.y,
+    hp: u.hp, maxHp: u.maxHp, overrideUntil: u.overrideUntil, overrideLabel: u.overrideLabel,
+  };
+}
+
+/** Fog of war: what `player` can see. Own units/base always; enemy units/base only when
+ *  within VISION of one of the player's units or base — so scouting (recon doctrine) pays off. */
+export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[] } {
+  const viewers = g.units.filter((u) => u.owner === player).map((u) => ({ x: u.x, y: u.y }));
+  const ownBase = g.bases[player];
+  if (ownBase) viewers.push({ x: ownBase.x, y: ownBase.y });
+  const visible = (x: number, y: number) => viewers.some((v) => cheb(v.x, v.y, x, y) <= VISION);
+  return {
+    units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
+    bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),
+  };
 }
 
 /** Apply a field-general order as a time-boxed override on the targeted units. */

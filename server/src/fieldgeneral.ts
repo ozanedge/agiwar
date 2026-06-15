@@ -20,15 +20,9 @@ const REGION = process.env.AWS_REGION ?? "us-west-2";
 const MODEL_ID = process.env.FG_MODEL_ID ?? "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 const SENSOR = 14;
-const PLAYER = 0; // field general commands the human player's army
 
 let client: BedrockRuntimeClient | null = null;
 const bedrock = () => (client ??= new BedrockRuntimeClient({ region: REGION }));
-
-// orchestration state (NOT sim state — wall-clock gating is fine here)
-let lastSig: string | null = null;
-let lastCallMs = 0;
-let inFlight = false;
 
 const SYSTEM = `You are the FIELD GENERAL in a real-time strategy game, commanding one player's army.
 Your three camps train troops with their own doctrines; you can issue a short, time-boxed override
@@ -50,15 +44,15 @@ interface Summary {
   ownCount: number;
 }
 
-function summarize(g: GameState): Summary {
-  const own = g.units.filter((u) => u.owner === PLAYER);
+function summarize(g: GameState, player: number): Summary {
+  const own = g.units.filter((u) => u.owner === player);
   const byCamp: Record<string, number> = { aggressive: 0, recon: 0, defensive: 0 };
   let hpSum = 0;
   for (const u of own) { byCamp[u.camp]++; hpSum += u.hp / u.maxHp; }
-  const myBase = g.bases[PLAYER];
+  const myBase = g.bases[player];
   // enemy units seen by any of my units
   const contacts = g.units.filter(
-    (e) => e.owner !== PLAYER && own.some((u) => Math.max(Math.abs(u.x - e.x), Math.abs(u.y - e.y)) <= SENSOR)
+    (e) => e.owner !== player && own.some((u) => Math.max(Math.abs(u.x - e.x), Math.abs(u.y - e.y)) <= SENSOR)
   );
   const baseHpPct = Math.round((myBase.hp / myBase.maxHp) * 100);
   const avgHp = own.length ? Math.round((hpSum / own.length) * 100) : 0;
@@ -117,35 +111,42 @@ async function decide(summaryText: string, commandStyle: string): Promise<FieldG
 
 type ApplyFn = (g: GameState, owner: number, kind: "rally" | "defend" | "push", target: DoctrineId | "all", durationTicks: number, label: string) => void;
 
-/** Force the next eligible tick to re-evaluate (still respects the 30s floor).
- *  Called when the player reauthors the field general's doctrine so it takes effect
- *  on the next decision — bounded to ~one extra call per manual edit. */
-export function resetFieldGeneralGate(): void {
-  lastSig = null;
+/** One field general bound to one player. Holds its OWN gate state, so multiple rooms /
+ *  players never share signatures or in-flight flags. */
+export interface FieldGeneralRunner {
+  maybe(g: GameState, apply: ApplyFn, notify: (text: string) => void): void;
+  /** Force re-evaluation on the next eligible tick (still bounded by the 30s floor) —
+   *  called when the player reauthors this general's doctrine. */
+  resetGate(): void;
 }
 
-/** Called every sim tick. Cheap by design: usually returns after the gate check without
- *  touching the network. Fires the LLM (async, non-blocking) only on a material change. */
-export function maybeRunFieldGeneral(g: GameState, apply: ApplyFn, notify: (text: string) => void): void {
-  if (!ENABLED || inFlight) return;
-  const { text, sig, ownCount } = summarize(g);
-  if (ownCount === 0) return; // nothing to command
+export function createFieldGeneral(player: number): FieldGeneralRunner {
+  let lastSig: string | null = null;
+  let lastCallMs = 0;
+  let inFlight = false;
 
-  const now = Date.now();
-  const changed = sig !== lastSig;
-  if (!changed) return; // EVENT GATE: no material change -> no LLM call, $0
-  if (now - lastCallMs < MIN_INTERVAL_MS) return; // 30s floor even when things are changing
+  return {
+    resetGate() { lastSig = null; },
+    maybe(g, apply, notify) {
+      if (!ENABLED || inFlight) return;
+      const { text, sig, ownCount } = summarize(g, player);
+      if (ownCount === 0) return; // nothing to command
 
-  lastCallMs = now;
-  lastSig = sig;
-  inFlight = true;
-  decide(text, g.fieldGeneral.prompt)
-    .then((d) => {
-      if (d.action === "hold") { notify(`Field general: holding — ${d.reason || "doctrines holding"}`); return; }
-      const ticks = d.durationSec * TICK_HZ;
-      apply(g, PLAYER, d.action, d.target, ticks, `${d.action} (${d.reason || "field order"})`);
-      notify(`Field general → ${d.action} ${d.target} for ${d.durationSec}s — ${d.reason}`);
-    })
-    .catch((err) => console.warn(`[fieldgeneral] skipped (${(err as Error).message})`))
-    .finally(() => { inFlight = false; });
+      const now = Date.now();
+      if (sig === lastSig) return; // EVENT GATE: no material change -> no LLM call, $0
+      if (now - lastCallMs < MIN_INTERVAL_MS) return; // 30s floor even when things change
+
+      lastCallMs = now;
+      lastSig = sig;
+      inFlight = true;
+      decide(text, g.players[player].fieldGeneral.prompt)
+        .then((d) => {
+          if (d.action === "hold") { notify(`Field general: holding — ${d.reason || "doctrines holding"}`); return; }
+          apply(g, player, d.action, d.target, d.durationSec * TICK_HZ, `${d.action} (${d.reason || "field order"})`);
+          notify(`Field general → ${d.action} ${d.target} for ${d.durationSec}s — ${d.reason}`);
+        })
+        .catch((err) => console.warn(`[fieldgeneral p${player}] skipped (${(err as Error).message})`))
+        .finally(() => { inFlight = false; });
+    },
+  };
 }

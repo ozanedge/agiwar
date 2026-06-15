@@ -56,7 +56,7 @@ function render(s: StateMsg) {
 
   for (const b of s.bases) {
     const g = new Graphics();
-    const col = b.owner === 0 ? 0x9fd2ff : 0xffae8f;
+    const col = b.owner === s.you ? 0x9fd2ff : 0xffae8f; // own base blue, enemy orange
     g.rect(b.x * cell - cell, b.y * cell - cell, cell * 2.4, cell * 2.4).fill({ color: col, alpha: 0.18 }).stroke({ color: col, width: 2 });
     const hpw = (b.hp / b.maxHp) * cell * 2.4;
     g.rect(b.x * cell - cell, b.y * cell - cell - 6, hpw, 3).fill(col);
@@ -68,7 +68,7 @@ function render(s: StateMsg) {
     const g = new Graphics();
     const cx = u.x * cell + cell / 2, cy = u.y * cell + cell / 2;
     const color = DOCTRINE_COLOR[u.camp];
-    const dim = u.owner === 1 ? 0.45 : 1; // enemy units dimmed
+    const dim = u.owner === s.you ? 1 : 0.45; // enemy units dimmed
     // native-doctrine badge shape: ▲ aggressive · ◆ recon · ⬟ defensive
     if (u.camp === "aggressive") g.poly([cx, cy - 5, cx + 5, cy + 4, cx - 5, cy + 4]);
     else if (u.camp === "recon") g.poly([cx, cy - 5, cx + 5, cy, cx, cy + 5, cx - 5, cy]);
@@ -93,7 +93,7 @@ function updateReadout() {
   const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;
   const cls = DOCTRINE_CLASS[u.camp];
   readoutEl.innerHTML =
-    `unit #${u.id} · ${u.owner === 0 ? "yours" : "enemy"} · hp ${u.hp}/${u.maxHp}<br>` +
+    `unit #${u.id} · ${u.owner === latestState.you ? "yours" : "enemy"} · hp ${u.hp}/${u.maxHp}<br>` +
     `<b>Native:</b> <span class="${cls}">${u.camp}</span><br>` +
     `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
 }

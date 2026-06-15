@@ -47,6 +47,14 @@ change behavior. Two different prompts → two visibly different armies. That's 
 
 ## Status
 
-Milestone 0 (this scaffold): one-player sandbox vs. a simple bot, all three camps editable,
-field overrides + native revert wired, Bedrock compiler with offline fallback. Next:
-real two-player matchmaking, the 15s field-general LLM tick, fog of war, replays.
+Built + verified:
+- Deterministic fixed-tick sim; all **4 generals per player** are prompt-editable (3 camps →
+  compiled doctrine on a 3-min cooldown; 1 field general → live, **event-gated** overrides).
+- **Two-player matchmaking**: two humans pair into a PvP room; a solo player falls back to a bot.
+- **Fog of war**: you only see enemy units/base within vision of your own units — so recon pays off.
+- Sonnet 4.6 camp compiler + Haiku 4.5 field general (real Bedrock), with an offline stub fallback.
+- Native-doctrine badges + time-boxed override/revert; low-egress split protocol; win condition.
+
+Next: replays (cheap given the deterministic command stream), ranked/lobbies, richer unit types,
+the utility-AI behavior layer (vs. today's fixed-parameter spec). Deploy seams (EKS/Vercel) are
+authored but not provisioned.

@@ -24,6 +24,20 @@
 - Rationale: keeps both layers meaningful, deterministic, and legible. Teaches the core loop —
   if you keep overriding a camp, your doctrine prompt is wrong; go fix the training.
 
+## Matchmaking & fog of war
+
+- Each **match is a Room** (`server/src/index.ts`) with its own `GameState`, tick loop, and
+  per-player field-general runners. State is per-player: `GameState.players[2]`, each with its
+  own 3 camps + field general. A player only ever sees/edits their own generals.
+- **Matchmaking**: a connecting client pairs with a waiting human into a PvP room; if none
+  arrives within `BOT_WAIT_MS`, it gets a bot opponent (bot has no LLM field general — keeps cost
+  off the bot). Room is torn down when its last human disconnects.
+- **Fog of war** (`computeVisibleState`): own units/base always visible; enemy units/base only
+  within `VISION` cells of one of your units/base. Each client gets a per-player *fogged* state
+  message, so the wire never leaks hidden info. This makes the **recon doctrine strategically
+  valuable** — scouts are how you see the map.
+- Field-general gate state is **per runner** (not module-global), so rooms never cross-talk.
+
 ## Safety boundary
 
 The LLM can only emit fields in `BehaviorSpec`, and every field is **clamped server-side**
