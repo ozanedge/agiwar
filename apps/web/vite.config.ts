@@ -5,4 +5,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   base: process.env.VITE_BASE ?? "/",
   server: { port: 5173 },
+  // Pixi's Application.init() is awaited at top level — needs a modern target.
+  build: { target: "esnext" },
+  esbuild: { target: "esnext" },
 });
