@@ -6,7 +6,9 @@ import type { BehaviorSpec } from "../../shared/types.js";
 import { SPEC_SCHEMA_HINT, clampSpec, stubCompile } from "../../shared/spec.js";
 
 const REGION = process.env.AWS_REGION ?? "us-west-2";
-const MODEL_ID = process.env.BEDROCK_MODEL_ID ?? "anthropic.claude-sonnet-4-6";
+// Newer Claude models on Bedrock require a cross-region INFERENCE PROFILE id
+// (the "us." prefix), not the bare foundation-model id.
+const MODEL_ID = process.env.BEDROCK_MODEL_ID ?? "us.anthropic.claude-sonnet-4-6";
 
 // Lazily constructed so the server boots even without AWS configured.
 let client: BedrockRuntimeClient | null = null;

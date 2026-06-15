@@ -15,6 +15,6 @@ COPY server ./server
 ENV NODE_ENV=production
 ENV PORT=8787
 ENV AWS_REGION=us-west-2
-ENV BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-6
+ENV BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
 EXPOSE 8787
 CMD ["npx", "tsx", "server/src/index.ts"]

@@ -33,9 +33,13 @@ resource "aws_iam_role_policy" "bedrock_invoke" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["bedrock:InvokeModel"]
-      Resource = "arn:aws:bedrock:${var.region}::foundation-model/anthropic.claude-sonnet-4-6"
+      Effect = "Allow"
+      Action = ["bedrock:InvokeModel"]
+      # Cross-region inference profile + the underlying foundation models it routes to.
+      Resource = [
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6*"
+      ]
     }]
   })
 }

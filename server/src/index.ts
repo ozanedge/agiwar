@@ -88,4 +88,4 @@ setInterval(() => {
   broadcastSnapshot();
 }, 1000 / TICK_HZ);
 
-console.log(`agiwar server on :${PORT} @ ${TICK_HZ}Hz · cooldown ${COOLDOWN_MS / 1000}s · model ${process.env.BEDROCK_MODEL_ID ?? "anthropic.claude-sonnet-4-6"}`);
+console.log(`agiwar server on :${PORT} @ ${TICK_HZ}Hz · cooldown ${COOLDOWN_MS / 1000}s · model ${process.env.BEDROCK_MODEL_ID ?? "us.anthropic.claude-sonnet-4-6"}`);
