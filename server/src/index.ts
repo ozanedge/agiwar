@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, DoctrineId, ServerMsg } from "../../shared/types.js";
 import { GameState, applyFieldOrder, newGame, spawnUnit, step } from "./sim.js";
 import { compilePolicy } from "./compiler.js";
-import { maybeRunFieldGeneral } from "./fieldgeneral.js";
+import { maybeRunFieldGeneral, resetFieldGeneralGate } from "./fieldgeneral.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
@@ -39,7 +39,7 @@ function broadcastState() {
   for (const ws of clients) if (ws.readyState === WebSocket.OPEN) ws.send(json);
 }
 function broadcastCamps() {
-  const json = JSON.stringify({ type: "camps", camps: game.camps } satisfies ServerMsg);
+  const json = JSON.stringify({ type: "camps", camps: game.camps, fieldGeneral: game.fieldGeneral } satisfies ServerMsg);
   for (const ws of clients) if (ws.readyState === WebSocket.OPEN) ws.send(json);
 }
 
@@ -47,7 +47,7 @@ const wss = new WebSocketServer({ port: PORT });
 wss.on("connection", (ws) => {
   clients.add(ws);
   console.log(`[ws] client connected (${clients.size} total)`);
-  send(ws, { type: "camps", camps: game.camps }); // camps once on connect, then only on change
+  send(ws, { type: "camps", camps: game.camps, fieldGeneral: game.fieldGeneral }); // once on connect, then only on change
   ws.on("close", () => clients.delete(ws));
   ws.on("message", async (raw) => {
     let msg: ClientMsg;
@@ -59,6 +59,13 @@ wss.on("connection", (ws) => {
 async function handle(ws: WebSocket, msg: ClientMsg) {
   if (msg.type === "spawn") {
     spawnUnit(game, 0, msg.camp);
+    return;
+  }
+  if (msg.type === "editFieldGeneral") {
+    game.fieldGeneral.prompt = msg.prompt;
+    resetFieldGeneralGate(); // apply on the next decision (still bounded by the 30s floor)
+    broadcastCamps();
+    send(ws, { type: "notice", level: "info", text: `${game.fieldGeneral.label} re-briefed. Applies on next field decision.` });
     return;
   }
   if (msg.type === "fieldOrder") {

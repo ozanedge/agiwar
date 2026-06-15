@@ -70,10 +70,19 @@ export interface StateMsg {
   you: number; // which player index this client controls
 }
 
-/** Camp doctrines, sent only when they change (compile) + once on connect. */
+/** The field general's editable command doctrine. Unlike a camp, this prompt is NOT
+ *  compiled to a spec — it's injected into the field general's decision call as the
+ *  player's standing command style, so it has no cooldown (editing triggers no compile). */
+export interface FieldGeneral {
+  label: string;
+  prompt: string;
+}
+
+/** Camp doctrines + field-general doctrine, sent only when they change + once on connect. */
 export interface CampsMsg {
   type: "camps";
   camps: Camp[];
+  fieldGeneral: FieldGeneral;
 }
 
 /** server -> client one-off notices (cooldown rejection, compile result, field order, etc). */
@@ -97,8 +106,9 @@ export interface FieldGeneralDecision {
 /** client -> server commands. Deliberately sparse — this is a low-APM game. */
 export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
+  | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
   | { type: "spawn"; camp: DoctrineId } // train a unit at a camp
-  | { type: "fieldOrder"; order: FieldOrder }; // field general (15s) -> time-boxed override
+  | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 
 /** A field-general command: a *time-boxed override* of native doctrine.
  *  Units revert to their camp doctrine when `durationTicks` elapses. */

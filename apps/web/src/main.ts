@@ -1,6 +1,6 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics } from "pixi.js";
-import type { Camp, DoctrineId, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
+import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
@@ -29,7 +29,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state") { latestState = msg; render(msg); }
-    else if (msg.type === "camps") { latestCamps = msg.camps; syncCamps(msg.camps); }
+    else if (msg.type === "camps") { latestCamps = msg.camps; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
   };
   ws.onclose = () => setTimeout(connect, 1000);
@@ -135,7 +135,17 @@ function buildCamps(camps: Camp[]) {
 }
 setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown
 
-// ---- field general buttons ----
+// ---- field general doctrine editor ----
+let fgBuilt = false;
+function syncFieldGeneral(fg: FieldGeneral) {
+  document.getElementById("fg-label")!.textContent = fg.label;
+  const ta = document.getElementById("fg-prompt") as HTMLTextAreaElement;
+  if (!fgBuilt) { ta.value = fg.prompt; fgBuilt = true; } // set once; don't clobber active typing
+}
+(document.getElementById("fg-rebrief") as HTMLButtonElement).onclick = () =>
+  sendCmd({ type: "editFieldGeneral", prompt: (document.getElementById("fg-prompt") as HTMLTextAreaElement).value });
+
+// ---- field general manual override buttons ----
 for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) {
   btn.onclick = () => {
     const kind = btn.dataset.order as "push" | "defend";

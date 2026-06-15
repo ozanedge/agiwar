@@ -1,7 +1,7 @@
 // Deterministic, server-authoritative fixed-tick simulation.
 // No Math.random / Date.now inside the tick: all "randomness" is a pure hash of
 // (unitId, tick) so a match is fully reproducible and replayable.
-import type { BehaviorSpec, BaseState, Camp, DoctrineId, UnitState } from "../../shared/types.js";
+import type { BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 
 export const GRID_W = 48;
@@ -17,8 +17,14 @@ export interface GameState {
   units: UnitState[];
   bases: BaseState[];
   camps: Camp[];
+  fieldGeneral: FieldGeneral;
   nextUnitId: number;
 }
+
+export const DEFAULT_FIELD_GENERAL_PROMPT =
+  "Command pragmatically. Let the camps' doctrines do their job — only override when there's a " +
+  "clear opening or a real threat. Concentrate force to push when the enemy overcommits or thins out; " +
+  "pull back to defend the home base when it's pressured. Keep overrides short.";
 
 const cheb = (ax: number, ay: number, bx: number, by: number) => Math.max(Math.abs(ax - bx), Math.abs(ay - by));
 const sign = (n: number) => (n > 0 ? 1 : n < 0 ? -1 : 0);
@@ -44,7 +50,8 @@ export function newGame(): GameState {
     { owner: 0, x: 4, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W - 5, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  return { tick: 0, units: [], bases, camps, nextUnitId: 1 };
+  const fieldGeneral: FieldGeneral = { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT };
+  return { tick: 0, units: [], bases, camps, fieldGeneral, nextUnitId: 1 };
 }
 
 export function spawnUnit(g: GameState, owner: number, camp: DoctrineId): void {

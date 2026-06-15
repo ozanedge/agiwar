@@ -92,14 +92,20 @@ function clampDecision(raw: any): FieldGeneralDecision {
   };
 }
 
-async function decide(summaryText: string): Promise<FieldGeneralDecision> {
+async function decide(summaryText: string, commandStyle: string): Promise<FieldGeneralDecision> {
   const body = {
     anthropic_version: "bedrock-2023-05-31",
     max_tokens: 150,
-    // cache_control future-proofs the static prompt; only bites once the prefix exceeds
-    // Bedrock's min cacheable size, so today's savings come from Haiku + gating, not this.
+    // Static rules go in the cached system block; the player's editable command style is
+    // injected in the user turn so it doesn't bust the cached prefix. (cache_control only
+    // bites above Bedrock's min cacheable size — today's savings come from Haiku + gating.)
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: `Battlefield report:\n${summaryText}\n\nYour order (JSON only):` }],
+    messages: [
+      {
+        role: "user",
+        content: `Your standing command doctrine:\n"""${commandStyle}"""\n\nBattlefield report:\n${summaryText}\n\nYour order (JSON only):`,
+      },
+    ],
   };
   const res = await bedrock().send(
     new InvokeModelCommand({ modelId: MODEL_ID, contentType: "application/json", accept: "application/json", body: JSON.stringify(body) })
@@ -110,6 +116,13 @@ async function decide(summaryText: string): Promise<FieldGeneralDecision> {
 }
 
 type ApplyFn = (g: GameState, owner: number, kind: "rally" | "defend" | "push", target: DoctrineId | "all", durationTicks: number, label: string) => void;
+
+/** Force the next eligible tick to re-evaluate (still respects the 30s floor).
+ *  Called when the player reauthors the field general's doctrine so it takes effect
+ *  on the next decision — bounded to ~one extra call per manual edit. */
+export function resetFieldGeneralGate(): void {
+  lastSig = null;
+}
 
 /** Called every sim tick. Cheap by design: usually returns after the gate check without
  *  touching the network. Fires the LLM (async, non-blocking) only on a material change. */
@@ -126,7 +139,7 @@ export function maybeRunFieldGeneral(g: GameState, apply: ApplyFn, notify: (text
   lastCallMs = now;
   lastSig = sig;
   inFlight = true;
-  decide(text)
+  decide(text, g.fieldGeneral.prompt)
     .then((d) => {
       if (d.action === "hold") { notify(`Field general: holding — ${d.reason || "doctrines holding"}`); return; }
       const ticks = d.durationSec * TICK_HZ;

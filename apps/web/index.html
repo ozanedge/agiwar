@@ -39,10 +39,14 @@
         <p class="sub">Edit a general's doctrine. Watch the army change. 3-min retrain cooldown.</p>
         <div id="camps"></div>
         <div class="field">
-          <h3>Field General (time-boxed overrides)</h3>
-          <div class="row">
-            <button data-order="push">Push all → enemy base</button>
-            <button data-order="defend">Recall all → defend</button>
+          <h3 id="fg-label">Field General</h3>
+          <p class="sub" style="margin-top:0">Authors live, time-boxed overrides on a material change (event-gated, Haiku). Edit its command style — it has no cooldown; the new doctrine applies on the next decision.</p>
+          <textarea id="fg-prompt"></textarea>
+          <div class="row"><button id="fg-rebrief">Re-brief field general</button></div>
+          <div class="row" style="margin-top:10px">
+            <span class="sub">manual test:</span>
+            <button data-order="push">Push all</button>
+            <button data-order="defend">Recall all</button>
           </div>
           <p class="sub" style="margin-top:6px">Overrides last ~10s, then units revert to their native training.</p>
         </div>
