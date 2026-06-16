@@ -4,10 +4,11 @@
 import type { BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType } from "../../shared/units.js";
+import { isPassable } from "../../shared/terrain.js";
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
-export const GRID_W = Number(process.env.GRID_W ?? 128); // much bigger map -> long marches
-export const GRID_H = Number(process.env.GRID_H ?? 80);
+export const GRID_W = Number(process.env.GRID_W ?? 200); // large map -> long marches
+export const GRID_H = Number(process.env.GRID_H ?? 130);
 const BASE_HP = Number(process.env.BASE_HP ?? 400);
 const SENSOR = Number(process.env.SENSOR ?? 18); // targeting range
 const VISION = Number(process.env.VISION ?? 14); // fog reveal range
@@ -117,20 +118,30 @@ function nearestEnemy(g: GameState, u: UnitState): { x: number; y: number; isBas
   return best;
 }
 
-function moveToward(u: UnitState, tx: number, ty: number) {
-  u.x = Math.max(0, Math.min(GRID_W - 1, u.x + sign(tx - u.x)));
-  u.y = Math.max(0, Math.min(GRID_H - 1, u.y + sign(ty - u.y)));
+const passable = (g: GameState, x: number, y: number) => isPassable(x, y, g.seed, GRID_W, GRID_H);
+const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
+  if (dx === 0 && dy === 0) return false;
+  const nx = u.x + dx, ny = u.y + dy;
+  if (!passable(g, nx, ny)) return false;
+  u.x = nx; u.y = ny; return true;
+};
+
+// Move one cell toward target, avoiding water/mountains: try the direct step, then
+// axis-aligned slides, then a sidestep. Stays put only if fully boxed in.
+function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
+  const dx = sign(tx - u.x), dy = sign(ty - u.y);
+  const cands: [number, number][] = [[dx, dy], [dx, 0], [0, dy], [dx, -dy], [-dx, dy], [0, dy || 1], [0, -(dy || 1)]];
+  for (const [cx, cy] of cands) if (tryStep(g, u, cx, cy)) return;
 }
 
 function wander(g: GameState, u: UnitState) {
-  // deterministic outward drift, biased away from own base so scouts explore
+  // deterministic outward drift (biased away from base), but only onto passable ground
   const base = g.bases[u.owner];
   const away = sign(u.x - base.x) || 1;
-  const r = hash01(u.id, g.tick >> 2); // change direction every 4 ticks
+  const r = hash01(u.id, g.tick >> 2);
   const dx = r < 0.5 ? away : sign(Math.round(r * 4) - 2);
   const dy = sign(Math.round(hash01(u.id + 7, g.tick >> 2) * 4) - 2);
-  u.x = Math.max(0, Math.min(GRID_W - 1, u.x + dx));
-  u.y = Math.max(0, Math.min(GRID_H - 1, u.y + dy));
+  if (!tryStep(g, u, dx, dy)) tryStep(g, u, away, 0); // fall back to pushing outward
 }
 
 function decide(g: GameState, u: UnitState) {
@@ -151,7 +162,7 @@ function decide(g: GameState, u: UnitState) {
 
   const spec = effectiveSpec(g, u);
   const myBase = g.bases[u.owner];
-  const mv = (tx: number, ty: number) => { if (canMove) moveToward(u, tx, ty); };
+  const mv = (tx: number, ty: number) => { if (canMove) moveToward(g, u, tx, ty); };
 
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {

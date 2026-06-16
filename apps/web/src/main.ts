@@ -2,6 +2,7 @@
 import { Application, Container, Graphics } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, BUILDINGS, type UnitType } from "../../../shared/units.js";
+import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 // Primary color = SIDE (all your units share it). Doctrine is shown as an accent outline.
@@ -22,7 +23,7 @@ let latestCamps: Camp[] = [];
 let hovered: UnitState | null = null;
 
 const app = new Application();
-await app.init({ background: 0x0a141d, resizeTo: stage, antialias: true });
+await app.init({ background: 0x0a141d, resizeTo: stage, antialias: true, resolution: window.devicePixelRatio || 1, autoDensity: true });
 stage.appendChild(app.canvas);
 
 // ---- isometric world ----
@@ -32,7 +33,9 @@ app.stage.addChild(world);
 const terrainLayer = new Graphics(); // built once per (seed, size)
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
-world.addChild(terrainLayer, entityLayer);
+const ghostLayer = new Graphics(); // build-placement preview (range + validity)
+world.addChild(terrainLayer, entityLayer, ghostLayer);
+const CLIENT_BUILD_RADIUS = 32; // mirror server BUILD_RADIUS
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -44,39 +47,31 @@ function isoBox(g: Graphics, x: number, yBase: number, hw: number, hh: number, h
   g.poly([x, yBase - h - hh, x + hw, yBase - h, x, yBase - h + hh, x - hw, yBase - h]).fill(tint(color, 0.12)); // top
 }
 
-// deterministic value-noise terrain (matches the server-provided seed)
-function h2(x: number, y: number, seed: number): number {
-  let n = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 2246822519)) >>> 0;
-  n = (n ^ (n >>> 13)) >>> 0; n = Math.imul(n, 1274126177) >>> 0;
-  return (n >>> 0) / 4294967296;
-}
-function vnoise(x: number, y: number, seed: number): number {
-  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
-  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-  const a = h2(xi, yi, seed), b = h2(xi + 1, yi, seed), c = h2(xi, yi + 1, seed), d = h2(xi + 1, yi + 1, seed);
-  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
-}
-function fbm(x: number, y: number, seed: number): number {
-  let sum = 0, amp = 0.55, f = 1;
-  for (let o = 0; o < 4; o++) { sum += amp * vnoise(x * f, y * f, seed + o * 131); f *= 2; amp *= 0.5; }
-  return sum;
-}
 function tint(hex: number, f: number): number {
   let r = (hex >> 16) & 255, g = (hex >> 8) & 255, b = hex & 255;
   if (f >= 0) { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; }
   else { r *= 1 + f; g *= 1 + f; b *= 1 + f; }
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 }
-function biome(gx: number, gy: number, seed: number): { col: number; elev: number } {
-  const h = fbm(gx / 16, gy / 16, seed);
-  const micro = (h2(gx, gy, seed + 777) - 0.5) * 0.14;
-  if (h < 0.34) return { col: tint(0x17506e, micro * 0.4), elev: 0 };       // water
-  if (h < 0.39) return { col: tint(0xcdba83, micro), elev: 1 };             // sand
-  if (h < 0.62) return { col: tint(0x3f7d3a, micro), elev: 2 + (h - 0.39) * 34 }; // grass
-  if (h < 0.77) return { col: tint(0x6f7e3c, micro), elev: 2 + (h - 0.39) * 34 }; // highland
-  return { col: tint(0x8c8478, micro), elev: 2 + (h - 0.39) * 34 };          // rock
+// small deterministic hash for decoration placement
+const dhash = (a: number, b: number) => { let n = (Math.imul(a, 2654435761) ^ Math.imul(b, 40503)) >>> 0; n ^= n >>> 15; return (n >>> 0) / 4294967296; };
+
+const KIND_COLOR: Record<TerrainKind, number> = { water: 0x17506e, sand: 0xcdba83, grass: 0x3f7d3a, highland: 0x6f7e3c, rock: 0x8c8478 };
+const elevAt = (gx: number, gy: number, seed: number, W: number, H: number) => terrainAt(gx, gy, seed, W, H).elev;
+
+function decorate(g: Graphics, kind: TerrainKind, gx: number, gy: number, seed: number, cx: number, cy: number) {
+  const r = dhash(gx * 7 + 1, gy * 13 + 3);
+  if (kind === "rock") { // mountain crag
+    g.poly([cx, cy - TILE_H * 0.9, cx + 6, cy - TILE_H * 0.1, cx - 6, cy - TILE_H * 0.1]).fill(tint(0x9a9488, 0.15));
+    g.poly([cx + 2, cy - TILE_H * 1.1, cx + 8, cy - TILE_H * 0.2, cx, cy - TILE_H * 0.2]).fill(tint(0x6f6a60, -0.05));
+  } else if ((kind === "grass" || kind === "highland") && r < 0.07) { // tree
+    g.rect(cx - 1, cy - 7, 2, 7).fill(0x5a4326);
+    g.circle(cx, cy - 10, 5).fill(tint(0x2e6b34, (r - 0.035) * 2));
+    g.circle(cx + 2, cy - 7, 3.5).fill(0x357a3c);
+  } else if (kind === "sand" && r > 0.96) { // occasional desert rock
+    g.circle(cx, cy - 2, 2.5).fill(0xb6a273);
+  }
 }
-const elevAt = (gx: number, gy: number, seed: number) => biome(gx, gy, seed).elev;
 
 let terrainKey = "";
 function buildTerrain(seed: number, W: number, H: number) {
@@ -84,14 +79,16 @@ function buildTerrain(seed: number, W: number, H: number) {
   for (let sum = 0; sum <= W + H - 2; sum++) { // painter order: far tiles first
     for (let gx = Math.max(0, sum - (H - 1)); gx <= Math.min(W - 1, sum); gx++) {
       const gy = sum - gx;
-      const { col, elev } = biome(gx, gy, seed);
-      const cx = isoX(gx, gy), cy = isoY(gx, gy) - elev;
+      const t = terrainAt(gx, gy, seed, W, H);
+      const col = tint(KIND_COLOR[t.kind], t.micro);
+      const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev;
       const groundY = isoY(gx, gy);
-      if (elev > 2) { // earthy side walls for relief
+      if (t.elev > 4) { // earthy side walls for relief on raised ground
         terrainLayer.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.4));
         terrainLayer.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.22));
       }
       terrainLayer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
+      decorate(terrainLayer, t.kind, gx, gy, seed, cx, cy);
     }
   }
   terrainKey = `${seed}:${W}:${H}`;
@@ -130,6 +127,25 @@ function screenToGrid(clientX: number, clientY: number): { gx: number; gy: numbe
   const a = wx / (TILE_W / 2), b = wy / (TILE_H / 2); // a = gx-gy, b = gx+gy
   return { gx: Math.round((a + b) / 2), gy: Math.round((b - a) / 2) };
 }
+
+// build preview: range diamond + footprint at the hovered tile, green if placement is valid
+function drawGhost(gx: number, gy: number) {
+  ghostLayer.clear();
+  if (!armedBuilding || !latestState) return;
+  const s = latestState;
+  const R = UNIT_STATS[armedBuilding].range;
+  const base = s.bases.find((b) => b.owner === s.you);
+  const inBounds = gx >= 0 && gy >= 0 && gx < s.gridW && gy < s.gridH;
+  const inRadius = !!base && Math.max(Math.abs(gx - base.x), Math.abs(gy - base.y)) <= CLIENT_BUILD_RADIUS;
+  const passable = inBounds && terrainAt(gx, gy, s.seed, s.gridW, s.gridH).passable;
+  const col = inRadius && passable ? 0x5ad17a : 0xff6a5a;
+  const corners = [[gx - R, gy - R], [gx + R, gy - R], [gx + R, gy + R], [gx - R, gy + R]];
+  ghostLayer.poly(corners.flatMap(([x, y]) => [isoX(x, y), isoY(x, y)])).fill({ color: col, alpha: 0.1 }).stroke({ color: col, width: 2, alpha: 0.85 });
+  const elev = elevAt(gx, gy, s.seed, s.gridW, s.gridH);
+  const cx = isoX(gx, gy), cy = isoY(gx, gy) - elev;
+  ghostLayer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill({ color: col, alpha: 0.35 }).stroke({ color: col, width: 1.5 });
+}
+app.canvas.addEventListener("pointermove", (e) => { if (armedBuilding) drawGhost(screenToGrid(e.clientX, e.clientY).gx, screenToGrid(e.clientX, e.clientY).gy); });
 app.canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const ns = Math.max(0.4, Math.min(2.6, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
@@ -175,7 +191,7 @@ function render(s: StateMsg) {
 
 function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const g = new Graphics();
-  const elev = elevAt(b.x, b.y, s.seed);
+  const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
   const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
   // big iso fortress: shadow → stone platform → flanking towers → central keep → flag → hp
@@ -195,22 +211,44 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
 
 function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
   const g = new Graphics();
-  const elev = elevAt(u.x, u.y, s.seed);
+  const elev = elevAt(u.x, u.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(u.x, u.y), cy = isoY(u.x, u.y) - elev;
   const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR; // primary = side
+  const dark = tint(side, -0.28), light = tint(side, 0.28);
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2; // accent outline = doctrine (neutral for buildings)
-  const r = u.unit === "tank" || u.unit === "turret" ? 8 : u.unit === "gunner" ? 6 : 5; // shape/size = type
-  g.ellipse(cx, cy + 2, r * 1.25, r * 0.6).fill({ color: 0x000000, alpha: 0.3 }); // ground shadow
-  const by = cy - r - 1; // body stands above the tile
-  if (u.unit === "tank") g.rect(cx - r, by - r, r * 2, r * 2).fill(side).stroke({ color: acc, width: 2 });
-  else if (u.unit === "gunner") g.circle(cx, by, r).fill(side).stroke({ color: acc, width: 2 });
-  else if (u.unit === "humvee") g.poly([cx, by - r, cx + r, by + r, cx - r, by + r]).fill(side).stroke({ color: acc, width: 2 });
-  else { // turret: walled square base + barrel
-    g.rect(cx - r, by - r, r * 2, r * 2).fill(tint(side, -0.18)).stroke({ color: acc, width: 2 });
-    g.circle(cx, by, r * 0.55).fill(tint(side, 0.3));
+  const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
+  g.ellipse(cx, cy + 2, 9, 4).fill({ color: 0x000000, alpha: 0.28 }); // ground shadow
+  const rad = u.unit === "tank" || u.unit === "turret" ? 9 : 7;
+
+  if (u.unit === "tank") {
+    const by = cy - 5;
+    g.roundRect(cx - 9, by - 5, 18, 10, 2).fill(side).stroke(ln);            // hull
+    g.rect(cx - 9, by + 3, 18, 2).fill(dark);                                  // tread shadow
+    g.roundRect(cx - 5, by - 9, 10, 7, 2).fill(light).stroke(ln);             // turret
+    g.rect(cx + 4, by - 7, 11, 2).fill(dark);                                  // barrel
+    g.circle(cx, by - 6, 1.5).fill(acc);                                       // doctrine pip
+  } else if (u.unit === "humvee") {
+    const by = cy - 4;
+    g.roundRect(cx - 8, by - 4, 16, 8, 2).fill(side).stroke(ln);             // body
+    g.roundRect(cx - 2, by - 7, 7, 5, 1).fill(light);                         // cabin
+    g.circle(cx - 5, by + 4, 1.8).fill(0x111417); g.circle(cx + 5, by + 4, 1.8).fill(0x111417); // wheels
+    g.circle(cx + 6, by - 4, 1.4).fill(acc);                                   // doctrine pip
+  } else if (u.unit === "gunner") {
+    const by = cy - 6;
+    g.ellipse(cx, by + 5, 6, 3).fill(dark);                                    // boots/base
+    g.roundRect(cx - 3, by - 4, 6, 9, 2).fill(side).stroke(ln);              // torso
+    g.circle(cx, by - 6, 3).fill(light).stroke(ln);                           // head
+    g.rect(cx + 2, by - 3, 8, 1.6).fill(dark);                                 // rifle
+    g.circle(cx - 4, by - 3, 1.4).fill(acc);                                   // doctrine pip
+  } else { // turret building: ringed base + rotating gun + barrel
+    const by = cy - 5;
+    g.ellipse(cx, by + 4, 11, 6).fill(dark).stroke(ln);                        // emplacement ring
+    g.circle(cx, by, 6).fill(side).stroke(ln);                                 // gun housing
+    g.rect(cx - 1, by - 14, 2, 14).fill(tint(side, -0.1));                      // tall barrel up
+    g.circle(cx, by, 2).fill(acc);
   }
-  if (u.hp < u.maxHp) g.rect(cx - r, by - r - 4, (u.hp / u.maxHp) * r * 2, 1.5).fill(0xeaf2fb);
-  if (u.overrideUntil > s.tick) g.circle(cx, by, r + 3).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+  if (u.hp < u.maxHp) g.rect(cx - rad, cy - rad - 9, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
+  if (u.overrideUntil > s.tick) g.circle(cx, cy - rad, rad + 3).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
   g.eventMode = "static";
   g.cursor = "pointer";
   g.on("pointerover", () => { hovered = u; updateReadout(); });
@@ -333,6 +371,7 @@ for (const t of BUILDINGS) {
 }
 function setArmed(t: UnitType | null) {
   armedBuilding = t;
+  if (!t) ghostLayer.clear();
   for (const b of buildTypesEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.build === t);
   app.canvas.style.cursor = t ? "crosshair" : "";
   buildHintEl.textContent = t ? `click the map to place ${UNIT_STATS[t].label} (⛃${UNIT_STATS[t].cost}) · Esc to cancel` : "select a building, then click the map";

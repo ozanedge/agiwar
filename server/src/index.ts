@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
 import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS } from "../../shared/units.js";
+import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
 
@@ -165,6 +166,10 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     if (!stats || !stats.building) return; // buildings only
     const x = Math.round(msg.x), y = Math.round(msg.y);
     if (!(x >= 0 && x < GRID_W && y >= 0 && y < GRID_H)) return;
+    if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) {
+      send(ws, { type: "notice", level: "error", text: "Can't build on water or mountains." });
+      return;
+    }
     const myBase = g.bases[player];
     if (Math.max(Math.abs(x - myBase.x), Math.abs(y - myBase.y)) > BUILD_RADIUS) {
       send(ws, { type: "notice", level: "error", text: `Build closer to your base (within ${BUILD_RADIUS} tiles).` });
