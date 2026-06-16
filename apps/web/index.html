@@ -70,7 +70,13 @@
       #sankey .band { cursor: ns-resize; }
       .sub { color: rgba(0,255,209,.45); font-size: 11px; }
       #invest { display: flex; flex-direction: column; gap: 6px; }
-      .up { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid rgba(0,255,209,.16); border-radius: 6px; background: rgba(0,255,209,.04); }
+      .up { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid rgba(0,255,209,.16); border-radius: 6px; background: rgba(0,255,209,.04); cursor: pointer; transition: background .12s, border-color .12s, box-shadow .12s, opacity .12s; }
+      .up:hover { border-color: rgba(0,255,209,.5); background: rgba(0,255,209,.09); }
+      .up.queued { border-color: var(--accent); background: rgba(0,255,209,.12); box-shadow: 0 0 12px rgba(0,255,209,.3); }
+      .up.paused { opacity: .42; }
+      .up .upq { min-width: 56px; text-align: right; font-size: 9.5px; color: #6b7a8d; }
+      .up.queued .upq { color: var(--accent); font-weight: 700; }
+      .up .upq b { color: var(--danger); margin-left: 3px; }
       .up .ico { width: 20px; height: 20px; flex: 0 0 20px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: rgba(0,255,209,.1); color: var(--accent); font-size: 12px; text-shadow: 0 0 6px rgba(0,255,209,.6); }
       .up .nm { flex: 1; font-size: 11px; color: var(--text); line-height: 1.25; }
       .up .nm small { display: block; color: #6b7a8d; font-size: 9.5px; }
@@ -132,6 +138,7 @@
         <svg id="sankey"></svg>
         <div class="sub">set live by your Investment Advisor</div>
         <h4 style="margin-top: 10px">Upgrades</h4>
+        <div class="sub">click to queue — other spending pauses while you save</div>
         <div id="invest"></div>
       </div>
       <div id="stage">

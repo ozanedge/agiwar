@@ -2,7 +2,7 @@
 // event-gated + Haiku-backed, so it's cheap. It reads the player's economic doctrine and
 // the current economy, then sets the budget allocation and buys investments.
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
-import { INVESTMENTS, investCost } from "../../shared/units.js";
+import { INVESTMENTS } from "../../shared/units.js";
 import { GameState, INCOME_PER_TICK, playerBonus } from "./sim.js";
 
 const ENABLED = (process.env.ADVISOR ?? "on") !== "off";
@@ -25,8 +25,6 @@ faithfully following the player's economic doctrine. Given an economic report, r
 }
 Budgets: attack=offensive units, intel=recon, defense=defensive units, builder=engineers that claim artifacts, turret=auto-built defenses.
 Upgrades: munitions=+damage, plating=+hp, optics=+range, reactor=+income.`;
-
-const INV_BY_NAME: Record<string, "income" | "range" | "hp" | "damage"> = { munitions: "damage", plating: "hp", optics: "range", reactor: "income" };
 
 interface Summary { text: string; sig: string }
 
@@ -97,14 +95,9 @@ export function createAdvisor(player: number): AdvisorRunner {
           const set = (id: string, v: number) => { const c = p.camps.find((c) => c.id === id); if (c) c.production.budgetPct = Math.round(v * s); };
           set("aggressive", d.attack); set("recon", d.intel); set("defensive", d.defense); set("builder", d.builder);
           p.turretBudget = Math.round(d.turret * s);
-          let bought = "";
-          const kind = INV_BY_NAME[d.invest];
-          if (kind) {
-            const inv = INVESTMENTS.find((i) => i.kind === kind)!;
-            const cost = investCost(inv.base, p.invest[kind]);
-            if (p.resources >= cost) { p.resources -= cost; p.invest[kind] += 1; bought = ` · bought ${inv.label} Lv${p.invest[kind]}`; }
-          }
-          notify(`Advisor: A${Math.round(d.attack * s)} I${Math.round(d.intel * s)} D${Math.round(d.defense * s)} B${Math.round(d.builder * s)} T${Math.round(d.turret * s)}${bought} — ${d.reason}`);
+          // NOTE: army-wide upgrades are now the PLAYER's call (queued upgrades), so the advisor
+          // only manages budget allocation here — it no longer buys investments.
+          notify(`Advisor: A${Math.round(d.attack * s)} I${Math.round(d.intel * s)} D${Math.round(d.defense * s)} B${Math.round(d.builder * s)} T${Math.round(d.turret * s)} — ${d.reason}`);
           onChange(); // push the new allocation to the client's Sankey
         })
         .catch((err) => console.warn(`[advisor p${player}] skipped (${(err as Error).message})`))

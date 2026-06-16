@@ -95,6 +95,7 @@ export interface StateMsg {
   artifacts: Artifact[]; // visible artifacts (fog-gated)
   bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's total bonuses (artifacts + investments)
   invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
+  queuedInvest: ArtifactBonusKind | null; // an upgrade the player has queued — all other spending pauses to save for it
   armyDoctrine: string; // recipient's chosen build identity (id from shared/doctrine.ts); "balanced" until chosen
   rally: { x: number; y: number } | null; // recipient's active rally/commitment point (units concentrate here)
   you: number; // which player index this client controls
@@ -176,7 +177,9 @@ export type ClientMsg =
   | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "captureArtifact"; id: number } // invest to claim a neutral artifact
-  | { type: "invest"; kind: ArtifactBonusKind } // buy the next level of a permanent army upgrade
+  | { type: "invest"; kind: ArtifactBonusKind } // buy the next level of a permanent army upgrade (immediate)
+  | { type: "queueInvest"; kind: ArtifactBonusKind } // queue an upgrade — pause other spending and save up for it
+  | { type: "cancelInvest" } // clear the queued upgrade and resume normal spending
   | { type: "fieldOrder"; order: FieldOrder } // manual time-boxed override (debug/UI)
   | { type: "chooseArmyDoctrine"; id: string } // pick the once-per-match build identity
   | { type: "decide"; id: number; key: string } // answer a commander's strategic fork

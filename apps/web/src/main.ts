@@ -106,26 +106,27 @@ function resetFog(seed: number, W: number, H: number) {
   terrainKey = `${seed}:${W}:${H}`;
 }
 
-// The screen-space diamond covering a Chebyshev vision radius of R cells around (gx,gy):
-// moving ±R in gx/gy maps to corners (±R·TILE_W, 0) and (0, ±R·TILE_H). Exact, resolution-free.
-function visionDiamond(g: Graphics, gx: number, gy: number, R: number) {
+// Vision footprint for R cells around (gx,gy): an iso-squashed ELLIPSE (a circle lying on the
+// tilted ground) so sight reads as a soft radius rather than a hard square/diamond. Cosmetic —
+// the server fog-gates with the Chebyshev box, which this ellipse comfortably covers.
+function visionMark(g: Graphics, gx: number, gy: number, R: number) {
   const cx = isoX(gx, gy), cy = isoY(gx, gy);
-  g.poly([cx + R * TILE_W, cy, cx, cy + R * TILE_H, cx - R * TILE_W, cy, cx, cy - R * TILE_H]).fill(0xffffff);
+  g.ellipse(cx, cy, R * TILE_W, R * TILE_H).fill(0xffffff);
 }
 
 function renderFog(s: StateMsg) {
   // current vision (bright layer mask) — rebuilt every tick from your bases + units
   visMask.clear();
   const vm = modsFor(s.armyDoctrine).visionMult; // doctrine vision (Phantom sees farther)
-  for (const b of s.bases) if (b.owner === s.you) visionDiamond(visMask, b.x, b.y, BASE_VISION * vm);
-  for (const u of s.units) if (u.owner === s.you) visionDiamond(visMask, u.x, u.y, visionOf(u.unit) * vm);
+  for (const b of s.bases) if (b.owner === s.you) visionMark(visMask, b.x, b.y, BASE_VISION * vm);
+  for (const u of s.units) if (u.owner === s.you) visionMark(visMask, u.x, u.y, visionOf(u.unit) * vm);
   // explored memory (dim layer mask) — stamp a diamond the first time a viewer enters a coarse
   // cell, so the seen-area grows as you scout without ever redrawing the whole mask.
   const stamp = (gx: number, gy: number, R: number) => {
     const key = (gx >> 5) * 100003 + (gy >> 5);
     if (exploredCoarse.has(key)) return;
     exploredCoarse.add(key);
-    visionDiamond(expMask, gx, gy, R);
+    visionMark(expMask, gx, gy, R);
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
   for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, visionOf(u.unit) * vm);
@@ -249,30 +250,42 @@ function addLog(text: string, tick: number) {
   while (fglogEl.childElementCount > 60) fglogEl.lastElementChild?.remove();
 }
 
-// ---- upgrades panel (read-only; the Advisor buys them) ----
+// ---- upgrades panel (player-driven: click to QUEUE; all other spending pauses to save up) ----
 const investEl = document.getElementById("invest")!;
 const UP_ICON: Record<string, string> = { damage: "◆", hp: "✚", range: "◎", income: "⛃" };
 const UP_PIPS = 6;
 let upgradesBuilt = false;
-function syncInvest(levels: Record<string, number>) {
+function syncInvest(s: StateMsg) {
   if (!upgradesBuilt) {
     for (const inv of INVESTMENTS) {
       const row = document.createElement("div");
       row.className = "up";
+      row.id = `up-row-${inv.kind}`;
+      row.title = "Click to queue — all other spending pauses while we save up. Click again to cancel.";
       row.innerHTML =
         `<span class="ico">${UP_ICON[inv.kind]}</span>` +
         `<span class="nm">${inv.label}<small>${inv.effect} per level</small></span>` +
         `<span class="meter" id="up-m-${inv.kind}">${Array.from({ length: UP_PIPS }, () => "<i></i>").join("")}</span>` +
-        `<span class="lv" id="up-lv-${inv.kind}"></span>`;
+        `<span class="lv" id="up-lv-${inv.kind}"></span>` +
+        `<span class="upq" id="up-q-${inv.kind}"></span>`;
+      row.onclick = () => sendCmd(latestState?.queuedInvest === inv.kind ? { type: "cancelInvest" } : { type: "queueInvest", kind: inv.kind });
       investEl.appendChild(row);
     }
     upgradesBuilt = true;
   }
   for (const inv of INVESTMENTS) {
-    const lvl = levels[inv.kind] || 0;
+    const lvl = s.invest[inv.kind] || 0;
+    const cost = investCost(inv.base, lvl);
+    const queued = s.queuedInvest === inv.kind;
     document.getElementById(`up-lv-${inv.kind}`)!.textContent = `Lv${lvl}`;
     const pips = document.getElementById(`up-m-${inv.kind}`)!.children;
     for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("on", i < lvl);
+    const row = document.getElementById(`up-row-${inv.kind}`)!;
+    row.classList.toggle("queued", queued);
+    row.classList.toggle("paused", !!s.queuedInvest && !queued); // dimmed while saving for another
+    const q = document.getElementById(`up-q-${inv.kind}`)!;
+    if (queued) q.innerHTML = s.resources >= cost ? `buying…` : `⏳ ${s.resources}/${cost} <b>✕</b>`;
+    else q.textContent = `⛃${cost}`;
   }
 }
 
@@ -292,7 +305,7 @@ function render(s: StateMsg) {
   const b = s.bonuses;
   const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
   econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
-  syncInvest(s.invest);
+  syncInvest(s);
 }
 
 // the player's rally/commitment beacon — a pulsing flag forward units concentrate on

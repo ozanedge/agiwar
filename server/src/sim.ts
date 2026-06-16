@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, GRID_SCALE } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable, terrainAt } from "../../shared/terrain.js";
 import { modsFor, type ArmyMods } from "../../shared/doctrine.js";
 
@@ -56,6 +56,7 @@ export interface PlayerState {
   advisor: FieldGeneral; // investment advisor (label + editable economic doctrine)
   armyDoctrine: string; // once-per-match build identity (id from shared/doctrine.ts)
   rally: { x: number; y: number; until: number } | null; // commitment point: forward units concentrate here until `until` tick
+  queuedInvest: ArtifactBonusKind | null; // a player-queued upgrade — pauses all other spending to save for it
 }
 
 /** This player's army-wide modifiers, derived from their chosen doctrine. */
@@ -116,6 +117,7 @@ function makePlayer(): PlayerState {
     advisor: { label: "Advisor Holt", prompt: DEFAULT_ADVISOR_PROMPT },
     armyDoctrine: "balanced", // neutral until the player chooses
     rally: null,
+    queuedInvest: null,
   };
 }
 
@@ -435,6 +437,16 @@ export function step(g: GameState) {
   for (let pi = 0; pi < g.players.length; pi++) {
     const player = g.players[pi];
     const mods = playerMods(g, pi);
+    // QUEUED UPGRADE: pause ALL other spending and bank income until we can afford it, then buy.
+    const qk = player.queuedInvest;
+    if (qk) {
+      const inv = INVESTMENTS.find((i) => i.kind === qk);
+      if (inv) {
+        const cost = investCost(inv.base, player.invest[qk]);
+        if (player.resources >= cost) { player.resources -= cost; player.invest[qk] += 1; player.queuedInvest = null; }
+      } else player.queuedInvest = null;
+      continue; // no unit training / turret building while saving for the upgrade
+    }
     player.camps.forEach((camp, ci) => {
       const pct = camp.production.budgetPct;
       if (pct <= 0) return;

@@ -50,7 +50,8 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
   send(ws, {
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
     resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ + b.income,
-    bonuses: b, invest: g.players[player].invest, armyDoctrine: g.players[player].armyDoctrine,
+    bonuses: b, invest: g.players[player].invest, queuedInvest: g.players[player].queuedInvest,
+    armyDoctrine: g.players[player].armyDoctrine,
     rally: g.players[player].rally ? { x: g.players[player].rally!.x, y: g.players[player].rally!.y } : null,
     ...computeVisibleState(g, player), you: player,
   });
@@ -227,6 +228,24 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     p.resources -= cost;
     p.invest[inv.kind] = level + 1;
     send(ws, { type: "notice", level: "info", text: `Invested in ${inv.label} → Lv${level + 1} (${inv.effect}).` });
+    return;
+  }
+
+  if (msg.type === "queueInvest") {
+    const inv = INVESTMENTS.find((i) => i.kind === msg.kind);
+    if (!inv) return;
+    const p = g.players[player];
+    p.queuedInvest = inv.kind;
+    const cost = investCost(inv.base, p.invest[inv.kind]);
+    sendState(ws, g, player);
+    send(ws, { type: "notice", level: "info", text: `Queued ${inv.label} Lv${p.invest[inv.kind] + 1} (${cost}) — pausing other spending to save up.` });
+    return;
+  }
+
+  if (msg.type === "cancelInvest") {
+    g.players[player].queuedInvest = null;
+    sendState(ws, g, player);
+    send(ws, { type: "notice", level: "info", text: "Upgrade queue cleared — spending resumed." });
     return;
   }
 
