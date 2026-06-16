@@ -127,7 +127,13 @@ export interface FieldLog {
   tick: number;
 }
 
-export type ServerMsg = StateMsg | CampsMsg | Notice | FieldLog;
+/** Sent to each player when the match ends. */
+export interface GameOver {
+  type: "gameover";
+  won: boolean;
+}
+
+export type ServerMsg = StateMsg | CampsMsg | Notice | FieldLog | GameOver;
 
 /** The field general's structured decision (LLM output, clamped before use).
  *  "hold" = issue no order; units keep running their native doctrine. */

@@ -160,11 +160,18 @@ function connect() {
     else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
+    else if (msg.type === "gameover") { showEndscreen(msg.won); }
   };
   ws.onclose = () => setTimeout(connect, 1000);
 }
 function sendCmd(cmd: unknown) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 connect();
+
+function showEndscreen(won: boolean) {
+  const el = document.getElementById("endscreen")!;
+  el.innerHTML = `<div class="big">${won ? "VICTORY" : "DEFEAT"}</div><div class="end2">${won ? "Enemy base destroyed" : "Your base has fallen"}</div>`;
+  el.className = "show " + (won ? "win" : "lose"); // re-set class so the entrance animation replays
+}
 
 let noticeTimer: number | undefined;
 function showNotice(text: string, level: string) {

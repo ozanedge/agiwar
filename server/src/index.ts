@@ -109,7 +109,7 @@ function tickRoom(room: Room) {
     const winner = dead.owner === 0 ? 1 : 0;
     for (const m of room.members) {
       sendState(m.ws, g, m.player);
-      send(m.ws, { type: "notice", level: "info", text: m.player === winner ? "Victory — enemy base destroyed." : "Defeat — your base fell." });
+      send(m.ws, { type: "gameover", won: m.player === winner });
     }
     clearInterval(room.interval);
     console.log(`[room ${room.id}] over · player ${winner + 1} won`);

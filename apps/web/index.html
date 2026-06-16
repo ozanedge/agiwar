@@ -82,6 +82,14 @@
       #notice { left: 12px; top: 12px; padding: 7px 11px; color: var(--accent); }
       #econ { left: 12px; top: 50px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
       #title { right: 14px; top: 12px; font-size: 17px; font-weight: 700; letter-spacing: .34em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); pointer-events: none; }
+      #endscreen { position: absolute; inset: 0; z-index: 45; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; pointer-events: none; background: radial-gradient(circle at center, rgba(2,6,10,.45), rgba(2,6,10,.78)); }
+      #endscreen.show { display: flex; animation: endfade .5s ease both; }
+      #endscreen .big { font-size: 13vw; font-weight: 700; letter-spacing: .32em; line-height: 1; transform-origin: center; animation: endin 1.05s cubic-bezier(.16,.9,.24,1) both; }
+      #endscreen .end2 { font-size: 15px; letter-spacing: .22em; color: var(--text); opacity: 0; animation: endfade .7s ease .75s forwards; }
+      #endscreen.win .big { color: var(--accent); text-shadow: 0 0 60px rgba(0,255,209,.7), 0 0 18px rgba(0,255,209,.95); }
+      #endscreen.lose .big { color: var(--danger); text-shadow: 0 0 60px rgba(255,56,96,.7), 0 0 18px rgba(255,56,96,.95); }
+      @keyframes endfade { from { opacity: 0 } to { opacity: 1 } }
+      @keyframes endin { 0% { opacity: 0; transform: scale(.55); filter: blur(12px) } 55% { opacity: 1 } 100% { opacity: 1; transform: scale(1); filter: blur(0) } }
       #title small { display: block; font-size: 9px; letter-spacing: .18em; color: rgba(0,255,209,.45); text-shadow: none; text-align: right; margin-top: 2px; }
       * { scrollbar-width: thin; scrollbar-color: rgba(0,255,209,.18) transparent; }
       *::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -103,6 +111,7 @@
         <div id="econ" class="panel-overlay">⛃ —</div>
         <div id="title">AGIWAR<small>autonomous battle command</small></div>
         <div id="readout" class="panel-overlay">hover a unit to inspect it</div>
+        <div id="endscreen"></div>
       </div>
       <div id="controls"></div>
       <div id="right">
