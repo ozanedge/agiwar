@@ -247,10 +247,38 @@ export function step(g: GameState) {
         spawnUnit(g, pi, camp.id, u);
       });
     });
+    // savings budget (income not allocated to camps) auto-builds a protective turret ring
+    const savingsPct = Math.max(0, 100 - player.camps.reduce((a, c) => a + c.production.budgetPct, 0));
+    if (savingsPct > 0) {
+      const tstats = UNIT_STATS.turret;
+      const interval = Math.max(1, Math.round((tstats.cost * 100) / (INCOME_PER_TICK * savingsPct)));
+      if ((g.tick + pi * 5) % interval === 0 && player.resources >= tstats.cost) {
+        const spot = freeTurretSlot(g, pi);
+        if (spot) { player.resources -= tstats.cost; spawnUnit(g, pi, null, "turret", spot); }
+      }
+    }
   }
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   g.units = g.units.filter((u) => u.hp > 0);
+}
+
+/** Next open slot in the defensive turret ring around a player's base (inner rings first). */
+function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } | null {
+  const b = g.bases[owner];
+  for (const R of [6, 9, 12]) {
+    const n = Math.round(R * 1.4);
+    for (let i = 0; i < n; i++) {
+      const ang = (i / n) * Math.PI * 2 + owner * 0.4;
+      const x = Math.round(b.x + Math.cos(ang) * R);
+      const y = Math.round(b.y + Math.sin(ang) * R);
+      if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_H) continue;
+      if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
+      if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2)) continue;
+      return { x, y };
+    }
+  }
+  return null; // ring full
 }
 
 /** Public (wire) shape of a unit — drops the internal `_ovr` spec so it never leaks. */

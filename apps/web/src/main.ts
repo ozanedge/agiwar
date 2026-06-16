@@ -1,7 +1,7 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, BUILDINGS, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, type UnitType } from "../../../shared/units.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
@@ -34,9 +34,7 @@ app.stage.addChild(world);
 const terrainLayer = new Graphics(); // built once per (seed, size)
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
-const ghostLayer = new Graphics(); // build-placement preview (range + validity)
-world.addChild(terrainLayer, entityLayer, ghostLayer);
-const CLIENT_BUILD_RADIUS = 32; // mirror server BUILD_RADIUS
+world.addChild(terrainLayer, entityLayer);
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -97,7 +95,6 @@ function buildTerrain(seed: number, W: number, H: number) {
 
 // ---- camera (pan + zoom), centered on your base ----
 const cam = { scale: 1 };
-let armedBuilding: UnitType | null = null; // building selected for placement (build mode)
 function centerOnBase(s: StateMsg) {
   const mine = s.bases.find((b) => b.owner === s.you) ?? s.bases[0];
   if (!mine) return;
@@ -105,48 +102,13 @@ function centerOnBase(s: StateMsg) {
   world.x = app.screen.width / 2 - isoX(mine.x, mine.y);
   world.y = app.screen.height / 2 - isoY(mine.x, mine.y);
 }
-let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0, pressOnCanvas = false;
-app.canvas.addEventListener("pointerdown", (e) => { dragging = true; pressOnCanvas = true; lastX = downX = e.clientX; lastY = downY = e.clientY; });
+let dragging = false, lastX = 0, lastY = 0;
+app.canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
 window.addEventListener("pointermove", (e) => {
   if (!dragging) return;
   world.x += e.clientX - lastX; world.y += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY;
 });
-window.addEventListener("pointerup", (e) => {
-  // a click (not a drag) while a building is armed = place it
-  if (pressOnCanvas && armedBuilding && Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) < 6) {
-    const { gx, gy } = screenToGrid(e.clientX, e.clientY);
-    sendCmd({ type: "build", unit: armedBuilding, x: gx, y: gy });
-  }
-  dragging = false; pressOnCanvas = false;
-});
-
-// screen pixel -> grid cell (inverse iso; ignores elevation, close enough for placement)
-function screenToGrid(clientX: number, clientY: number): { gx: number; gy: number } {
-  const rect = app.canvas.getBoundingClientRect();
-  const wx = (clientX - rect.left - world.x) / cam.scale;
-  const wy = (clientY - rect.top - world.y) / cam.scale;
-  const a = wx / (TILE_W / 2), b = wy / (TILE_H / 2); // a = gx-gy, b = gx+gy
-  return { gx: Math.round((a + b) / 2), gy: Math.round((b - a) / 2) };
-}
-
-// build preview: range diamond + footprint at the hovered tile, green if placement is valid
-function drawGhost(gx: number, gy: number) {
-  ghostLayer.clear();
-  if (!armedBuilding || !latestState) return;
-  const s = latestState;
-  const R = UNIT_STATS[armedBuilding].range;
-  const base = s.bases.find((b) => b.owner === s.you);
-  const inBounds = gx >= 0 && gy >= 0 && gx < s.gridW && gy < s.gridH;
-  const inRadius = !!base && Math.max(Math.abs(gx - base.x), Math.abs(gy - base.y)) <= CLIENT_BUILD_RADIUS;
-  const passable = inBounds && terrainAt(gx, gy, s.seed, s.gridW, s.gridH).passable;
-  const col = inRadius && passable ? 0x5ad17a : 0xff6a5a;
-  const corners = [[gx - R, gy - R], [gx + R, gy - R], [gx + R, gy + R], [gx - R, gy + R]];
-  ghostLayer.poly(corners.flatMap(([x, y]) => [isoX(x, y), isoY(x, y)])).fill({ color: col, alpha: 0.1 }).stroke({ color: col, width: 2, alpha: 0.85 });
-  const elev = elevAt(gx, gy, s.seed, s.gridW, s.gridH);
-  const cx = isoX(gx, gy), cy = isoY(gx, gy) - elev;
-  ghostLayer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill({ color: col, alpha: 0.35 }).stroke({ color: col, width: 1.5 });
-}
-app.canvas.addEventListener("pointermove", (e) => { if (armedBuilding) drawGhost(screenToGrid(e.clientX, e.clientY).gx, screenToGrid(e.clientX, e.clientY).gy); });
+window.addEventListener("pointerup", () => { dragging = false; });
 app.canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const ns = Math.max(0.4, Math.min(2.6, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
@@ -431,21 +393,3 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) 
   };
 }
 
-// ---- build: pick a building, then click the map to place it (no doctrine) ----
-const buildTypesEl = document.getElementById("build-types")!;
-const buildHintEl = document.getElementById("build-hint")!;
-for (const t of BUILDINGS) {
-  const b = document.createElement("button");
-  b.dataset.build = t;
-  b.textContent = `${UNIT_STATS[t].label} ⛃${UNIT_STATS[t].cost}`;
-  b.onclick = () => setArmed(armedBuilding === t ? null : t);
-  buildTypesEl.appendChild(b);
-}
-function setArmed(t: UnitType | null) {
-  armedBuilding = t;
-  if (!t) ghostLayer.clear();
-  for (const b of buildTypesEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.build === t);
-  app.canvas.style.cursor = t ? "crosshair" : "";
-  buildHintEl.textContent = t ? `click the map to place ${UNIT_STATS[t].label} (⛃${UNIT_STATS[t].cost}) · Esc to cancel` : "select a building, then click the map";
-}
-window.addEventListener("keydown", (e) => { if (e.key === "Escape") setArmed(null); });
