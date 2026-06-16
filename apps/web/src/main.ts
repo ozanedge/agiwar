@@ -282,55 +282,79 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   return g;
 }
 
-// detailed sprite, drawn centered at (0,0) with FORWARD = +x; the container rotates it to face heading
+// The LIT TOP CAP: the finest detail, drawn on the apex layer only (FORWARD = +x so the
+// barrel/rifle/camera point along heading once the layer is rotated). The chassis volume
+// itself is sculpted by the stacked cross-sections below — this is just the crown.
 function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number; width: number; alpha: number }, acc: number) {
-  const dark = tint(side, -0.3), light = tint(side, 0.3), glass = 0x0b1620;
+  const dark = tint(side, -0.3), light = tint(side, 0.34), lighter = tint(side, 0.6);
+  const gun = 0x2b3138, glass = 0x0b1620;
   if (type === "tank") {
-    g.roundRect(-10, -7.5, 20, 4, 1.6).fill(dark); g.roundRect(-10, 3.5, 20, 4, 1.6).fill(dark); // treads
-    for (let i = -8; i <= 8; i += 4) { g.rect(i, -7.5, 1, 4).fill(tint(dark, -0.25)); g.rect(i, 3.5, 1, 4).fill(tint(dark, -0.25)); } // tread links
-    g.roundRect(-9, -5, 18, 10, 2.5).fill(side).stroke(ln); // hull
-    g.roundRect(-8, -4, 15, 3, 1.5).fill({ color: light, alpha: 0.5 }); // hull sheen
-    g.roundRect(-4.5, -4.5, 9, 9, 2.5).fill(light).stroke(ln); // turret
-    g.roundRect(4, -1.4, 14, 2.8, 1.2).fill(tint(dark, 0.1)); g.circle(18, 0, 1.7).fill(dark); // barrel + muzzle
-    g.circle(-0.5, 0, 2).fill(tint(side, -0.15)); g.circle(-0.5, 0, 1).fill(acc); // hatch + pip
+    g.roundRect(-5, -4.5, 10, 9, 3).fill(light).stroke(ln); // turret top face
+    g.roundRect(-4, -4, 7.5, 2.4, 1.2).fill({ color: lighter, alpha: 0.55 }); // turret sheen
+    g.roundRect(3, -1.5, 16, 3, 1.3).fill(gun); g.roundRect(3, -1.5, 16, 1, 0.5).fill({ color: 0x4a525a, alpha: 0.7 }); // barrel + glint
+    g.circle(19, 0, 1.9).fill(0x14181c); // muzzle
+    g.rect(-3.5, -5.5, 0.9, 4).fill(gun); // antenna
+    g.circle(-0.5, 0, 2).fill(tint(side, -0.12)); g.circle(-0.5, 0, 1).fill(acc); // hatch + doctrine pip
   } else if (type === "humvee") {
-    for (const [wx, wy] of [[-5.5, -6], [5.5, -6], [-5.5, 6], [5.5, 6]]) { g.circle(wx, wy, 2.4).fill(0x0c0f12); g.circle(wx, wy, 1.1).fill(0x2a2f33); }
-    g.roundRect(-9, -5, 18, 10, 2.5).fill(side).stroke(ln); // chassis
-    g.roundRect(2.5, -4.2, 6.5, 8.4, 1.5).fill(tint(side, -0.18)); // hood
-    g.roundRect(-4.5, -4.5, 7.5, 9, 2).fill(light).stroke(ln); // cabin
-    g.roundRect(0.5, -3.4, 2.4, 6.8, 1).fill(glass); // windshield (front)
-    g.roundRect(-8.5, -1, 2, 2, 0.5).fill({ color: 0xffe9a8, alpha: 0.5 }); // tail light cluster
-    g.circle(-6.5, 0, 1.2).fill(acc); // pip
+    g.roundRect(-6.5, -4.5, 13, 9, 3).fill(light).stroke(ln); // roof
+    g.roundRect(-5.5, -3.8, 5, 7.6, 1.5).fill({ color: lighter, alpha: 0.4 }); // roof sheen
+    g.roundRect(3, -3.4, 3, 6.8, 1).fill(glass); // windshield (front)
+    g.roundRect(-2, -3.6, 2.4, 7.2, 0.8).fill({ color: gun, alpha: 0.7 }); // roof rack
+    g.rect(5.5, -4.5, 0.9, 3).fill(gun); // antenna
+    g.circle(-4.5, 0, 1.2).fill(acc); // pip
   } else if (type === "gunner") {
-    g.ellipse(-1, 0, 5, 4.2).fill(dark); // pack/base
-    g.roundRect(-3.5, -3, 7.5, 6, 2.6).fill(side).stroke(ln); // torso
-    g.roundRect(2.5, -0.8, 11, 1.7, 0.8).fill(0x15191c); g.rect(11, -1.3, 1.6, 2.6).fill(0x0d1013); // rifle + stock
-    g.circle(2.3, 0, 2.7).fill(light).stroke(ln); // helmet (front)
-    g.circle(2.3, 0, 1.1).fill({ color: glass, alpha: 0.8 }); // visor
-    g.circle(-4.2, 0, 1.1).fill(acc); // pip
-  } else if (type === "drone") {
-    for (const [rx, ry] of [[6, 6], [6, -6], [-6, 6], [-6, -6]]) g.moveTo(0, 0).lineTo(rx, ry).stroke({ color: dark, width: 1.6 });
-    for (const [rx, ry] of [[6, 6], [6, -6], [-6, 6], [-6, -6]]) { g.circle(rx, ry, 2.6).fill({ color: side, alpha: 0.25 }); g.circle(rx, ry, 2.6).stroke({ color: light, width: 0.9, alpha: 0.7 }); g.circle(rx, ry, 0.9).fill(dark); }
-    g.circle(0, 0, 3.4).fill(side).stroke(ln); // body
-    g.circle(3, 0, 1.5).fill(glass); // camera (front)
+    g.circle(0.4, 0, 2.8).fill(light).stroke(ln); // helmet dome
+    g.arc(0.4, 0, 2.8, -1.0, 1.0).fill({ color: lighter, alpha: 0.5 }); // helmet sheen
+    g.roundRect(2.2, -0.8, 12, 1.7, 0.8).fill(gun); g.rect(12.5, -1.3, 1.6, 2.6).fill(0x14181c); // rifle + stock
+    g.circle(0.4, -1.4, 0.9).fill(acc); // pip
+  } else if (type === "drone") { // full quad — it's a thin/flat airframe, so the cap carries it
+    for (const [rx, ry] of [[6, 6], [6, -6], [-6, 6], [-6, -6]]) g.moveTo(0, 0).lineTo(rx, ry).stroke({ color: dark, width: 1.8 });
+    for (const [rx, ry] of [[6, 6], [6, -6], [-6, 6], [-6, -6]]) { g.circle(rx, ry, 2.7).fill({ color: side, alpha: 0.22 }); g.circle(rx, ry, 2.7).stroke({ color: lighter, width: 1, alpha: 0.75 }); g.circle(rx, ry, 0.9).fill(dark); }
+    g.circle(0, 0, 3.4).fill(light).stroke(ln); // body
+    g.circle(3, 0, 1.5).fill(glass); // gimbal camera (front)
     g.circle(0, 0, 1.1).fill(acc);
-  } else { // turret gun (the ground ring is drawn non-rotating in the base layer)
-    g.circle(0, 0, 6).fill(side).stroke(ln); // housing
-    g.circle(0, 0, 6).stroke({ color: tint(side, 0.3), width: 0.8, alpha: 0.6 });
-    g.roundRect(0, -1.7, 16, 3.4, 1.3).fill(tint(dark, 0.1)); g.circle(16, 0, 1.9).fill(dark); // barrel + muzzle
-    g.circle(0, 0, 2.4).fill(tint(side, 0.25)); g.circle(0, 0, 1.1).fill(acc);
+  } else { // turret emplacement: gun mantlet + barrel
+    g.circle(0, 0, 4.8).fill(light).stroke(ln);
+    g.arc(0, 0, 4.8, -1.0, 1.0).fill({ color: lighter, alpha: 0.45 });
+    g.roundRect(0, -1.8, 16, 3.6, 1.4).fill(gun); g.circle(16, 0, 2).fill(0x14181c); // barrel + muzzle
+    g.circle(0, 0, 1.4).fill(acc);
   }
 }
 
-// the body's flat footprint, used for the stacked "height" layers below the detailed top
-function drawSilhouette(g: Graphics, type: UnitType, color: number) {
-  if (type === "tank") g.roundRect(-10, -7.5, 20, 15, 3).fill(color);
-  else if (type === "humvee") g.roundRect(-9, -6, 18, 12, 3).fill(color);
-  else if (type === "gunner") g.roundRect(-3.5, -3.5, 8, 7, 3).fill(color);
-  else if (type === "drone") g.circle(0, 0, 3.6).fill(color);
-  else g.circle(0, 0, 6.2).fill(color); // turret housing
+// Cross-section of the unit at height fraction t (0 = ground, 1 = apex). Varying the shape
+// with t SCULPTS a real 3D volume out of the stack: a tank narrows into its turret dome,
+// a soldier rises legs → torso → head, a turret tapers into a tower. forward = +x.
+function drawSilhouette(g: Graphics, type: UnitType, color: number, t: number) {
+  const dk = tint(color, -0.28);
+  if (type === "tank") {
+    if (t < 0.42) { // hull + tracks
+      g.roundRect(-9, -6.5, 18, 13, 3).fill(color);
+      g.roundRect(-10, -7.6, 20, 3.4, 1.4).fill(dk); g.roundRect(-10, 4.2, 20, 3.4, 1.4).fill(dk);
+    } else if (t < 0.72) { // upper hull
+      g.roundRect(-8.5, -5.5, 17, 11, 3).fill(color);
+    } else { // turret dome, narrowing to the top cap
+      const s = 1 - (t - 0.72) * 0.85;
+      g.roundRect(-5.5 * s, -5 * s, 11 * s, 10 * s, 3 * s).fill(color);
+    }
+  } else if (type === "humvee") {
+    if (t < 0.46) { // chassis + wheels
+      g.roundRect(-9, -5.5, 18, 11, 3).fill(color);
+      for (const [wx, wy] of [[-5.5, -6.2], [5.5, -6.2], [-5.5, 6.2], [5.5, 6.2]]) g.circle(wx, wy, 2.4).fill(dk);
+    } else { // armored cabin, set back from a lower hood
+      g.roundRect(-7, -5, 12, 10, 3).fill(color);
+    }
+  } else if (type === "gunner") {
+    if (t < 0.34) { g.roundRect(-2, -3, 4, 2.5, 1).fill(color); g.roundRect(-2, 0.5, 4, 2.5, 1).fill(color); } // boots/legs
+    else if (t < 0.74) g.roundRect(-2.6, -3.2, 6.4, 6.4, 2.4).fill(color); // torso + pack
+    else { const s = 1 - (t - 0.74) * 0.5; g.circle(0.4, 0, 2.7 * s).fill(color); } // head
+  } else if (type === "drone") {
+    g.circle(0, 0, 3.4 - t * 1.3).fill(color);
+  } else { // turret tower
+    if (t < 0.55) { const s = 1 - t * 0.28; g.circle(0, 0, 6.6 * s).fill(color); }
+    else { const s = 1 - (t - 0.55) * 0.55; g.circle(0, 0, 5 * s).fill(color); }
+  }
 }
-const UNIT_HEIGHT: Record<string, number> = { tank: 7, turret: 8, humvee: 5, gunner: 5, drone: 2 };
+const UNIT_HEIGHT: Record<string, number> = { tank: 9, turret: 13, humvee: 8, gunner: 9, drone: 3 };
 
 function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   const cont = new Container();
@@ -341,7 +365,7 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
   const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
   const rad = u.unit === "tank" || u.unit === "turret" ? 10 : 8;
-  const lift = u.unit === "drone" ? 13 : u.unit === "turret" ? 5 : rad;
+  const lift = u.unit === "drone" ? 14 : 2; // ground units sit on the deck; drone hovers
 
   const base = new Graphics(); // never rotates: shadow, glow, (turret ground ring)
   base.ellipse(0, 3, 11, 4.5).fill({ color: 0x000000, alpha: 0.3 });
@@ -354,15 +378,18 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   // in screen space (dark base → lit top), with the detailed sprite as the top face. The
   // peeking rims of the lower layers read as the unit's sides — real iso height, no assets.
   const heading = Math.atan2(u.dy, u.dx) + Math.PI / 4; // grid heading rotated into iso space
-  const H = UNIT_HEIGHT[u.unit], SP = 1.3;
+  const H = UNIT_HEIGHT[u.unit], SP = 1.25;
   for (let i = 0; i <= H; i++) {
+    const t = i / H; // height fraction: 0 = ground, 1 = apex
     const wrap = new Container();
-    wrap.position.set(0, -(lift + i * SP)); // each layer higher in SCREEN space (true vertical)
+    // each layer rises in true screen-vertical, with a slight rightward lean so one lit
+    // side face is exposed (fakes a directional sun, like the reference's top-lit models)
+    wrap.position.set(t * 1.6, -(lift + i * SP));
     wrap.scale.set(1, 0.62); // iso ground squash
     const g = new Graphics();
     g.rotation = heading;
-    if (i === H) drawBody(g, u.unit, side, ln, acc); // detailed top face
-    else drawSilhouette(g, u.unit, tint(side, -0.5 + (i / H) * 0.38)); // side layers, darker at the base
+    if (i === H) drawBody(g, u.unit, side, ln, acc); // lit, detailed top cap
+    else drawSilhouette(g, u.unit, tint(side, -0.58 + t * 0.72), t); // sculpted volume, dark base → lit top
     wrap.addChild(g);
     cont.addChild(wrap);
   }
