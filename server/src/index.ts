@@ -3,7 +3,8 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, applyFieldOrder, computeVisibleState, newGame, spawnUnit, step } from "./sim.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, spawnUnit, step } from "./sim.js";
+import { UNIT_STATS } from "../../shared/units.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
 
@@ -37,11 +38,16 @@ let waiting: { ws: WebSocket; timer: ReturnType<typeof setTimeout> } | null = nu
 
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 const sendState = (ws: WebSocket, g: GameState, player: number) =>
-  send(ws, { type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed, ...computeVisibleState(g, player), you: player });
+  send(ws, {
+    type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
+    resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ,
+    ...computeVisibleState(g, player), you: player,
+  });
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
   send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral });
 
 function seed(g: GameState, player: number, bot: boolean) {
+  spawnUnit(g, player, "defensive", "turret"); // a starting strongpoint by base
   if (bot) { for (let i = 0; i < 4; i++) spawnUnit(g, player, "aggressive"); return; }
   for (const c of ["aggressive", "recon", "defensive"] as const) { spawnUnit(g, player, c); spawnUnit(g, player, c); }
 }
@@ -115,7 +121,8 @@ wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {
     let msg: ClientMsg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
-    await handle(ws, msg);
+    // never let a single malformed/unexpected message crash the process (and every room with it)
+    try { await handle(ws, msg); } catch (err) { console.warn(`[handle] ${(err as Error).message}`); }
   });
 });
 
@@ -137,7 +144,19 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   const g = room.game;
   const player = member.player;
 
-  if (msg.type === "spawn") { spawnUnit(g, player, msg.camp, msg.unit); return; }
+  if (msg.type === "spawn") {
+    const stats = UNIT_STATS[msg.unit];
+    const validCamp = g.players[player].camps.some((c) => c.id === msg.camp);
+    if (!stats || !validCamp) return; // ignore malformed spawn
+    const p = g.players[player];
+    if (p.resources < stats.cost) {
+      send(ws, { type: "notice", level: "error", text: `Not enough resources for ${stats.label} — need ${stats.cost}, have ${Math.floor(p.resources)}.` });
+      return;
+    }
+    p.resources -= stats.cost;
+    spawnUnit(g, player, msg.camp, msg.unit);
+    return;
+  }
 
   if (msg.type === "editFieldGeneral") {
     g.players[player].fieldGeneral.prompt = msg.prompt;

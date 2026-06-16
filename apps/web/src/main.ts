@@ -4,6 +4,9 @@ import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } f
 import { UNIT_STATS, UNIT_TYPES, type UnitType } from "../../../shared/units.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
+// Primary color = SIDE (all your units share it). Doctrine is shown as an accent outline.
+const OWN_COLOR = 0x4aa3ff;
+const ENEMY_COLOR = 0xff6a5a;
 const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
 const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def" };
 const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
@@ -11,6 +14,7 @@ const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
 const stage = document.getElementById("stage")!;
 const noticeEl = document.getElementById("notice")!;
 const readoutEl = document.getElementById("readout")!;
+const econEl = document.getElementById("econ")!;
 const campsEl = document.getElementById("camps")!;
 
 let latestState: StateMsg | null = null;
@@ -32,6 +36,13 @@ world.addChild(terrainLayer, entityLayer);
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
+
+// Draw an isometric cuboid rising `h` px from ground center (x, yBase); hw/hh = top diamond half-extents.
+function isoBox(g: Graphics, x: number, yBase: number, hw: number, hh: number, h: number, color: number) {
+  g.poly([x - hw, yBase - h, x, yBase - h + hh, x, yBase + hh, x - hw, yBase]).fill(tint(color, -0.4)); // left face
+  g.poly([x + hw, yBase - h, x, yBase - h + hh, x, yBase + hh, x + hw, yBase]).fill(tint(color, -0.22)); // right face
+  g.poly([x, yBase - h - hh, x + hw, yBase - h, x, yBase - h + hh, x - hw, yBase - h]).fill(tint(color, 0.12)); // top
+}
 
 // deterministic value-noise terrain (matches the server-provided seed)
 function h2(x: number, y: number, seed: number): number {
@@ -141,19 +152,26 @@ function render(s: StateMsg) {
   for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
+  econEl.textContent = `⛃ ${s.resources}  ·  +${s.incomePerSec}/s`;
+  refreshTroop();
 }
 
 function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(b.x, b.y, s.seed);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
-  const col = b.owner === s.you ? 0x6fb7ff : 0xff9d6f;
-  const H = TILE_H * 2.6;
-  // two walls + roof = a little iso keep
-  g.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, cy + TILE_H / 2 - H, cx - TILE_W / 2, cy - H]).fill(tint(col, -0.42));
-  g.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, cy + TILE_H / 2 - H, cx + TILE_W / 2, cy - H]).fill(tint(col, -0.24));
-  g.poly([cx, cy - TILE_H / 2 - H, cx + TILE_W / 2, cy - H, cx, cy + TILE_H / 2 - H, cx - TILE_W / 2, cy - H]).fill(tint(col, 0.12));
-  g.rect(cx - TILE_W / 2, cy - H - TILE_H, (b.hp / b.maxHp) * TILE_W, 3).fill(col);
+  const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
+  // big iso fortress: shadow → stone platform → flanking towers → central keep → flag → hp
+  g.ellipse(cx, cy + TILE_H * 1.0, TILE_W * 2.5, TILE_H * 1.7).fill({ color: 0x000000, alpha: 0.3 });
+  isoBox(g, cx, cy + TILE_H * 1.3, TILE_W * 2.0, TILE_H * 2.0, 11, 0x5d6470); // platform
+  isoBox(g, cx - TILE_W * 1.25, cy + TILE_H * 0.5, TILE_W * 0.5, TILE_H * 0.5, TILE_H * 3.2, tint(team, -0.12)); // L tower
+  isoBox(g, cx + TILE_W * 1.25, cy + TILE_H * 0.5, TILE_W * 0.5, TILE_H * 0.5, TILE_H * 3.2, tint(team, -0.12)); // R tower
+  const keepH = TILE_H * 4.6, keepBaseY = cy + TILE_H * 0.2;
+  isoBox(g, cx, keepBaseY, TILE_W * 0.95, TILE_H * 0.95, keepH, team); // central keep
+  const topY = keepBaseY - keepH - TILE_H * 0.95;
+  g.rect(cx - 1, topY - 18, 2, 18).fill(0xcfd8e3); // flag pole
+  g.poly([cx + 1, topY - 18, cx + 15, topY - 13, cx + 1, topY - 8]).fill(tint(team, 0.35)); // banner
+  g.rect(cx - TILE_W * 0.95, topY - 26, (b.hp / b.maxHp) * TILE_W * 1.9, 4).fill(team); // hp bar
   g.zIndex = b.x + b.y;
   return g;
 }
@@ -162,14 +180,18 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(u.x, u.y, s.seed);
   const cx = isoX(u.x, u.y), cy = isoY(u.x, u.y) - elev;
-  const color = DOCTRINE_COLOR[u.camp]; // color = doctrine
-  const dim = u.owner === s.you ? 1 : 0.55; // enemy dimmed
-  const r = u.unit === "tank" ? 8 : u.unit === "gunner" ? 6 : 5; // size/shape = type
+  const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR; // primary = side
+  const acc = DOCTRINE_COLOR[u.camp]; // accent outline = doctrine
+  const r = u.unit === "tank" || u.unit === "turret" ? 8 : u.unit === "gunner" ? 6 : 5; // shape/size = type
   g.ellipse(cx, cy + 2, r * 1.25, r * 0.6).fill({ color: 0x000000, alpha: 0.3 }); // ground shadow
   const by = cy - r - 1; // body stands above the tile
-  if (u.unit === "tank") g.rect(cx - r, by - r, r * 2, r * 2).fill({ color, alpha: dim }).stroke({ color: 0x06090d, width: 1, alpha: 0.6 });
-  else if (u.unit === "gunner") g.circle(cx, by, r).fill({ color, alpha: dim }).stroke({ color: 0x06090d, width: 1, alpha: 0.6 });
-  else g.poly([cx, by - r, cx + r, by + r, cx - r, by + r]).fill({ color, alpha: dim }).stroke({ color: 0x06090d, width: 1, alpha: 0.6 });
+  if (u.unit === "tank") g.rect(cx - r, by - r, r * 2, r * 2).fill(side).stroke({ color: acc, width: 2 });
+  else if (u.unit === "gunner") g.circle(cx, by, r).fill(side).stroke({ color: acc, width: 2 });
+  else if (u.unit === "humvee") g.poly([cx, by - r, cx + r, by + r, cx - r, by + r]).fill(side).stroke({ color: acc, width: 2 });
+  else { // turret: walled square base + barrel
+    g.rect(cx - r, by - r, r * 2, r * 2).fill(tint(side, -0.18)).stroke({ color: acc, width: 2 });
+    g.circle(cx, by, r * 0.55).fill(tint(side, 0.3));
+  }
   if (u.hp < u.maxHp) g.rect(cx - r, by - r - 4, (u.hp / u.maxHp) * r * 2, 1.5).fill(0xeaf2fb);
   if (u.overrideUntil > s.tick) g.circle(cx, by, r + 3).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
   g.eventMode = "static";
@@ -254,7 +276,7 @@ const troopSelEl = document.getElementById("troop-sel")!;
 for (const t of UNIT_TYPES) {
   const b = document.createElement("button");
   b.dataset.unit = t;
-  b.textContent = UNIT_STATS[t].label.replace(" Infantry", "");
+  b.textContent = `${UNIT_STATS[t].label.replace(" Infantry", "")} ⛃${UNIT_STATS[t].cost}`;
   b.onclick = () => { selType = t; refreshTroop(); };
   unitTypesEl.appendChild(b);
 }
@@ -266,11 +288,15 @@ for (const d of DOCTRINES) {
   b.onclick = () => { selCamp = d; refreshTroop(); };
   troopCampsEl.appendChild(b);
 }
+const deployBtn = document.getElementById("deploy") as HTMLButtonElement;
 function refreshTroop() {
   for (const b of unitTypesEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.unit === selType);
   for (const b of troopCampsEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.tcamp === selCamp);
   const st = UNIT_STATS[selType];
+  const afford = !latestState || latestState.resources >= st.cost;
+  deployBtn.disabled = !afford;
+  deployBtn.textContent = afford ? `Deploy ⛃${st.cost} ▸` : `Need ⛃${st.cost}`;
   troopSelEl.textContent = `${st.label} — ${st.blurb}, ${st.maxHp}hp → ${selCamp} doctrine`;
 }
-(document.getElementById("deploy") as HTMLButtonElement).onclick = () => sendCmd({ type: "spawn", camp: selCamp, unit: selType });
+deployBtn.onclick = () => sendCmd({ type: "spawn", camp: selCamp, unit: selType });
 refreshTroop();

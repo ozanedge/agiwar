@@ -69,6 +69,8 @@ export interface StateMsg {
   gridW: number;
   gridH: number;
   seed: number; // per-match map seed -> deterministic shared terrain
+  resources: number; // this client's resource total (floored)
+  incomePerSec: number; // fixed income rate
   units: UnitState[];
   bases: BaseState[];
   you: number; // which player index this client controls

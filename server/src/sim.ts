@@ -8,10 +8,11 @@ import { UNIT_STATS, UnitType } from "../../shared/units.js";
 // Pacing knobs (env-tunable so we can dial feel without code edits).
 export const GRID_W = Number(process.env.GRID_W ?? 128); // much bigger map -> long marches
 export const GRID_H = Number(process.env.GRID_H ?? 80);
-const ATTACK_RANGE = 1; // Chebyshev cells
 const BASE_HP = Number(process.env.BASE_HP ?? 400);
 const SENSOR = Number(process.env.SENSOR ?? 18); // targeting range
 const VISION = Number(process.env.VISION ?? 14); // fog reveal range
+export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 resources/sec at 10Hz
+const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
@@ -21,6 +22,7 @@ const SPEED_MULT = Number(process.env.SPEED_MULT ?? 1);
 export interface PlayerState {
   camps: Camp[];
   fieldGeneral: FieldGeneral;
+  resources: number;
 }
 
 export interface GameState {
@@ -59,6 +61,7 @@ function makePlayer(): PlayerState {
       makeCamp("defensive", "Gen. Reyes · Defensive"),
     ],
     fieldGeneral: { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT },
+    resources: STARTING_RESOURCES,
   };
 }
 
@@ -140,6 +143,13 @@ function decide(g: GameState, u: UnitState) {
   const mv = (tx: number, ty: number) => { if (canMove) moveToward(u, tx, ty); };
   const atk = (t: { isBase: boolean; ref: UnitState | BaseState }) => { if (canAttack) attack(g, u, t); };
 
+  // 0) stationary strongpoints (turrets): never move, fire on the nearest enemy in range
+  if (stats.stationary) {
+    const e = nearestEnemy(g, u);
+    if (e && cheb(u.x, u.y, e.x, e.y) <= stats.range) atk(e);
+    return;
+  }
+
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {
     if (cheb(u.x, u.y, myBase.x, myBase.y) > 1) mv(myBase.x, myBase.y);
@@ -153,7 +163,7 @@ function decide(g: GameState, u: UnitState) {
   if (spec.defendRadius != null) {
     const intruder = enemy && cheb(enemy.x, enemy.y, myBase.x, myBase.y) <= spec.defendRadius;
     if (intruder) {
-      if (enemyDist <= ATTACK_RANGE) atk(enemy!);
+      if (enemyDist <= stats.range) atk(enemy!);
       else mv(enemy!.x, enemy!.y);
     } else if (cheb(u.x, u.y, myBase.x, myBase.y) > spec.defendRadius - 1) {
       mv(myBase.x, myBase.y);
@@ -164,7 +174,7 @@ function decide(g: GameState, u: UnitState) {
   // 3) engage if an enemy is in sensor + within engageRange and we're aggressive enough
   const willEngage = enemy && enemyDist <= SENSOR && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
   if (willEngage) {
-    if (enemyDist <= ATTACK_RANGE) atk(enemy!);
+    if (enemyDist <= stats.range) atk(enemy!);
     else mv(enemy!.x, enemy!.y);
     return;
   }
@@ -192,6 +202,7 @@ export function step(g: GameState) {
       delete (u as any)._ovr;
     }
   }
+  for (const p of g.players) p.resources += INCOME_PER_TICK; // fixed income
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   g.units = g.units.filter((u) => u.hp > 0);
