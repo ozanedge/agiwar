@@ -63,6 +63,20 @@ export interface BaseState {
   maxHp: number;
 }
 
+export type ArtifactBonusKind = "income" | "range" | "hp" | "damage";
+
+/** A capturable map resource. Neutral (owner -1) until a player invests to claim it;
+ *  then it grants a passive bonus + acts as a turret-build anchor, and can be attacked. */
+export interface Artifact {
+  id: number;
+  x: number;
+  y: number;
+  owner: number; // -1 = neutral
+  hp: number;
+  maxHp: number;
+  bonus: { kind: ArtifactBonusKind; amount: number; label: string };
+}
+
 /** Lightweight world state, broadcast at the (lower) network rate. Deliberately
  *  excludes camps — those are static between edits, so shipping their prompt strings
  *  every tick was pure egress waste. */
@@ -73,9 +87,11 @@ export interface StateMsg {
   gridH: number;
   seed: number; // per-match map seed -> deterministic shared terrain
   resources: number; // this client's resource total (floored)
-  incomePerSec: number; // fixed income rate
+  incomePerSec: number; // income rate incl. artifact bonuses
   units: UnitState[];
   bases: BaseState[];
+  artifacts: Artifact[]; // visible artifacts (fog-gated)
+  bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's active artifact bonuses
   you: number; // which player index this client controls
 }
 
@@ -119,6 +135,7 @@ export type ClientMsg =
   | { type: "setBudget"; camp: DoctrineId; budgetPct: number } // set a camp's share of income
   | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
+  | { type: "captureArtifact"; id: number } // invest to claim a neutral artifact
   | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 
 /** A field-general command: a *time-boxed override* of native doctrine.

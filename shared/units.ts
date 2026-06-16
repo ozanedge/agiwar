@@ -1,6 +1,6 @@
 // Unit types — orthogonal to doctrine. A unit's TYPE sets its stats (hp/speed/damage/cost/range);
 // its CAMP (doctrine) sets its behavior. You pick both when you create a troop.
-export type UnitType = "gunner" | "tank" | "humvee" | "turret";
+export type UnitType = "gunner" | "tank" | "humvee" | "drone" | "turret";
 
 export interface UnitTypeStats {
   label: string;
@@ -25,10 +25,11 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   gunner: { label: "Gunner Infantry", maxHp: 30, moveEvery: 4, attackEvery: 4, dmg: 2, cost: 50, range: 1, blurb: "balanced" },
   tank: { label: "Tank", maxHp: 80, moveEvery: 9, attackEvery: 6, dmg: 6, cost: 150, range: 1, blurb: "strong but slow" },
   humvee: { label: "Humvee", maxHp: 16, moveEvery: 2, attackEvery: 4, dmg: 1, cost: 40, range: 1, blurb: "fast but weak" },
+  drone: { label: "Drone", maxHp: 10, moveEvery: 2, attackEvery: 99, dmg: 0, cost: 90, range: 11, blurb: "unarmed, huge vision" },
   turret: { label: "Turret", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 7, stationary: true, building: true, blurb: "placed strongpoint" },
 };
 
-export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "turret"];
+export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "drone", "turret"];
 
 // A unit sees 3× as far as it can shoot; a base reveals a fixed radius.
 export const VISION_MULT = 3;

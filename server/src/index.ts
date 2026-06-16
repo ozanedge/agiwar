@@ -3,7 +3,7 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, spawnUnit, step } from "./sim.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, playerBonus, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
@@ -16,6 +16,7 @@ const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
 const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 6000); // wait this long for a human, then give a bot
 const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32); // buildings must be placed within this many tiles of your base
+const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // invest to claim a neutral artifact
 
 // Date.now() is banned inside the sim, but cooldowns are wall-clock UX, not sim state.
 const epoch0 = Date.now() - Number(process.hrtime.bigint() / 1_000_000n);
@@ -39,12 +40,14 @@ let roomSeq = 1;
 let waiting: { ws: WebSocket; timer: ReturnType<typeof setTimeout> } | null = null;
 
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
-const sendState = (ws: WebSocket, g: GameState, player: number) =>
+const sendState = (ws: WebSocket, g: GameState, player: number) => {
+  const b = playerBonus(g, player);
   send(ws, {
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
-    resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ,
-    ...computeVisibleState(g, player), you: player,
+    resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ + b.income,
+    bonuses: b, ...computeVisibleState(g, player), you: player,
   });
+};
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
   send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral });
 
@@ -183,6 +186,20 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     p.resources -= stats.cost;
     spawnUnit(g, player, null, msg.unit, { x, y });
     send(ws, { type: "notice", level: "info", text: `${stats.label} placed.` });
+    return;
+  }
+
+  if (msg.type === "captureArtifact") {
+    const a = g.artifacts.find((a) => a.id === msg.id);
+    if (!a || a.owner !== -1) return; // claim neutral only
+    const p = g.players[player];
+    if (p.resources < CAPTURE_COST) {
+      send(ws, { type: "notice", level: "error", text: `Not enough resources to claim artifact — need ${CAPTURE_COST}, have ${Math.floor(p.resources)}.` });
+      return;
+    }
+    p.resources -= CAPTURE_COST;
+    a.owner = player; a.hp = a.maxHp;
+    send(ws, { type: "notice", level: "info", text: `Artifact claimed — ${a.bonus.label}. Turrets will ring it; defend it!` });
     return;
   }
 

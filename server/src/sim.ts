@@ -1,10 +1,15 @@
 // Deterministic, server-authoritative fixed-tick simulation.
 // No Math.random / Date.now inside the tick: all "randomness" is a pure hash of
 // (unitId, tick) so a match is fully reproducible and replayable.
-import type { BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
+import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION, visionOf } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
+
+const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 5);
+const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 220); // ticks between spawns (~22s)
+const ARTIFACT_HP = 120;
+export type Bonus = { income: number; range: number; hp: number; damage: number };
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
 export const GRID_W = Number(process.env.GRID_W ?? 200); // large map -> long marches
@@ -38,8 +43,17 @@ export interface GameState {
   seed: number; // map seed (cosmetic terrain); fixed per match
   units: UnitState[];
   bases: BaseState[];
+  artifacts: Artifact[];
   players: PlayerState[]; // index = player/owner
   nextUnitId: number;
+  nextArtifactId: number;
+}
+
+/** Sum of bonuses from artifacts a player currently controls. */
+export function playerBonus(g: GameState, player: number): Bonus {
+  const b: Bonus = { income: 0, range: 0, hp: 0, damage: 0 };
+  for (const a of g.artifacts) if (a.owner === player) b[a.bonus.kind] += a.bonus.amount;
+  return b;
 }
 
 export const DEFAULT_FIELD_GENERAL_PROMPT =
@@ -78,14 +92,36 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: 4, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W - 5, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  return { tick: 0, seed: seed >>> 0, units: [], bases, players: [makePlayer(), makePlayer()], nextUnitId: 1 };
+  return { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], players: [makePlayer(), makePlayer()], nextUnitId: 1, nextArtifactId: 1 };
+}
+
+const ARTIFACT_BONUSES: { kind: ArtifactBonusKind; amount: number; label: string }[] = [
+  { kind: "income", amount: 3, label: "+3 ⛃/s" },
+  { kind: "income", amount: 2, label: "+2 ⛃/s" },
+  { kind: "range", amount: 1, label: "+1 unit range" },
+  { kind: "hp", amount: 5, label: "+5 unit HP" },
+  { kind: "damage", amount: 2, label: "+2 attack dmg" },
+];
+
+function spawnArtifact(g: GameState) {
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const r = hash01(g.seed ^ 0x5a17, g.nextArtifactId * 31 + attempt);
+    const r2 = hash01(g.nextArtifactId * 97 + attempt, g.seed ^ 0xa11);
+    const x = Math.round(GRID_W * (0.22 + 0.56 * r)); // mid-map band, away from the bases
+    const y = Math.round(GRID_H * (0.12 + 0.76 * r2));
+    if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
+    if (g.artifacts.some((a) => cheb(a.x, a.y, x, y) < 14)) continue; // spread them out
+    const bonus = ARTIFACT_BONUSES[Math.floor(hash01(g.nextArtifactId * 7, g.seed) * ARTIFACT_BONUSES.length)];
+    g.artifacts.push({ id: g.nextArtifactId++, x, y, owner: -1, hp: ARTIFACT_HP, maxHp: ARTIFACT_HP, bonus });
+    return;
+  }
 }
 
 /** Spawn a unit (camp = doctrine) near base, or place a building (camp = null) at `pos`. */
 export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, type: UnitType = "gunner", pos?: { x: number; y: number }): void {
   const base = g.bases[owner];
   const jitter = g.units.length;
-  const hp = UNIT_STATS[type].maxHp;
+  const hp = UNIT_STATS[type].maxHp + playerBonus(g, owner).hp;
   g.units.push({
     id: g.nextUnitId++,
     owner,
@@ -109,19 +145,17 @@ function effectiveSpec(g: GameState, u: UnitState): BehaviorSpec {
   return camp ? camp.spec : PRESET_SPECS[u.camp];
 }
 
-function nearestEnemy(g: GameState, u: UnitState): { x: number; y: number; isBase: boolean; ref: UnitState | BaseState } | null {
-  let best: { x: number; y: number; isBase: boolean; ref: UnitState | BaseState } | null = null;
+type Target = { x: number; y: number; ref: { hp: number } };
+function nearestEnemy(g: GameState, u: UnitState): Target | null {
+  let best: Target | null = null;
   let bestD = Infinity;
-  for (const e of g.units) {
-    if (e.owner === u.owner || e.hp <= 0) continue;
-    const d = cheb(u.x, u.y, e.x, e.y);
-    if (d < bestD) { bestD = d; best = { x: e.x, y: e.y, isBase: false, ref: e }; }
-  }
-  for (const b of g.bases) {
-    if (b.owner === u.owner || b.hp <= 0) continue;
-    const d = cheb(u.x, u.y, b.x, b.y);
-    if (d < bestD) { bestD = d; best = { x: b.x, y: b.y, isBase: true, ref: b }; }
-  }
+  const consider = (x: number, y: number, ref: { hp: number }) => {
+    const d = cheb(u.x, u.y, x, y);
+    if (d < bestD) { bestD = d; best = { x, y, ref }; }
+  };
+  for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e);
+  for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b);
+  for (const a of g.artifacts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a); // siege enemy artifacts
   return best;
 }
 
@@ -175,12 +209,15 @@ function decide(g: GameState, u: UnitState) {
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
-  const atk = (t: { isBase: boolean; ref: UnitState | BaseState }) => { if (canAttack) attack(g, u, t); };
+  const bonus = playerBonus(g, u.owner);
+  const range = stats.range + bonus.range; // artifact range bonus
+  const isScout = stats.dmg <= 0; // drones: never engage, just scout
+  const atk = (t: Target) => { if (canAttack) attack(g, u, t); };
 
   // 0) stationary buildings (turrets): no doctrine — just fire on the nearest enemy in range
   if (stats.stationary) {
     const e = nearestEnemy(g, u);
-    if (e && cheb(u.x, u.y, e.x, e.y) <= stats.range) atk(e);
+    if (e && cheb(u.x, u.y, e.x, e.y) <= range) atk(e);
     return;
   }
 
@@ -198,10 +235,10 @@ function decide(g: GameState, u: UnitState) {
   const enemyDist = enemy ? cheb(u.x, u.y, enemy.x, enemy.y) : Infinity;
 
   // 2) leashed defenders: only engage intruders near base, else return to guard ring
-  if (spec.defendRadius != null) {
+  if (!isScout && spec.defendRadius != null) {
     const intruder = enemy && cheb(enemy.x, enemy.y, myBase.x, myBase.y) <= spec.defendRadius;
     if (intruder) {
-      if (enemyDist <= stats.range) atk(enemy!);
+      if (enemyDist <= range) atk(enemy!);
       else mv(enemy!.x, enemy!.y);
     } else if (cheb(u.x, u.y, myBase.x, myBase.y) > spec.defendRadius - 1) {
       mv(myBase.x, myBase.y);
@@ -209,10 +246,10 @@ function decide(g: GameState, u: UnitState) {
     return;
   }
 
-  // 3) engage if an enemy is in sensor + within engageRange and we're aggressive enough
-  const willEngage = enemy && enemyDist <= stats.range * VISION_MULT && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
+  // 3) engage if an enemy is in range + within engageRange and we're aggressive enough (armed units only)
+  const willEngage = !isScout && enemy && enemyDist <= range * VISION_MULT && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
   if (willEngage) {
-    if (enemyDist <= stats.range) atk(enemy!);
+    if (enemyDist <= range) atk(enemy!);
     else mv(enemy!.x, enemy!.y);
     return;
   }
@@ -231,8 +268,10 @@ function decide(g: GameState, u: UnitState) {
   } // else: hold position
 }
 
-function attack(g: GameState, u: UnitState, target: { isBase: boolean; ref: UnitState | BaseState }) {
-  target.ref.hp -= UNIT_STATS[u.unit].dmg;
+function attack(g: GameState, u: UnitState, target: Target) {
+  const base = UNIT_STATS[u.unit].dmg;
+  if (base <= 0) return; // unarmed (drones)
+  target.ref.hp -= base + playerBonus(g, u.owner).damage; // artifact damage bonus
 }
 
 export function step(g: GameState) {
@@ -245,7 +284,8 @@ export function step(g: GameState) {
       delete (u as any)._ovr;
     }
   }
-  for (const p of g.players) p.resources += INCOME_PER_TICK; // fixed income
+  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK + playerBonus(g, i).income / TICK_HZ)); // income + artifact bonus
+  if (g.tick % ARTIFACT_EVERY === 0 && g.artifacts.length < ARTIFACT_CAP) spawnArtifact(g);
   // continuous production: each camp trains its unit at its rate (deterministic cadence)
   for (let pi = 0; pi < g.players.length; pi++) {
     const player = g.players[pi];
@@ -281,24 +321,28 @@ export function step(g: GameState) {
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   g.units = g.units.filter((u) => u.hp > 0);
+  // a sieged artifact reverts to neutral (recapturable) rather than being destroyed
+  for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; }
 }
 
-/** Next open slot in the defensive turret ring around a player's base (inner rings first). */
+/** Next open turret-ring slot around any of a player's anchors (base + owned artifacts). */
 function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } | null {
-  const b = g.bases[owner];
-  for (const R of [6, 9, 12]) {
-    const n = Math.round(R * 1.4);
-    for (let i = 0; i < n; i++) {
-      const ang = (i / n) * Math.PI * 2 + owner * 0.4;
-      const x = Math.round(b.x + Math.cos(ang) * R);
-      const y = Math.round(b.y + Math.sin(ang) * R);
-      if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_H) continue;
-      if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
-      if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2)) continue;
-      return { x, y };
+  const anchors = [{ x: g.bases[owner].x, y: g.bases[owner].y }, ...g.artifacts.filter((a) => a.owner === owner)];
+  for (const anchor of anchors) {
+    for (const R of [5, 8]) {
+      const n = Math.round(R * 1.4);
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * Math.PI * 2 + owner * 0.4;
+        const x = Math.round(anchor.x + Math.cos(ang) * R);
+        const y = Math.round(anchor.y + Math.sin(ang) * R);
+        if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_H) continue;
+        if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
+        if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2)) continue;
+        return { x, y };
+      }
     }
   }
-  return null; // ring full
+  return null; // all rings full
 }
 
 /** Public (wire) shape of a unit — drops the internal `_ovr` spec so it never leaks. */
@@ -311,15 +355,17 @@ function pub(u: UnitState): UnitState {
 
 /** Fog of war: what `player` can see. Own units/base always; enemy units/base only when
  *  within VISION of one of the player's units or base — so scouting (recon doctrine) pays off. */
-export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[] } {
+export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[]; artifacts: Artifact[] } {
   const own = g.units.filter((u) => u.owner === player);
   const ownBase = g.bases[player];
+  const vr = playerBonus(g, player).range; // artifact range bonus widens vision too
   const visible = (x: number, y: number) =>
     (!!ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION) ||
-    own.some((u) => cheb(u.x, u.y, x, y) <= visionOf(u.unit)); // each unit sees 3× its range
+    own.some((u) => cheb(u.x, u.y, x, y) <= (UNIT_STATS[u.unit].range + vr) * VISION_MULT); // each unit sees 3× its range
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),
+    artifacts: g.artifacts.filter((a) => a.owner === player || visible(a.x, a.y)), // neutral/enemy artifacts fog-gated
   };
 }
 

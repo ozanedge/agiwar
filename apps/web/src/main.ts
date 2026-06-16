@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics } from "pixi.js";
+import { Application, Container, Graphics, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, type UnitType } from "../../../shared/units.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
@@ -176,13 +176,37 @@ function render(s: StateMsg) {
   if (terrainKey !== `${s.seed}:${s.gridW}:${s.gridH}`) { resetFog(s.seed, s.gridW, s.gridH); centerOnBase(s); }
   renderFog(s); // unexplored = black · explored = dim memory · visible = bright
   entityLayer.removeChildren();
+  for (const a of s.artifacts) entityLayer.addChild(makeArtifact(a, s));
   for (const b of s.bases) entityLayer.addChild(makeBase(b, s));
   for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
   const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0);
   const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
-  econEl.textContent = `⛃ ${s.resources}   ·   earning +${s.incomePerSec}/s   ·   spending ~${spend}/s   ·   saving ${Math.max(0, 100 - allocPct)}%`;
+  const b = s.bonuses;
+  const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
+  econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
+}
+
+function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {
+  const g = new Graphics();
+  const elev = elevAt(a.x, a.y, s.seed, s.gridW, s.gridH);
+  const cx = isoX(a.x, a.y), cy = isoY(a.x, a.y) - elev;
+  const neutral = a.owner < 0;
+  const col = a.owner === s.you ? OWN_COLOR : a.owner >= 0 ? ENEMY_COLOR : 0xffd76b; // neutral = gold
+  const pulse = 0.5 + 0.5 * Math.sin(s.tick / 6);
+  g.ellipse(cx, cy + 3, 15, 8).fill({ color: col, alpha: 0.16 }); // glow pad
+  g.poly([cx, cy - 20, cx + 9, cy - 4, cx, cy + 6, cx - 9, cy - 4]).fill({ color: col, alpha: 0.38 }).stroke({ color: col, width: 2, alpha: 0.6 + 0.4 * pulse }); // crystal
+  g.poly([cx, cy - 13, cx + 4.5, cy - 4, cx, cy + 1, cx - 4.5, cy - 4]).fill({ color: tint(col, 0.45), alpha: 0.95 }); // core
+  if (a.owner >= 0 && a.hp < a.maxHp) g.rect(cx - 11, cy - 26, (a.hp / a.maxHp) * 22, 2.5).fill(col); // hp
+  const t = new Text({ text: neutral ? `${a.bonus.label}  ▸ claim` : a.bonus.label, style: { fill: col, fontFamily: "JetBrains Mono, monospace", fontSize: 10 } });
+  t.anchor.set(0.5, 1); t.x = cx; t.y = cy - 22; g.addChild(t);
+  g.zIndex = a.x + a.y; // sits with terrain depth
+  if (neutral) { // click to invest/claim
+    g.eventMode = "static"; g.cursor = "pointer";
+    g.on("pointertap", () => sendCmd({ type: "captureArtifact", id: a.id }));
+  }
+  return g;
 }
 
 function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
@@ -238,6 +262,12 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
     g.circle(cx, by - 6, 3).fill(light).stroke(ln);                           // head
     g.rect(cx + 2, by - 3, 8, 1.6).fill(dark);                                 // rifle
     g.circle(cx - 4, by - 3, 1.4).fill(acc);                                   // doctrine pip
+  } else if (u.unit === "drone") {
+    const by = cy - 11; // hovers above its shadow
+    g.rect(cx - 6, by - 0.5, 12, 1).fill(dark); g.rect(cx - 0.5, by - 5, 1, 10).fill(dark); // arms
+    for (const [ox, oy] of [[-6, -5], [6, -5], [-6, 5], [6, 5]]) g.circle(cx + ox, by + oy, 1.7).fill(light); // rotors
+    g.circle(cx, by, 3).fill(side).stroke(ln);                                 // body
+    g.circle(cx, by, 1.2).fill(acc);                                           // doctrine pip
   } else { // turret building: ringed base + rotating gun + barrel
     const by = cy - 5;
     g.ellipse(cx, by + 4, 11, 6).fill(dark).stroke(ln);                        // emplacement ring
