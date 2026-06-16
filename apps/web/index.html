@@ -32,7 +32,14 @@
       #left { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #left h4 { margin: 0; }
       #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
-      #controls { grid-column: 2; grid-row: 2; display: flex; gap: 10px; padding: 10px; border-top: 1px solid var(--edge); overflow-x: auto; align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      #controls { grid-column: 2; grid-row: 2; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); overflow-x: auto; align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      .cmd { border: 1px solid var(--edge); border-radius: 6px; padding: 8px; min-width: 210px; flex: 1 1 0; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
+      .cmd h4 { font-size: 11px; }
+      .cmd .mem { flex: 1; min-height: 40px; max-height: 90px; overflow-y: auto; white-space: pre-wrap; font-size: 10px; line-height: 1.35; color: #9db8b2; border-left: 2px solid var(--accent-dim); padding: 3px 6px; background: rgba(0,255,209,.03); }
+      .cmd .cmdrow { display: flex; gap: 4px; }
+      .cmd input { flex: 1; min-width: 0; background: #04090e; color: var(--text); border: 1px solid rgba(0,255,209,.18); border-radius: 4px; padding: 4px 6px; font: inherit; }
+      .cmd input:focus { outline: none; border-color: var(--accent); }
+      .cmd .send { padding: 4px 8px; }
       #right { grid-column: 3; grid-row: 1 / 3; border-left: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #invest { display: flex; flex-direction: column; gap: 5px; }
       #invest button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
@@ -76,11 +83,7 @@
       <div id="left">
         <h4>Budget flow</h4>
         <svg id="sankey"></svg>
-        <div class="sub">allocated live by your Investment Advisor</div>
-        <h4 style="margin-top:6px" id="adv-label">Investment Advisor</h4>
-        <div class="sub">briefs your economy: budgets + upgrades</div>
-        <textarea id="adv-prompt" style="min-height:64px;max-height:100px;flex:0 0 auto"></textarea>
-        <div class="row"><button id="adv-update">Update advisor</button></div>
+        <div class="sub">set live by your commanders below</div>
         <div class="sub" id="invest-status"></div>
       </div>
       <div id="stage">
@@ -89,20 +92,10 @@
         <div id="title">AGIWAR<small>autonomous battle command</small></div>
         <div id="readout" class="panel-overlay">hover a unit to inspect it</div>
       </div>
-      <div id="controls">
-        <div id="camps"></div>
-      </div>
+      <div id="controls"></div>
       <div id="right">
         <h4>Command log</h4>
         <div id="fglog"></div>
-        <h4 id="fg-label" style="margin-top:6px">Field General</h4>
-        <div class="sub">Live, event-gated overrides — then units revert to native training.</div>
-        <textarea id="fg-prompt" style="min-height:64px;max-height:84px;flex:0 0 auto"></textarea>
-        <div class="row">
-          <button id="fg-rebrief">Re-brief</button>
-          <button data-order="push">Push all</button>
-          <button data-order="defend">Recall all</button>
-        </div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -18,11 +18,12 @@ const stage = document.getElementById("stage")!;
 const noticeEl = document.getElementById("notice")!;
 const readoutEl = document.getElementById("readout")!;
 const econEl = document.getElementById("econ")!;
-const campsEl = document.getElementById("camps")!;
 
 let latestState: StateMsg | null = null;
 let latestCamps: Camp[] = [];
 let latestTurretBudget = 0;
+let latestField: FieldGeneral | null = null;
+let latestAdvisor: FieldGeneral | null = null;
 let hovered: UnitState | null = null;
 
 const app = new Application();
@@ -156,7 +157,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state") { latestState = msg; render(msg); }
-    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); syncAdvisor(msg.advisor); }
+    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
   };
@@ -188,16 +189,6 @@ const investStatusEl = document.getElementById("invest-status")!;
 function syncInvest(levels: Record<string, number>) {
   investStatusEl.textContent = "Upgrades: " + INVESTMENTS.map((inv) => `${inv.label.slice(0, 4)} Lv${levels[inv.kind] || 0}`).join(" · ");
 }
-
-// ---- investment advisor editor (bottom-left) ----
-let advBuilt = false;
-function syncAdvisor(a: FieldGeneral) {
-  document.getElementById("adv-label")!.textContent = a.label;
-  const ta = document.getElementById("adv-prompt") as HTMLTextAreaElement;
-  if (!advBuilt) { ta.value = a.prompt; advBuilt = true; }
-}
-(document.getElementById("adv-update") as HTMLButtonElement).onclick = () =>
-  sendCmd({ type: "editAdvisor", prompt: (document.getElementById("adv-prompt") as HTMLTextAreaElement).value });
 
 // ---- rendering ----
 function render(s: StateMsg) {
@@ -329,38 +320,58 @@ function updateReadout() {
     `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
 }
 
-// ---- camp panels: doctrine editor only (budget/unit live in the Sankey chart) ----
-let built = false;
+// ---- the 6 commanders: one cohesive bottom strip. Each shows its accumulated MEMORY above
+//      a message box; sending a message appends to that commander's memory (server-side). ----
+const controlsEl = document.getElementById("controls")!;
+const COMMANDERS: { id: string; kind: "advisor" | "camp" | "field"; cls: string }[] = [
+  { id: "advisor", kind: "advisor", cls: "" },
+  { id: "aggressive", kind: "camp", cls: "agg" },
+  { id: "recon", kind: "camp", cls: "rec" },
+  { id: "defensive", kind: "camp", cls: "def" },
+  { id: "builder", kind: "camp", cls: "bld" },
+  { id: "field", kind: "field", cls: "" },
+];
+let cmdBuilt = false;
+const setText = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t; };
 
-function syncCamps(camps: Camp[]) {
-  if (!built) { buildCamps(camps); built = true; }
-  for (const c of camps) {
-    const now = Date.now();
-    const remain = Math.max(0, Math.ceil((c.cooldownUntil - now) / 1000));
-    const btn = document.getElementById(`btn-${c.id}`) as HTMLButtonElement;
-    btn.disabled = c.compiling || remain > 0;
-    document.getElementById(`cool-${c.id}`)!.textContent = c.compiling ? "compiling…" : remain > 0 ? `cooldown: ${remain}s` : "";
-    document.getElementById(`spec-${c.id}`)!.textContent =
-      `agg ${c.spec.aggression.toFixed(2)} · engage ${c.spec.engageRange} · retreat<${(c.spec.retreatHealthPct * 100) | 0}% · explore ${c.spec.explorationBias.toFixed(2)} · leash ${c.spec.defendRadius ?? "none"}`;
+function buildCommanders() {
+  controlsEl.innerHTML = "";
+  for (const c of COMMANDERS) {
+    const div = document.createElement("div");
+    div.className = "cmd";
+    div.innerHTML =
+      `<h4 class="${c.cls}" id="lbl-${c.id}">…</h4>` +
+      `<div class="mem" id="mem-${c.id}"></div>` +
+      (c.kind === "camp" ? `<div class="spec" id="spec-${c.id}"></div><span class="cool" id="cool-${c.id}"></span>` : "") +
+      `<div class="cmdrow"><input id="in-${c.id}" placeholder="message…"/><button class="send" id="send-${c.id}">Send</button></div>`;
+    controlsEl.appendChild(div);
+    const send = () => {
+      const inp = document.getElementById(`in-${c.id}`) as HTMLInputElement;
+      const text = inp.value.trim();
+      if (!text) return;
+      inp.value = "";
+      if (c.kind === "camp") sendCmd({ type: "editPrompt", camp: c.id, prompt: text });
+      else if (c.kind === "field") sendCmd({ type: "editFieldGeneral", prompt: text });
+      else sendCmd({ type: "editAdvisor", prompt: text });
+    };
+    (document.getElementById(`send-${c.id}`) as HTMLButtonElement).onclick = send;
+    (document.getElementById(`in-${c.id}`) as HTMLInputElement).addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   }
+}
+function syncCommanders() {
+  if (!cmdBuilt) { buildCommanders(); cmdBuilt = true; }
+  for (const c of latestCamps) {
+    setText(`lbl-${c.id}`, c.label);
+    setText(`mem-${c.id}`, c.prompt);
+    setText(`spec-${c.id}`, `agg ${c.spec.aggression.toFixed(2)} · eng ${c.spec.engageRange} · expl ${c.spec.explorationBias.toFixed(2)} · leash ${c.spec.defendRadius ?? "—"}`);
+    const remain = Math.max(0, Math.ceil((c.cooldownUntil - Date.now()) / 1000));
+    setText(`cool-${c.id}`, c.compiling ? "compiling…" : remain > 0 ? `recompiles in ${remain}s` : "");
+  }
+  if (latestField) { setText("lbl-field", latestField.label); setText("mem-field", latestField.prompt); }
+  if (latestAdvisor) { setText("lbl-advisor", latestAdvisor.label); setText("mem-advisor", latestAdvisor.prompt); }
   if (!dragId()) renderSankey();
 }
-function buildCamps(camps: Camp[]) {
-  campsEl.innerHTML = "";
-  for (const c of camps) {
-    const div = document.createElement("div");
-    div.className = "camp";
-    div.innerHTML =
-      `<h4 class="${DOCTRINE_CLASS[c.id]}">${c.label}</h4>` +
-      `<textarea id="ta-${c.id}">${c.prompt}</textarea>` +
-      `<div class="row"><button id="btn-${c.id}">Retrain</button><span class="cool" id="cool-${c.id}"></span></div>` +
-      `<div class="spec" id="spec-${c.id}"></div>`;
-    campsEl.appendChild(div);
-    (document.getElementById(`btn-${c.id}`) as HTMLButtonElement).onclick = () =>
-      sendCmd({ type: "editPrompt", camp: c.id, prompt: (document.getElementById(`ta-${c.id}`) as HTMLTextAreaElement).value });
-  }
-}
-setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown
+setInterval(() => { if (latestCamps.length) syncCommanders(); }, 250); // live cooldown countdown
 
 // ---- interactive Sankey: Income → Attack/Intel/Defense/Savings → unit outputs ----
 const NS = "http://www.w3.org/2000/svg";
@@ -477,21 +488,4 @@ window.addEventListener("pointerup", () => {
   else if (dragMixId && dragMixUnit) { sendCmd({ type: "setMix", camp: dragMixId, unit: dragMixUnit, weight: dragMixW }); dragMixId = null; dragMixUnit = null; }
 });
 
-// ---- field general doctrine editor ----
-let fgBuilt = false;
-function syncFieldGeneral(fg: FieldGeneral) {
-  document.getElementById("fg-label")!.textContent = fg.label;
-  const ta = document.getElementById("fg-prompt") as HTMLTextAreaElement;
-  if (!fgBuilt) { ta.value = fg.prompt; fgBuilt = true; } // set once; don't clobber active typing
-}
-(document.getElementById("fg-rebrief") as HTMLButtonElement).onclick = () =>
-  sendCmd({ type: "editFieldGeneral", prompt: (document.getElementById("fg-prompt") as HTMLTextAreaElement).value });
-
-// ---- field general manual override buttons ----
-for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) {
-  btn.onclick = () => {
-    const kind = btn.dataset.order as "push" | "defend";
-    sendCmd({ type: "fieldOrder", order: { kind, target: "all", durationTicks: 100, label: kind === "push" ? "Push enemy base" : "Defend base" } });
-  };
-}
 

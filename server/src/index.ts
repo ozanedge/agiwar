@@ -53,6 +53,13 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
   send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral, advisor: g.players[player].advisor, turretBudget: g.players[player].turretBudget });
 
+// every user message APPENDS to a commander's memory (kept to the last ~14 lines)
+const appendMemory = (cur: string, msg: string): string => {
+  const add = msg.trim();
+  if (!add) return cur;
+  return (cur + "\n• " + add).split("\n").map((s) => s.trim()).filter(Boolean).slice(-14).join("\n");
+};
+
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
   spawnUnit(g, player, null, "turret", { x: b.x + (player === 0 ? 1 : -1) * 3, y: b.y }); // starting strongpoint
@@ -229,18 +236,20 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   }
 
   if (msg.type === "editAdvisor") {
-    g.players[player].advisor.prompt = msg.prompt;
+    const a = g.players[player].advisor;
+    a.prompt = appendMemory(a.prompt, msg.prompt);
     room.advisors[player]?.resetGate();
     sendOwnCamps(ws, g, player);
-    send(ws, { type: "notice", level: "info", text: `${g.players[player].advisor.label} re-briefed. Applies on next economic review.` });
+    send(ws, { type: "notice", level: "info", text: `${a.label} noted it — applies on next economic review.` });
     return;
   }
 
   if (msg.type === "editFieldGeneral") {
-    g.players[player].fieldGeneral.prompt = msg.prompt;
+    const fgn = g.players[player].fieldGeneral;
+    fgn.prompt = appendMemory(fgn.prompt, msg.prompt);
     room.runners[player]?.resetGate(); // apply on next decision (still bounded by 30s floor)
     sendOwnCamps(ws, g, player);
-    send(ws, { type: "notice", level: "info", text: `${g.players[player].fieldGeneral.label} re-briefed. Applies on next field decision.` });
+    send(ws, { type: "notice", level: "info", text: `${fgn.label} noted it — applies on next field decision.` });
     return;
   }
 
@@ -254,20 +263,21 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   if (msg.type === "editPrompt") {
     const camp = g.players[player].camps.find((c) => c.id === msg.camp);
     if (!camp) return;
+    camp.prompt = appendMemory(camp.prompt, msg.prompt); // always add to memory
     const now = wallClock();
     if (now < camp.cooldownUntil) {
-      send(ws, { type: "notice", level: "error", text: `${camp.label} is on cooldown — ${Math.ceil((camp.cooldownUntil - now) / 1000)}s.` });
+      sendOwnCamps(ws, g, player); // memory updated; recompile deferred
+      send(ws, { type: "notice", level: "info", text: `Noted for ${camp.label} — doctrine recompiles in ${Math.ceil((camp.cooldownUntil - now) / 1000)}s.` });
       return;
     }
     camp.compiling = true;
-    camp.prompt = msg.prompt;
     sendOwnCamps(ws, g, player); // reflect "compiling…"
-    const { spec, source } = await compilePolicy(msg.prompt);
+    const { spec, source } = await compilePolicy(camp.prompt); // compile the full memory
     camp.spec = spec;
     camp.compiling = false;
     camp.cooldownUntil = wallClock() + COOLDOWN_MS;
     sendOwnCamps(ws, g, player);
-    send(ws, { type: "notice", level: "info", text: `${camp.label} retrained via ${source}. Cooldown ${COOLDOWN_MS / 1000}s.` });
+    send(ws, { type: "notice", level: "info", text: `${camp.label} retrained via ${source}.` });
   }
 }
 
