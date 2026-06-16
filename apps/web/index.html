@@ -3,38 +3,65 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>agiwar — doctrine RTS</title>
+    <title>AGIWAR — autonomous battle command</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
     <style>
-      :root { color-scheme: dark; }
+      :root {
+        color-scheme: dark;
+        --bg-deep: #02060a;
+        --bg-panel: rgba(8, 14, 22, 0.85);
+        --grid: rgba(0, 255, 209, 0.06);
+        --accent: #00ffd1;
+        --accent-dim: #16b39a;
+        --warn: #ffb547;
+        --danger: #ff3860;
+        --text: #d8f6f0;
+        --edge: rgba(0, 255, 209, 0.25);
+      }
       * { box-sizing: border-box; }
-      body { margin: 0; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0f14; color: #cdd6e0; }
+      body { margin: 0; font: 12px/1.45 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg-deep); color: var(--text); letter-spacing: .01em; }
+      /* mission-control grid + scanlines over everything (clicks pass through) */
+      body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+        background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 46px 46px; }
+      body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 51; mix-blend-mode: screen;
+        background: repeating-linear-gradient(to bottom, rgba(0,255,209,.022) 0, rgba(0,255,209,.022) 1px, transparent 1px, transparent 3px); }
+
       #app { display: grid; grid-template-columns: 332px 1fr; grid-template-rows: 1fr 248px; height: 100vh; }
-      #left { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid #1d2733; padding: 10px; background: #0a0e13; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-      #left h4 { margin: 0; font-size: 12px; letter-spacing: .3px; }
-      #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; }
-      #controls { grid-column: 2; grid-row: 2; display: flex; gap: 10px; padding: 10px; border-top: 1px solid #1d2733; overflow-x: auto; align-items: stretch; background: #0a0e13; }
-      .panel { border: 1px solid #1d2733; border-radius: 6px; padding: 8px; min-width: 224px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+      #left { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #left h4 { margin: 0; }
+      #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
+      #controls { grid-column: 2; grid-row: 2; display: flex; gap: 10px; padding: 10px; border-top: 1px solid var(--edge); overflow-x: auto; align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      .panel { background: rgba(6, 12, 20, 0.6); border: 1px solid var(--edge); border-radius: 6px; padding: 9px; min-width: 224px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,255,209,.04), 0 0 18px rgba(0,255,209,.05); }
       #camps { display: flex; gap: 10px; }
-      .panel h4 { margin: 0; font-size: 12px; letter-spacing: .3px; }
-      textarea { width: 100%; flex: 1; min-height: 64px; background: #0e141b; color: #cdd6e0; border: 1px solid #243140; border-radius: 4px; padding: 6px; resize: none; font: inherit; }
-      button { background: #1b2532; color: #cdd6e0; border: 1px solid #2c3a4c; border-radius: 4px; padding: 5px 9px; cursor: pointer; font: inherit; }
-      button:hover:not(:disabled) { background: #243446; }
-      button:disabled { opacity: .45; cursor: not-allowed; }
-      button.active { background: #2c4a63; border-color: #4d7ba8; color: #eaf2fb; }
+      h4 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 7px rgba(0,255,209,.5); }
+      textarea { width: 100%; flex: 1; min-height: 64px; background: #04090e; color: var(--text); border: 1px solid rgba(0,255,209,.18); border-radius: 4px; padding: 6px; resize: none; font: inherit; }
+      textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 10px rgba(0,255,209,.2); }
+      button { background: rgba(0,255,209,.06); color: var(--text); border: 1px solid rgba(0,255,209,.28); border-radius: 4px; padding: 5px 9px; cursor: pointer; font: inherit; transition: background .12s, box-shadow .12s; }
+      button:hover:not(:disabled) { background: rgba(0,255,209,.16); box-shadow: 0 0 10px rgba(0,255,209,.25); }
+      button:disabled { opacity: .4; cursor: not-allowed; }
+      button.active { background: rgba(0,255,209,.22); border-color: var(--accent); color: #eafffb; box-shadow: 0 0 10px rgba(0,255,209,.3); }
       .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       .seg { display: flex; gap: 4px; flex-wrap: wrap; }
       .seg button { padding: 4px 7px; }
       #sankey { flex: 1; min-height: 0; display: block; width: 100%; touch-action: none; }
-      #sankey text { fill: #cdd6e0; font: 11px ui-monospace, monospace; pointer-events: none; }
+      #sankey text { fill: var(--text); font: 11px "JetBrains Mono", monospace; pointer-events: none; }
       #sankey .band { cursor: ns-resize; }
-      .sub { color: #6b7a8d; font-size: 11px; }
-      .spec { color: #7f8fa3; font-size: 10.5px; }
-      .cool { color: #e0a45a; font-size: 11px; }
-      .agg { color: #ff6b6b; } .rec { color: #5aa9ff; } .def { color: #5ad17a; }
-      #readout { position: absolute; left: 10px; bottom: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 8px 10px; max-width: 380px; pointer-events: none; }
-      #notice { position: absolute; left: 10px; top: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 6px 10px; }
-      #econ { position: absolute; left: 10px; top: 44px; background: #0e141bdd; border: 1px solid #2f5236; border-radius: 6px; padding: 6px 11px; color: #d6efb8; font-size: 14px; letter-spacing: .3px; }
-      #title { position: absolute; right: 10px; top: 10px; color: #6b7a8d; }
+      .sub { color: rgba(0,255,209,.45); font-size: 11px; }
+      .spec { color: var(--accent-dim); font-size: 10.5px; }
+      .cool { color: var(--warn); font-size: 11px; text-shadow: 0 0 6px rgba(255,181,71,.5); }
+      .agg { color: #ff5d73; } .rec { color: #5ab0ff; } .def { color: #2fe0bd; }
+      .panel-overlay { position: absolute; background: var(--bg-panel); backdrop-filter: blur(6px); border: 1px solid var(--edge); border-radius: 6px; box-shadow: 0 0 18px rgba(0,255,209,.07); }
+      #readout { left: 12px; bottom: 12px; padding: 9px 11px; max-width: 380px; pointer-events: none; }
+      #notice { left: 12px; top: 12px; padding: 7px 11px; color: var(--accent); }
+      #econ { left: 12px; top: 50px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
+      #title { right: 14px; top: 12px; font-size: 17px; font-weight: 700; letter-spacing: .34em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); pointer-events: none; }
+      #title small { display: block; font-size: 9px; letter-spacing: .18em; color: rgba(0,255,209,.45); text-shadow: none; text-align: right; margin-top: 2px; }
+      * { scrollbar-width: thin; scrollbar-color: rgba(0,255,209,.18) transparent; }
+      *::-webkit-scrollbar { width: 8px; height: 8px; }
+      *::-webkit-scrollbar-thumb { background: rgba(0,255,209,.18); border-radius: 4px; }
+      *::-webkit-scrollbar-thumb:hover { background: rgba(0,255,209,.32); }
     </style>
   </head>
   <body>
@@ -45,10 +72,10 @@
         <div class="sub">drag a <b>camp band</b> to set its % of income · drag a <b>unit band</b> to set that camp's mix</div>
       </div>
       <div id="stage">
-        <div id="notice"></div>
-        <div id="econ">⛃ —</div>
-        <div id="title">agiwar · author generals, not clicks</div>
-        <div id="readout">hover a unit to inspect it</div>
+        <div id="notice" class="panel-overlay"></div>
+        <div id="econ" class="panel-overlay">⛃ —</div>
+        <div id="title">AGIWAR<small>autonomous battle command</small></div>
+        <div id="readout" class="panel-overlay">hover a unit to inspect it</div>
       </div>
       <div id="controls">
         <div id="camps"></div>

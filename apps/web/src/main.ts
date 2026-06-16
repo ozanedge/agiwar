@@ -5,10 +5,11 @@ import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, type UnitType } from "
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
-// Primary color = SIDE (all your units share it). Doctrine is shown as an accent outline.
-const OWN_COLOR = 0x4aa3ff;
-const ENEMY_COLOR = 0xff6a5a;
-const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
+// Skynetops mission-control palette. Primary color = SIDE (yours cyan, enemy danger-red);
+// doctrine is shown as an accent outline.
+const OWN_COLOR = 0x00ffd1;
+const ENEMY_COLOR = 0xff3860;
+const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff5d73, recon: 0x5ab0ff, defensive: 0x2fe0bd };
 const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def" };
 const BUDGET_NAME: Record<DoctrineId, string> = { aggressive: "Attack", recon: "Intel", defensive: "Defense" };
 const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
@@ -24,7 +25,7 @@ let latestCamps: Camp[] = [];
 let hovered: UnitState | null = null;
 
 const app = new Application();
-await app.init({ background: 0x0a141d, resizeTo: stage, antialias: true, resolution: window.devicePixelRatio || 1, autoDensity: true });
+await app.init({ background: 0x02060a, resizeTo: stage, antialias: true, resolution: window.devicePixelRatio || 1, autoDensity: true });
 stage.appendChild(app.canvas);
 
 // ---- isometric world ----
@@ -57,7 +58,8 @@ function tint(hex: number, f: number): number {
 // small deterministic hash for decoration placement
 const dhash = (a: number, b: number) => { let n = (Math.imul(a, 2654435761) ^ Math.imul(b, 40503)) >>> 0; n ^= n >>> 15; return (n >>> 0) / 4294967296; };
 
-const KIND_COLOR: Record<TerrainKind, number> = { water: 0x17506e, sand: 0xcdba83, grass: 0x3f7d3a, highland: 0x6f7e3c, rock: 0x8c8478 };
+// darker, desaturated/teal-shifted terrain so neon units + cyan HUD pop on top
+const KIND_COLOR: Record<TerrainKind, number> = { water: 0x06303d, sand: 0x5b5638, grass: 0x163a2a, highland: 0x2b3a28, rock: 0x2e3848 };
 const elevAt = (gx: number, gy: number, seed: number, W: number, H: number) => terrainAt(gx, gy, seed, W, H).elev;
 
 function decorate(g: Graphics, kind: TerrainKind, gx: number, gy: number, seed: number, cx: number, cy: number) {
@@ -181,9 +183,10 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
   const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
-  // big iso fortress: shadow → stone platform → flanking towers → central keep → flag → hp
-  g.ellipse(cx, cy + TILE_H * 1.0, TILE_W * 2.5, TILE_H * 1.7).fill({ color: 0x000000, alpha: 0.3 });
-  isoBox(g, cx, cy + TILE_H * 1.3, TILE_W * 2.0, TILE_H * 2.0, 11, 0x5d6470); // platform
+  // big iso fortress: shadow → team glow → stone platform → flanking towers → central keep → flag → hp
+  g.ellipse(cx, cy + TILE_H * 1.0, TILE_W * 2.5, TILE_H * 1.7).fill({ color: 0x000000, alpha: 0.32 });
+  g.ellipse(cx, cy + TILE_H * 0.9, TILE_W * 3.0, TILE_H * 2.1).fill({ color: team, alpha: 0.12 }); // team glow
+  isoBox(g, cx, cy + TILE_H * 1.3, TILE_W * 2.0, TILE_H * 2.0, 11, 0x3a4250); // platform
   isoBox(g, cx - TILE_W * 1.25, cy + TILE_H * 0.5, TILE_W * 0.5, TILE_H * 0.5, TILE_H * 3.2, tint(team, -0.12)); // L tower
   isoBox(g, cx + TILE_W * 1.25, cy + TILE_H * 0.5, TILE_W * 0.5, TILE_H * 0.5, TILE_H * 3.2, tint(team, -0.12)); // R tower
   const keepH = TILE_H * 4.6, keepBaseY = cy + TILE_H * 0.2;
@@ -204,8 +207,9 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
   const dark = tint(side, -0.28), light = tint(side, 0.28);
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2; // accent outline = doctrine (neutral for buildings)
   const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
-  g.ellipse(cx, cy + 2, 9, 4).fill({ color: 0x000000, alpha: 0.28 }); // ground shadow
+  g.ellipse(cx, cy + 2, 9, 4).fill({ color: 0x000000, alpha: 0.32 }); // ground shadow
   const rad = u.unit === "tank" || u.unit === "turret" ? 9 : 7;
+  g.ellipse(cx, cy + 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.16 }); // neon glow
 
   if (u.unit === "tank") {
     const by = cy - 5;
@@ -295,7 +299,7 @@ setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // 
 // ---- interactive Sankey: Income → Attack/Intel/Defense/Savings → unit outputs ----
 const NS = "http://www.w3.org/2000/svg";
 const sankeyEl = document.getElementById("sankey") as unknown as SVGSVGElement;
-const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff6b6b", recon: "#5aa9ff", defensive: "#5ad17a" };
+const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff5d73", recon: "#5ab0ff", defensive: "#2fe0bd" };
 const S_TOP = 22; // room for the income label
 let S_HC = 600; // usable chart height; recomputed from the panel each render
 // two kinds of drag: a camp's budget share, or a unit's weight within a camp
