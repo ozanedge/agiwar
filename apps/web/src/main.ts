@@ -335,7 +335,8 @@ let cmdBuilt = false;
 const setText = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t; };
 
 function buildCommanders() {
-  controlsEl.innerHTML = "";
+  const advParent = document.getElementById("cmd-advisor")!, fieldParent = document.getElementById("cmd-field")!;
+  controlsEl.innerHTML = ""; advParent.innerHTML = ""; fieldParent.innerHTML = "";
   for (const c of COMMANDERS) {
     const div = document.createElement("div");
     div.className = "cmd";
@@ -344,7 +345,7 @@ function buildCommanders() {
       `<div class="mem" id="mem-${c.id}"></div>` +
       (c.kind === "camp" ? `<div class="spec" id="spec-${c.id}"></div><span class="cool" id="cool-${c.id}"></span>` : "") +
       `<div class="cmdrow"><input id="in-${c.id}" placeholder="message…"/><button class="send" id="send-${c.id}">Send</button></div>`;
-    controlsEl.appendChild(div);
+    (c.kind === "advisor" ? advParent : c.kind === "field" ? fieldParent : controlsEl).appendChild(div);
     const send = () => {
       const inp = document.getElementById(`in-${c.id}`) as HTMLInputElement;
       const text = inp.value.trim();

@@ -33,7 +33,7 @@
       #left h4 { margin: 0; }
       #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
       #controls { grid-column: 2; grid-row: 2; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); overflow-x: auto; align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
-      .cmd { border: 1px solid var(--edge); border-radius: 6px; padding: 8px; min-width: 210px; flex: 1 1 0; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
+      .cmd { border: 1px solid var(--edge); border-radius: 6px; padding: 8px; min-width: 172px; flex: 1 1 0; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
       .cmd h4 { font-size: 11px; }
       .cmd .mem { flex: 1; min-height: 40px; max-height: 90px; overflow-y: auto; white-space: pre-wrap; font-size: 10px; line-height: 1.35; color: #9db8b2; border-left: 2px solid var(--accent-dim); padding: 3px 6px; background: rgba(0,255,209,.03); }
       .cmd .cmdrow { display: flex; gap: 4px; }
@@ -83,8 +83,9 @@
       <div id="left">
         <h4>Budget flow</h4>
         <svg id="sankey"></svg>
-        <div class="sub">set live by your commanders below</div>
+        <div class="sub">set live by your commanders</div>
         <div class="sub" id="invest-status"></div>
+        <div id="cmd-advisor" style="margin-top: auto"></div>
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
@@ -96,6 +97,7 @@
       <div id="right">
         <h4>Command log</h4>
         <div id="fglog"></div>
+        <div id="cmd-field"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
