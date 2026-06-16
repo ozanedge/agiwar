@@ -88,9 +88,9 @@
       #econ { left: 16px; top: 56px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
       #notice { left: 16px; top: 96px; padding: 7px 11px; color: var(--accent); max-width: 340px; }
       #notice:empty { display: none; } /* no stray empty bordered box when there's nothing to show */
-      #endscreen { position: absolute; inset: 0; z-index: 45; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; pointer-events: none; background: radial-gradient(circle at center, rgba(2,6,10,.45), rgba(2,6,10,.78)); }
+      #endscreen { position: fixed; inset: 0; z-index: 60; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; pointer-events: none; background: radial-gradient(circle at center, rgba(2,6,10,.45), rgba(2,6,10,.82)); }
       #endscreen.show { display: flex; animation: endfade .5s ease both; }
-      #endscreen .big { font-size: 13vw; font-weight: 700; letter-spacing: .32em; line-height: 1; transform-origin: center; animation: endin 1.05s cubic-bezier(.16,.9,.24,1) both; }
+      #endscreen .big { font-size: clamp(40px, 11vw, 180px); font-weight: 700; letter-spacing: .12em; line-height: 1; white-space: nowrap; max-width: 96vw; transform-origin: center; animation: endin 1.05s cubic-bezier(.16,.9,.24,1) both; }
       #endscreen .end2 { font-size: 15px; letter-spacing: .22em; color: var(--text); opacity: 0; animation: endfade .7s ease .75s forwards; }
       #endscreen.win .big { color: var(--accent); text-shadow: 0 0 60px rgba(0,255,209,.7), 0 0 18px rgba(0,255,209,.95); }
       #endscreen.lose .big { color: var(--danger); text-shadow: 0 0 60px rgba(255,56,96,.7), 0 0 18px rgba(255,56,96,.95); }
