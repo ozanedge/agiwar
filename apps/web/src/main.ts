@@ -9,10 +9,10 @@ const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 // doctrine is shown as an accent outline.
 const OWN_COLOR = 0x00ffd1;
 const ENEMY_COLOR = 0xff3860;
-const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff5d73, recon: 0x5ab0ff, defensive: 0x2fe0bd };
-const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def" };
-const BUDGET_NAME: Record<DoctrineId, string> = { aggressive: "Attack", recon: "Intel", defensive: "Defense" };
-const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
+const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff5d73, recon: 0x5ab0ff, defensive: 0x2fe0bd, builder: 0xffb547 };
+const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def", builder: "bld" };
+const BUDGET_NAME: Record<DoctrineId, string> = { aggressive: "Attack", recon: "Intel", defensive: "Defense", builder: "Builder" };
+const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive", "builder"];
 
 const stage = document.getElementById("stage")!;
 const noticeEl = document.getElementById("notice")!;
@@ -371,7 +371,7 @@ setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // 
 // ---- interactive Sankey: Income → Attack/Intel/Defense/Savings → unit outputs ----
 const NS = "http://www.w3.org/2000/svg";
 const sankeyEl = document.getElementById("sankey") as unknown as SVGSVGElement;
-const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff5d73", recon: "#5ab0ff", defensive: "#2fe0bd" };
+const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff5d73", recon: "#5ab0ff", defensive: "#2fe0bd", builder: "#ffb547" };
 const S_TOP = 22; // room for the income label
 let S_HC = 600; // usable chart height; recomputed from the panel each render
 let sankeyPxPerPct = 3; // px of band height per 1% of budget (for drag mapping)
@@ -409,7 +409,7 @@ function renderSankey() {
 
   // Fit-based layout: 5 stacked bands (3 camps + turrets + savings) sum to `usable`, so the
   // chart never overflows. Each band = a floor + a share of the remainder by %.
-  const CAMP_MIN = 13, UNIT_MIN = 8, n = TRAINABLE.length, NB = 5;
+  const CAMP_MIN = 12, UNIT_MIN = 7, n = TRAINABLE.length, NB = camps.length + 2; // camps + turret + savings
   const usable = Math.max(40, S_HC - (NB - 1) * GAP);
   const remainder = Math.max(1, usable - NB * CAMP_MIN);
   sankeyPxPerPct = remainder / 100;

@@ -48,7 +48,7 @@ interface Summary {
 
 function summarize(g: GameState, player: number): Summary {
   const own = g.units.filter((u) => u.owner === player);
-  const byCamp: Record<string, number> = { aggressive: 0, recon: 0, defensive: 0 };
+  const byCamp: Record<string, number> = { aggressive: 0, recon: 0, defensive: 0, builder: 0 };
   let hpSum = 0;
   for (const u of own) { if (u.camp) byCamp[u.camp]++; hpSum += u.hp / u.maxHp; }
   const myBase = g.bases[player];

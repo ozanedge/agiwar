@@ -21,7 +21,7 @@ export interface BehaviorSpec {
   defendRadius: number | null;
 }
 
-export type DoctrineId = "aggressive" | "recon" | "defensive";
+export type DoctrineId = "aggressive" | "recon" | "defensive" | "builder";
 
 /** A camp general. Its `prompt` compiles to `spec`, which becomes the *native* doctrine
  *  of every unit trained at this camp. Edits are throttled by `cooldownUntil`. */

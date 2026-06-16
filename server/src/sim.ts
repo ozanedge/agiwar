@@ -6,8 +6,8 @@ import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 
-const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 5);
-const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 220); // ticks between spawns (~22s)
+const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
+const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 150); // ticks between spawns (~15s)
 const ARTIFACT_HP = 120;
 export type Bonus = { income: number; range: number; hp: number; damage: number };
 
@@ -22,11 +22,13 @@ const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 // default budget allocation per camp (% of income) + unit mix (weights). Players tune live.
 // Sum of budgets < 100 -> the remainder banks as savings for turrets.
 const DEFAULT_PROD: Record<DoctrineId, { budgetPct: number; mix: Partial<Record<UnitType, number>> }> = {
-  aggressive: { budgetPct: 35, mix: { gunner: 100 } }, // Attack budget
-  recon: { budgetPct: 15, mix: { humvee: 100 } }, // Intelligence budget
-  defensive: { budgetPct: 20, mix: { tank: 100 } }, // Defense budget
+  aggressive: { budgetPct: 30, mix: { gunner: 100 } }, // Attack budget
+  recon: { budgetPct: 10, mix: { humvee: 100 } }, // Intelligence budget
+  defensive: { budgetPct: 15, mix: { tank: 100 } }, // Defense budget
+  builder: { budgetPct: 10, mix: { humvee: 100 } }, // Builder budget — units hunt artifacts
 };
-const DEFAULT_TURRET_BUDGET = 15; // Attack35+Intel15+Defense20+Turret15 = 85 → 15% savings
+const DEFAULT_TURRET_BUDGET = 10; // 30+10+15+10 camps + 10 turret = 75 → 25% savings
+const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // builder auto-claim draws this from the bank
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
@@ -87,6 +89,7 @@ function makePlayer(): PlayerState {
       makeCamp("aggressive", "Gen. Vance · Aggressive"),
       makeCamp("recon", "Gen. Okafor · Recon"),
       makeCamp("defensive", "Gen. Reyes · Defensive"),
+      makeCamp("builder", "Gen. Singh · Builder"),
     ],
     fieldGeneral: { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT },
     resources: STARTING_RESOURCES,
@@ -280,6 +283,19 @@ function decide(g: GameState, u: UnitState) {
   const myBase = g.bases[u.owner];
   const mv = (tx: number, ty: number) => { if (canMove) moveToward(g, u, tx, ty); };
   const toBase = (owner: number) => { if (canMove) stepToBase(g, u, owner); }; // flow-field routed
+
+  // Builder doctrine: roam to the nearest neutral artifact and claim it (engineers, not fighters)
+  if (u.camp === "builder") {
+    let target: Artifact | null = null, td = Infinity;
+    for (const a of g.artifacts) if (a.owner < 0) { const d = cheb(u.x, u.y, a.x, a.y); if (d < td) { td = d; target = a; } }
+    if (!target) { if (canMove) explore(g, u); return; } // none known → scout for more
+    if (td <= 2) {
+      const p = g.players[u.owner];
+      if (p.resources >= CAPTURE_COST) { p.resources -= CAPTURE_COST; target.owner = u.owner; target.hp = target.maxHp; } // claim
+      // else: wait on it until the bank can afford the claim
+    } else mv(target.x, target.y);
+    return;
+  }
 
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {

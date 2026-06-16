@@ -27,6 +27,7 @@ export const PRESET_SPECS: Record<DoctrineId, BehaviorSpec> = {
   aggressive: { aggression: 0.95, engageRange: 30, retreatHealthPct: 0.05, explorationBias: 0.1, defendRadius: null },
   recon: { aggression: 0.1, engageRange: 3, retreatHealthPct: 0.6, explorationBias: 0.95, defendRadius: null },
   defensive: { aggression: 0.5, engageRange: 8, retreatHealthPct: 0.25, explorationBias: 0.0, defendRadius: 6 },
+  builder: { aggression: 0.1, engageRange: 2, retreatHealthPct: 0.5, explorationBias: 0.9, defendRadius: null },
 };
 
 export const PRESET_PROMPTS: Record<DoctrineId, string> = {
@@ -36,6 +37,8 @@ export const PRESET_PROMPTS: Record<DoctrineId, string> = {
     "Train troops as scouts. Roam the map and explore unknown territory. Avoid combat: keep your distance from enemies and flee early if threatened.",
   defensive:
     "Train troops to defend the home base. Hold a tight perimeter and only engage enemies that come close to base. Do not chase or wander.",
+  builder:
+    "Send engineers out to find resources and artifacts across the map and claim them for our side. Avoid combat — secure territory, not kills.",
 };
 
 /** Deterministic keyword fallback compiler. Used when Bedrock is unreachable so the
