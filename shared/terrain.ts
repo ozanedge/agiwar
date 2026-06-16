@@ -47,7 +47,9 @@ function ridgeNoise(x: number, y: number, seed: number): number {
 
 /** The two base spots — MUST match sim newGame() base positions. */
 export function baseSpots(W: number, H: number) {
-  return [{ x: 4 * GRID_SCALE, y: H >> 1 }, { x: W - 5 * GRID_SCALE, y: H >> 1 }];
+  // player (owner 0) on the SOUTHWEST wall (gy = H edge → bottom-left of screen); enemy on the
+  // NORTHEAST wall (gy = 0). March is along −gy, which projects to "up and to the right".
+  return [{ x: W >> 1, y: H - 5 * GRID_SCALE }, { x: W >> 1, y: 5 * GRID_SCALE }];
 }
 
 export function terrainAt(gx: number, gy: number, seed: number, W: number, H: number): Tile {

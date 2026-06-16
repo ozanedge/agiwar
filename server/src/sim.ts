@@ -114,8 +114,9 @@ export const DEFAULT_ADVISOR_PROMPT =
 
 export function newGame(seed = 1): GameState {
   const bases: BaseState[] = [
-    { owner: 0, x: 4 * GRID_SCALE, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
-    { owner: 1, x: GRID_W - 5 * GRID_SCALE, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
+    // owner 0 = SW wall (bottom-left), owner 1 = NE wall (top-right) — MUST match baseSpots()
+    { owner: 0, x: GRID_W >> 1, y: GRID_H - 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
+    { owner: 1, x: GRID_W >> 1, y: 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
   ];
   const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], players: [makePlayer(), makePlayer()], flow: [], nextUnitId: 1, nextArtifactId: 1 };
   g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
@@ -190,10 +191,10 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
     owner,
     camp,
     unit: type,
-    dx: owner === 0 ? 1 : -1, // start facing the enemy
-    dy: 0,
-    x: pos ? pos.x : base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)) * GRID_SCALE,
-    y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y + (-2 + (jitter % 5)) * GRID_SCALE)),
+    dx: 0,
+    dy: owner === 0 ? -1 : 1, // start facing the enemy (player 0 marches −gy = up/right on screen)
+    x: pos ? pos.x : Math.max(0, Math.min(GRID_W - 1, base.x + (-2 + (jitter % 5)) * GRID_SCALE)), // lateral spread
+    y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y + (owner === 0 ? -1 : 1) * (1 + (jitter % 3)) * GRID_SCALE)), // step out toward the field
     hp,
     maxHp: hp,
     overrideUntil: 0,

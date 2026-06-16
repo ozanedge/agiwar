@@ -62,7 +62,7 @@ const appendMemory = (cur: string, msg: string): string => {
 
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
-  spawnUnit(g, player, null, "turret", { x: b.x + (player === 0 ? 1 : -1) * 3 * GRID_SCALE, y: b.y }); // starting strongpoint
+  spawnUnit(g, player, null, "turret", { x: b.x, y: b.y + (player === 0 ? -1 : 1) * 3 * GRID_SCALE }); // starting strongpoint, toward the field
   if (bot) { for (let i = 0; i < 4; i++) spawnUnit(g, player, "aggressive"); return; }
   for (const c of ["aggressive", "recon", "defensive"] as const) { spawnUnit(g, player, c); spawnUnit(g, player, c); }
 }
