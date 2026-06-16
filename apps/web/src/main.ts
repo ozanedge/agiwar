@@ -322,6 +322,16 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
   }
 }
 
+// the body's flat footprint, used for the stacked "height" layers below the detailed top
+function drawSilhouette(g: Graphics, type: UnitType, color: number) {
+  if (type === "tank") g.roundRect(-10, -7.5, 20, 15, 3).fill(color);
+  else if (type === "humvee") g.roundRect(-9, -6, 18, 12, 3).fill(color);
+  else if (type === "gunner") g.roundRect(-3.5, -3.5, 8, 7, 3).fill(color);
+  else if (type === "drone") g.circle(0, 0, 3.6).fill(color);
+  else g.circle(0, 0, 6.2).fill(color); // turret housing
+}
+const UNIT_HEIGHT: Record<string, number> = { tank: 7, turret: 8, humvee: 5, gunner: 5, drone: 2 };
+
 function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   const cont = new Container();
   const elev = elevAt(u.x, u.y, s.seed, s.gridW, s.gridH);
@@ -340,21 +350,27 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   if (u.unit === "turret") base.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(ln);
   cont.addChild(base);
 
-  // Project the sprite onto the iso ground plane: draw it top-down (forward = +x grid),
-  // rotate by heading in GRID space, then the wrapper applies the world's iso transform
-  // (rotate the grid 45° + squash vertically 2:1) so it lies on the tilted ground like the map.
-  const isoWrap = new Container();
-  isoWrap.position.set(0, -lift);
-  isoWrap.scale.set(1, 0.62); // iso ground squash (a bit taller than true 0.5 so units keep some volume)
-  const body = new Graphics();
-  drawBody(body, u.unit, side, ln, acc);
-  body.rotation = Math.atan2(u.dy, u.dx) + Math.PI / 4; // grid heading, rotated into iso space
-  isoWrap.addChild(body);
-  cont.addChild(isoWrap);
+  // Volume via z-stacking: the iso-projected footprint is drawn many times, each ~1px higher
+  // in screen space (dark base → lit top), with the detailed sprite as the top face. The
+  // peeking rims of the lower layers read as the unit's sides — real iso height, no assets.
+  const heading = Math.atan2(u.dy, u.dx) + Math.PI / 4; // grid heading rotated into iso space
+  const H = UNIT_HEIGHT[u.unit], SP = 1.3;
+  for (let i = 0; i <= H; i++) {
+    const wrap = new Container();
+    wrap.position.set(0, -(lift + i * SP)); // each layer higher in SCREEN space (true vertical)
+    wrap.scale.set(1, 0.62); // iso ground squash
+    const g = new Graphics();
+    g.rotation = heading;
+    if (i === H) drawBody(g, u.unit, side, ln, acc); // detailed top face
+    else drawSilhouette(g, u.unit, tint(side, -0.5 + (i / H) * 0.38)); // side layers, darker at the base
+    wrap.addChild(g);
+    cont.addChild(wrap);
+  }
 
-  const top = new Graphics(); // never rotates: hp bar + override ring
-  if (u.hp < u.maxHp) top.rect(-rad, -lift - rad - 5, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
-  if (u.overrideUntil > s.tick) top.circle(0, -lift, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+  const top = new Graphics(); // never rotates: hp bar + override ring, above the stacked volume
+  const topY = lift + H * 1.3 + rad * 0.4;
+  if (u.hp < u.maxHp) top.rect(-rad, -topY - 6, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
+  if (u.overrideUntil > s.tick) top.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
   cont.addChild(top);
 
   cont.eventMode = "static";
