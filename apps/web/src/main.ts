@@ -340,11 +340,17 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   if (u.unit === "turret") base.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(ln);
   cont.addChild(base);
 
-  const body = new Graphics(); // rotates to face heading (iso-projected)
+  // Project the sprite onto the iso ground plane: draw it top-down (forward = +x grid),
+  // rotate by heading in GRID space, then the wrapper applies the world's iso transform
+  // (rotate the grid 45° + squash vertically 2:1) so it lies on the tilted ground like the map.
+  const isoWrap = new Container();
+  isoWrap.position.set(0, -lift);
+  isoWrap.scale.set(1, 0.62); // iso ground squash (a bit taller than true 0.5 so units keep some volume)
+  const body = new Graphics();
   drawBody(body, u.unit, side, ln, acc);
-  body.position.set(0, -lift);
-  body.rotation = (u.dx || u.dy) ? Math.atan2((u.dx + u.dy) * (TILE_H / 2), (u.dx - u.dy) * (TILE_W / 2)) : 0;
-  cont.addChild(body);
+  body.rotation = Math.atan2(u.dy, u.dx) + Math.PI / 4; // grid heading, rotated into iso space
+  isoWrap.addChild(body);
+  cont.addChild(isoWrap);
 
   const top = new Graphics(); // never rotates: hp bar + override ring
   if (u.hp < u.maxHp) top.rect(-rad, -lift - rad - 5, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
