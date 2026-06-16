@@ -68,6 +68,7 @@ export interface StateMsg {
   tick: number;
   gridW: number;
   gridH: number;
+  seed: number; // per-match map seed -> deterministic shared terrain
   units: UnitState[];
   bases: BaseState[];
   you: number; // which player index this client controls

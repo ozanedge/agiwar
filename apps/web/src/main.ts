@@ -16,13 +16,99 @@ const campsEl = document.getElementById("camps")!;
 let latestState: StateMsg | null = null;
 let latestCamps: Camp[] = [];
 let hovered: UnitState | null = null;
-let cell = 16;
 
 const app = new Application();
-await app.init({ background: 0x0b0f14, resizeTo: stage, antialias: true });
+await app.init({ background: 0x0a141d, resizeTo: stage, antialias: true });
 stage.appendChild(app.canvas);
-const world = new Container();
+
+// ---- isometric world ----
+const TILE_W = 36, TILE_H = 18; // 2:1 isometric diamond
+const world = new Container(); // camera-transformed
 app.stage.addChild(world);
+const terrainLayer = new Graphics(); // built once per (seed, size)
+const entityLayer = new Container(); // bases + units, painter-sorted
+entityLayer.sortableChildren = true;
+world.addChild(terrainLayer, entityLayer);
+
+const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
+const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
+
+// deterministic value-noise terrain (matches the server-provided seed)
+function h2(x: number, y: number, seed: number): number {
+  let n = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 2246822519)) >>> 0;
+  n = (n ^ (n >>> 13)) >>> 0; n = Math.imul(n, 1274126177) >>> 0;
+  return (n >>> 0) / 4294967296;
+}
+function vnoise(x: number, y: number, seed: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = h2(xi, yi, seed), b = h2(xi + 1, yi, seed), c = h2(xi, yi + 1, seed), d = h2(xi + 1, yi + 1, seed);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+function fbm(x: number, y: number, seed: number): number {
+  let sum = 0, amp = 0.55, f = 1;
+  for (let o = 0; o < 4; o++) { sum += amp * vnoise(x * f, y * f, seed + o * 131); f *= 2; amp *= 0.5; }
+  return sum;
+}
+function tint(hex: number, f: number): number {
+  let r = (hex >> 16) & 255, g = (hex >> 8) & 255, b = hex & 255;
+  if (f >= 0) { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; }
+  else { r *= 1 + f; g *= 1 + f; b *= 1 + f; }
+  return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+}
+function biome(gx: number, gy: number, seed: number): { col: number; elev: number } {
+  const h = fbm(gx / 16, gy / 16, seed);
+  const micro = (h2(gx, gy, seed + 777) - 0.5) * 0.14;
+  if (h < 0.34) return { col: tint(0x17506e, micro * 0.4), elev: 0 };       // water
+  if (h < 0.39) return { col: tint(0xcdba83, micro), elev: 1 };             // sand
+  if (h < 0.62) return { col: tint(0x3f7d3a, micro), elev: 2 + (h - 0.39) * 34 }; // grass
+  if (h < 0.77) return { col: tint(0x6f7e3c, micro), elev: 2 + (h - 0.39) * 34 }; // highland
+  return { col: tint(0x8c8478, micro), elev: 2 + (h - 0.39) * 34 };          // rock
+}
+const elevAt = (gx: number, gy: number, seed: number) => biome(gx, gy, seed).elev;
+
+let terrainKey = "";
+function buildTerrain(seed: number, W: number, H: number) {
+  terrainLayer.clear();
+  for (let sum = 0; sum <= W + H - 2; sum++) { // painter order: far tiles first
+    for (let gx = Math.max(0, sum - (H - 1)); gx <= Math.min(W - 1, sum); gx++) {
+      const gy = sum - gx;
+      const { col, elev } = biome(gx, gy, seed);
+      const cx = isoX(gx, gy), cy = isoY(gx, gy) - elev;
+      const groundY = isoY(gx, gy);
+      if (elev > 2) { // earthy side walls for relief
+        terrainLayer.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.4));
+        terrainLayer.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.22));
+      }
+      terrainLayer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
+    }
+  }
+  terrainKey = `${seed}:${W}:${H}`;
+}
+
+// ---- camera (pan + zoom), centered on your base ----
+const cam = { scale: 1 };
+function centerOnBase(s: StateMsg) {
+  const mine = s.bases.find((b) => b.owner === s.you) ?? s.bases[0];
+  if (!mine) return;
+  cam.scale = 1; world.scale.set(1);
+  world.x = app.screen.width / 2 - isoX(mine.x, mine.y);
+  world.y = app.screen.height / 2 - isoY(mine.x, mine.y);
+}
+let dragging = false, lastX = 0, lastY = 0;
+app.canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener("pointerup", () => { dragging = false; });
+window.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  world.x += e.clientX - lastX; world.y += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY;
+});
+app.canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const ns = Math.max(0.4, Math.min(2.6, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const r = app.canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  world.x = mx - (mx - world.x) * (ns / cam.scale); world.y = my - (my - world.y) * (ns / cam.scale);
+  cam.scale = ns; world.scale.set(ns);
+}, { passive: false });
 
 // ---- networking ----
 let ws: WebSocket;
@@ -49,44 +135,49 @@ function showNotice(text: string, level: string) {
 
 // ---- rendering ----
 function render(s: StateMsg) {
-  cell = Math.floor(Math.min(app.screen.width / s.gridW, app.screen.height / s.gridH));
-  world.removeChildren();
-
-  const grid = new Graphics();
-  grid.rect(0, 0, s.gridW * cell, s.gridH * cell).fill(0x0e141b).stroke({ color: 0x16202b, width: 1 });
-  world.addChild(grid);
-
-  for (const b of s.bases) {
-    const g = new Graphics();
-    const col = b.owner === s.you ? 0x9fd2ff : 0xffae8f; // own base blue, enemy orange
-    g.rect(b.x * cell - cell, b.y * cell - cell, cell * 2.4, cell * 2.4).fill({ color: col, alpha: 0.18 }).stroke({ color: col, width: 2 });
-    const hpw = (b.hp / b.maxHp) * cell * 2.4;
-    g.rect(b.x * cell - cell, b.y * cell - cell - 6, hpw, 3).fill(col);
-    world.addChild(g);
-  }
-
-  for (const u of s.units) {
-    const overridden = u.overrideUntil > s.tick;
-    const g = new Graphics();
-    const cx = u.x * cell + cell / 2, cy = u.y * cell + cell / 2;
-    const color = DOCTRINE_COLOR[u.camp]; // color = doctrine
-    const dim = u.owner === s.you ? 1 : 0.45; // enemy units dimmed
-    // shape + size = unit type: ■ tank (big) · ● gunner (mid) · ▲ humvee (small/fast)
-    const r = Math.max(2.5, cell * (u.unit === "tank" ? 0.46 : u.unit === "gunner" ? 0.36 : 0.3));
-    if (u.unit === "tank") g.rect(cx - r, cy - r, r * 2, r * 2);
-    else if (u.unit === "gunner") g.circle(cx, cy, r);
-    else g.poly([cx, cy - r, cx + r, cy + r, cx - r, cy + r]);
-    g.fill({ color, alpha: dim });
-    if (u.hp < u.maxHp) g.rect(cx - r, cy - r - 3, (u.hp / u.maxHp) * r * 2, 1.5).fill(0xcdd6e0);
-    if (overridden) g.circle(cx, cy, r + 3).stroke({ color: 0xffd76b, width: 1, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
-    g.eventMode = "static";
-    g.cursor = "pointer";
-    g.on("pointerover", () => { hovered = u; updateReadout(); });
-    g.on("pointerout", () => { if (hovered?.id === u.id) { hovered = null; updateReadout(); } });
-    world.addChild(g);
-  }
+  if (terrainKey !== `${s.seed}:${s.gridW}:${s.gridH}`) { buildTerrain(s.seed, s.gridW, s.gridH); centerOnBase(s); }
+  entityLayer.removeChildren();
+  for (const b of s.bases) entityLayer.addChild(makeBase(b, s));
+  for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
+}
+
+function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
+  const g = new Graphics();
+  const elev = elevAt(b.x, b.y, s.seed);
+  const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
+  const col = b.owner === s.you ? 0x6fb7ff : 0xff9d6f;
+  const H = TILE_H * 2.6;
+  // two walls + roof = a little iso keep
+  g.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, cy + TILE_H / 2 - H, cx - TILE_W / 2, cy - H]).fill(tint(col, -0.42));
+  g.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, cy + TILE_H / 2 - H, cx + TILE_W / 2, cy - H]).fill(tint(col, -0.24));
+  g.poly([cx, cy - TILE_H / 2 - H, cx + TILE_W / 2, cy - H, cx, cy + TILE_H / 2 - H, cx - TILE_W / 2, cy - H]).fill(tint(col, 0.12));
+  g.rect(cx - TILE_W / 2, cy - H - TILE_H, (b.hp / b.maxHp) * TILE_W, 3).fill(col);
+  g.zIndex = b.x + b.y;
+  return g;
+}
+
+function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
+  const g = new Graphics();
+  const elev = elevAt(u.x, u.y, s.seed);
+  const cx = isoX(u.x, u.y), cy = isoY(u.x, u.y) - elev;
+  const color = DOCTRINE_COLOR[u.camp]; // color = doctrine
+  const dim = u.owner === s.you ? 1 : 0.55; // enemy dimmed
+  const r = u.unit === "tank" ? 8 : u.unit === "gunner" ? 6 : 5; // size/shape = type
+  g.ellipse(cx, cy + 2, r * 1.25, r * 0.6).fill({ color: 0x000000, alpha: 0.3 }); // ground shadow
+  const by = cy - r - 1; // body stands above the tile
+  if (u.unit === "tank") g.rect(cx - r, by - r, r * 2, r * 2).fill({ color, alpha: dim }).stroke({ color: 0x06090d, width: 1, alpha: 0.6 });
+  else if (u.unit === "gunner") g.circle(cx, by, r).fill({ color, alpha: dim }).stroke({ color: 0x06090d, width: 1, alpha: 0.6 });
+  else g.poly([cx, by - r, cx + r, by + r, cx - r, by + r]).fill({ color, alpha: dim }).stroke({ color: 0x06090d, width: 1, alpha: 0.6 });
+  if (u.hp < u.maxHp) g.rect(cx - r, by - r - 4, (u.hp / u.maxHp) * r * 2, 1.5).fill(0xeaf2fb);
+  if (u.overrideUntil > s.tick) g.circle(cx, by, r + 3).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+  g.eventMode = "static";
+  g.cursor = "pointer";
+  g.on("pointerover", () => { hovered = u; updateReadout(); });
+  g.on("pointerout", () => { if (hovered?.id === u.id) { hovered = null; updateReadout(); } });
+  g.zIndex = u.x + u.y;
+  return g;
 }
 
 function updateReadout() {

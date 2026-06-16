@@ -25,6 +25,7 @@ export interface PlayerState {
 
 export interface GameState {
   tick: number;
+  seed: number; // map seed (cosmetic terrain); fixed per match
   units: UnitState[];
   bases: BaseState[];
   players: PlayerState[]; // index = player/owner
@@ -61,12 +62,12 @@ function makePlayer(): PlayerState {
   };
 }
 
-export function newGame(): GameState {
+export function newGame(seed = 1): GameState {
   const bases: BaseState[] = [
     { owner: 0, x: 4, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W - 5, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  return { tick: 0, units: [], bases, players: [makePlayer(), makePlayer()], nextUnitId: 1 };
+  return { tick: 0, seed: seed >>> 0, units: [], bases, players: [makePlayer(), makePlayer()], nextUnitId: 1 };
 }
 
 export function spawnUnit(g: GameState, owner: number, camp: DoctrineId, type: UnitType = "gunner"): void {

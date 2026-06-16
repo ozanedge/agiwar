@@ -37,7 +37,7 @@ let waiting: { ws: WebSocket; timer: ReturnType<typeof setTimeout> } | null = nu
 
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 const sendState = (ws: WebSocket, g: GameState, player: number) =>
-  send(ws, { type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, ...computeVisibleState(g, player), you: player });
+  send(ws, { type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed, ...computeVisibleState(g, player), you: player });
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
   send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral });
 
@@ -47,7 +47,8 @@ function seed(g: GameState, player: number, bot: boolean) {
 }
 
 function createRoom(humans: WebSocket[], bot: boolean) {
-  const game = newGame();
+  const mapSeed = ((roomSeq + 1) * 2654435761) >>> 0; // varied per match, stable within it
+  const game = newGame(mapSeed);
   seed(game, 0, false);
   seed(game, 1, bot);
   const members: Member[] = humans.map((ws, i) => ({ ws, player: i }));
