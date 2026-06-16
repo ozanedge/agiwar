@@ -8,6 +8,7 @@ import { UNIT_STATS, INVESTMENTS, investCost } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
+import { AdvisorRunner, createAdvisor } from "./advisor.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
@@ -28,6 +29,7 @@ interface Room {
   game: GameState;
   members: Member[];
   runners: (FieldGeneralRunner | null)[]; // index = player; null for the bot
+  advisors: (AdvisorRunner | null)[]; // investment advisor per player
   bot: boolean;
   netTick: number;
   over: boolean;
@@ -49,7 +51,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
   });
 };
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
-  send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral, turretBudget: g.players[player].turretBudget });
+  send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral, advisor: g.players[player].advisor, turretBudget: g.players[player].turretBudget });
 
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
@@ -65,9 +67,10 @@ function createRoom(humans: WebSocket[], bot: boolean) {
   seed(game, 1, bot);
   const members: Member[] = humans.map((ws, i) => ({ ws, player: i }));
   const runners: (FieldGeneralRunner | null)[] = [createFieldGeneral(0), bot ? null : createFieldGeneral(1)];
+  const advisors: (AdvisorRunner | null)[] = [createAdvisor(0), bot ? null : createAdvisor(1)];
 
   const room: Room = {
-    id: roomSeq++, game, members, runners, bot, netTick: 0, over: false,
+    id: roomSeq++, game, members, runners, advisors, bot, netTick: 0, over: false,
     interval: setInterval(() => tickRoom(room), 1000 / TICK_HZ),
   };
   rooms.add(room);
@@ -87,8 +90,9 @@ function tickRoom(room: Room) {
 
   // each human player's field general evaluates (event-gated); notices go only to that player
   for (const m of room.members) {
-    const fg = room.runners[m.player];
-    fg?.maybe(g, applyFieldOrder, (text) => send(m.ws, { type: "fieldlog", text, tick: g.tick }));
+    const log = (text: string) => send(m.ws, { type: "fieldlog", text, tick: g.tick });
+    room.runners[m.player]?.maybe(g, applyFieldOrder, log);
+    room.advisors[m.player]?.maybe(g, log, () => sendOwnCamps(m.ws, g, m.player));
   }
 
   // win check
@@ -221,6 +225,14 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     p.resources -= CAPTURE_COST;
     a.owner = player; a.hp = a.maxHp;
     send(ws, { type: "notice", level: "info", text: `Artifact claimed — ${a.bonus.label}. Turrets will ring it; defend it!` });
+    return;
+  }
+
+  if (msg.type === "editAdvisor") {
+    g.players[player].advisor.prompt = msg.prompt;
+    room.advisors[player]?.resetGate();
+    sendOwnCamps(ws, g, player);
+    send(ws, { type: "notice", level: "info", text: `${g.players[player].advisor.label} re-briefed. Applies on next economic review.` });
     return;
   }
 

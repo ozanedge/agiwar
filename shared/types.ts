@@ -109,6 +109,7 @@ export interface CampsMsg {
   type: "camps";
   camps: Camp[];
   fieldGeneral: FieldGeneral;
+  advisor: FieldGeneral; // investment advisor (same {label,prompt} shape)
   turretBudget: number; // % of income spent auto-building turrets (separate from savings)
 }
 
@@ -141,6 +142,7 @@ export interface FieldGeneralDecision {
 export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
+  | { type: "editAdvisor"; prompt: string } // reauthor the investment advisor's economic doctrine
   | { type: "setBudget"; camp: DoctrineId; budgetPct: number } // set a camp's share of income
   | { type: "setTurretBudget"; budgetPct: number } // set the % of income spent on turrets
   | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp

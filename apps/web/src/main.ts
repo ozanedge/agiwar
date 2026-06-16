@@ -156,7 +156,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state") { latestState = msg; render(msg); }
-    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); }
+    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); syncAdvisor(msg.advisor); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
   };
@@ -183,27 +183,21 @@ function addLog(text: string, tick: number) {
   while (fglogEl.childElementCount > 60) fglogEl.lastElementChild?.remove();
 }
 
-// ---- investments (permanent army upgrades) ----
-const investEl = document.getElementById("invest")!;
-let investBuilt = false;
+// ---- investments status (read-only; the Advisor buys them) ----
+const investStatusEl = document.getElementById("invest-status")!;
 function syncInvest(levels: Record<string, number>) {
-  if (!investBuilt) {
-    for (const inv of INVESTMENTS) {
-      const b = document.createElement("button");
-      b.innerHTML = `<span>${inv.label} <span class="sub">${inv.effect}</span></span><span id="invc-${inv.kind}"></span>`;
-      b.onclick = () => sendCmd({ type: "invest", kind: inv.kind });
-      investEl.appendChild(b);
-    }
-    investBuilt = true;
-  }
-  for (const inv of INVESTMENTS) {
-    const lvl = levels[inv.kind] || 0;
-    const cost = investCost(inv.base, lvl);
-    const el = document.getElementById(`invc-${inv.kind}`)!;
-    el.textContent = `Lv${lvl} · ⛃${cost}`;
-    (el.closest("button") as HTMLButtonElement).disabled = !latestState || latestState.resources < cost;
-  }
+  investStatusEl.textContent = "Upgrades: " + INVESTMENTS.map((inv) => `${inv.label.slice(0, 4)} Lv${levels[inv.kind] || 0}`).join(" · ");
 }
+
+// ---- investment advisor editor (bottom-left) ----
+let advBuilt = false;
+function syncAdvisor(a: FieldGeneral) {
+  document.getElementById("adv-label")!.textContent = a.label;
+  const ta = document.getElementById("adv-prompt") as HTMLTextAreaElement;
+  if (!advBuilt) { ta.value = a.prompt; advBuilt = true; }
+}
+(document.getElementById("adv-update") as HTMLButtonElement).onclick = () =>
+  sendCmd({ type: "editAdvisor", prompt: (document.getElementById("adv-prompt") as HTMLTextAreaElement).value });
 
 // ---- rendering ----
 function render(s: StateMsg) {
@@ -424,8 +418,7 @@ function renderSankey() {
     const h = CAMP_MIN + (b.pct / 100) * remainder; // bands sum to `usable`
     const on = b.pct > 0.5;
     mk("path", { d: ribbon(incX + incW, y, y + h, campX, y, y + h), fill: b.col, "fill-opacity": on ? 0.26 : 0.08 }, sankeyEl);
-    const node = mk("rect", { x: campX, y, width: campW, height: h, rx: 2, fill: b.col, "fill-opacity": on ? 0.92 : 0.34, class: b.drag ? "band" : "" }, sankeyEl);
-    if (b.drag) node.setAttribute("data-band", b.id);
+    mk("rect", { x: campX, y, width: campW, height: h, rx: 2, fill: b.col, "fill-opacity": on ? 0.92 : 0.34 }, sankeyEl); // read-only (advisor sets it)
     mk("text", { x: 20, y: y + h / 2 + 3.5, "font-size": 10, "fill-opacity": on ? 1 : 0.6 }, sankeyEl).textContent = b.label;
 
     if (b.camp) {
@@ -438,8 +431,7 @@ function renderSankey() {
         if (segH < 0.5) continue;
         const onu = w > 0;
         mk("path", { d: ribbon(campX + campW, ySeg, ySeg + segH, unitX, ySeg, ySeg + segH), fill: b.col, "fill-opacity": onu ? 0.2 : 0.07 }, sankeyEl);
-        const un = mk("rect", { x: unitX, y: ySeg, width: unitW, height: segH, rx: 2, fill: b.col, "fill-opacity": onu ? 0.95 : 0.34, class: "band" }, sankeyEl);
-        un.setAttribute("data-mix", `${b.camp.id}:${u}`);
+        mk("rect", { x: unitX, y: ySeg, width: unitW, height: segH, rx: 2, fill: b.col, "fill-opacity": onu ? 0.95 : 0.34 }, sankeyEl);
         if (segH > 9) mk("text", { x: unitX + unitW + 5, y: ySeg + segH / 2 + 3.5, "font-size": 10, "fill-opacity": onu ? 1 : 0.55 }, sankeyEl).textContent =
           `${UNIT_STATS[u].label.replace(" Infantry", "")} ${Math.round((W > 0 ? w / W : 0) * 100)}%`;
         ySeg += segH;

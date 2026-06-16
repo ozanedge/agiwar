@@ -41,6 +41,7 @@ export interface PlayerState {
   resources: number;
   invest: Bonus; // purchased investment levels per kind
   turretBudget: number; // % of income auto-spent building turrets (separate from savings)
+  advisor: FieldGeneral; // investment advisor (label + editable economic doctrine)
 }
 
 export interface GameState {
@@ -95,8 +96,14 @@ function makePlayer(): PlayerState {
     resources: STARTING_RESOURCES,
     invest: { income: 0, range: 0, hp: 0, damage: 0 },
     turretBudget: DEFAULT_TURRET_BUDGET,
+    advisor: { label: "Advisor Holt", prompt: DEFAULT_ADVISOR_PROMPT },
   };
 }
+
+export const DEFAULT_ADVISOR_PROMPT =
+  "Run a balanced war economy. Fund attack and defense steadily, keep some income flowing to the " +
+  "builder so we grab artifacts, and bank a little savings. Invest gradually in munitions and plating. " +
+  "If our base comes under pressure, shift toward defense and turrets.";
 
 export function newGame(seed = 1): GameState {
   const bases: BaseState[] = [

@@ -76,10 +76,12 @@
       <div id="left">
         <h4>Budget flow</h4>
         <svg id="sankey"></svg>
-        <div class="sub">drag a <b>camp band</b> to set its % of income · drag a <b>unit band</b> to set that camp's mix</div>
-        <h4 style="margin-top:6px">Investments</h4>
-        <div class="sub">permanent army-wide upgrades</div>
-        <div id="invest"></div>
+        <div class="sub">allocated live by your Investment Advisor</div>
+        <h4 style="margin-top:6px" id="adv-label">Investment Advisor</h4>
+        <div class="sub">briefs your economy: budgets + upgrades</div>
+        <textarea id="adv-prompt" style="min-height:64px;max-height:100px;flex:0 0 auto"></textarea>
+        <div class="row"><button id="adv-update">Update advisor</button></div>
+        <div class="sub" id="invest-status"></div>
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
