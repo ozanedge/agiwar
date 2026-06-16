@@ -413,7 +413,12 @@ function updateReadout() {
   if (!hovered || !latestState) { readoutEl.textContent = "hover a unit to inspect it"; return; }
   const u = hovered;
   const who = u.owner === latestState.you ? "yours" : "enemy";
-  const header = `${UNIT_STATS[u.unit].label} #${u.id} · ${who} · hp ${u.hp}/${u.maxHp}`;
+  // terrain elevation under the unit → high-ground combat edge (matches sim attack scaling)
+  const th = terrainAt(u.x, u.y, latestState.seed, latestState.gridW, latestState.gridH).height;
+  const ground = th >= 0.60
+    ? `<span style="color:#ffd76b">⛰ HIGH GROUND</span> · +dmg downhill`
+    : th < 0.40 ? `<span style="color:#8aa">↓ low ground</span> · −dmg uphill` : `level ground`;
+  const header = `${UNIT_STATS[u.unit].label} #${u.id} · ${who} · hp ${u.hp}/${u.maxHp}<br><span class="sub">${ground}</span>`;
   if (!u.camp) { readoutEl.innerHTML = `${header}<br><b>Building</b> — stationary, no doctrine`; return; } // building
   const overridden = u.overrideUntil > latestState.tick;
   const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;

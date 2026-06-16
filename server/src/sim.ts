@@ -4,7 +4,7 @@
 import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, GRID_SCALE } from "../../shared/units.js";
-import { isPassable } from "../../shared/terrain.js";
+import { isPassable, terrainAt } from "../../shared/terrain.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
 const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 150); // ticks between spawns (~15s)
@@ -35,6 +35,11 @@ const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // builder auto-cl
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
 const SPEED_MULT = Number(process.env.SPEED_MULT ?? 1);
+// High-ground edge: damage is scaled by the attacker's terrain height minus the target's.
+// Firing downhill hits harder, uphill softer — clamped so it's an edge, never a one-shot.
+const HIGH_GROUND_GAIN = Number(process.env.HIGH_GROUND_GAIN ?? 1.8);
+const HIGH_GROUND_MIN = 0.6, HIGH_GROUND_MAX = 1.6;
+const groundHeight = (g: GameState, x: number, y: number) => terrainAt(x, y, g.seed, GRID_W, GRID_H).height;
 
 /** Everything that belongs to one player: their three camp generals and their field general. */
 export interface PlayerState {
@@ -364,7 +369,11 @@ function decide(g: GameState, u: UnitState) {
 function attack(g: GameState, u: UnitState, target: Target) {
   const base = UNIT_STATS[u.unit].dmg;
   if (base <= 0) return; // unarmed (drones)
-  target.ref.hp -= base + playerBonus(g, u.owner).damage; // artifact damage bonus
+  const dmg = base + playerBonus(g, u.owner).damage; // artifact/investment damage bonus
+  // high-ground rule: scale by elevation delta (attacker height − target height), clamped
+  const dh = groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y);
+  const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
+  target.ref.hp -= dmg * mult;
 }
 
 export function step(g: GameState) {
