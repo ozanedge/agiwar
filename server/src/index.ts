@@ -4,7 +4,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
 import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, playerBonus, spawnUnit, step } from "./sim.js";
-import { UNIT_STATS, INVESTMENTS, investCost } from "../../shared/units.js";
+import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
@@ -16,7 +16,7 @@ const NET_HZ = Number(process.env.NET_HZ ?? 5); // broadcast rate (<= TICK_HZ) â
 const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
 const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 6000); // wait this long for a human, then give a bot
-const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32); // buildings must be placed within this many tiles of your base
+const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32 * GRID_SCALE); // buildings must be placed within this many tiles of your base
 const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // invest to claim a neutral artifact
 
 // Date.now() is banned inside the sim, but cooldowns are wall-clock UX, not sim state.
@@ -62,7 +62,7 @@ const appendMemory = (cur: string, msg: string): string => {
 
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
-  spawnUnit(g, player, null, "turret", { x: b.x + (player === 0 ? 1 : -1) * 3, y: b.y }); // starting strongpoint
+  spawnUnit(g, player, null, "turret", { x: b.x + (player === 0 ? 1 : -1) * 3 * GRID_SCALE, y: b.y }); // starting strongpoint
   if (bot) { for (let i = 0; i < 4; i++) spawnUnit(g, player, "aggressive"); return; }
   for (const c of ["aggressive", "recon", "defensive"] as const) { spawnUnit(g, player, c); spawnUnit(g, player, c); }
 }

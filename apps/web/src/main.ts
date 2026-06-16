@@ -1,7 +1,7 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, Text } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS, investCost, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS, investCost, visionOf, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
@@ -31,16 +31,22 @@ await app.init({ background: 0x02060a, resizeTo: stage, antialias: true, resolut
 stage.appendChild(app.canvas);
 
 // ---- isometric world ----
-const TILE_W = 36, TILE_H = 18; // 2:1 isometric diamond
+const TILE_W = 36 / GRID_SCALE, TILE_H = 18 / GRID_SCALE; // fine 2:1 diamond (16× cell density, same physical map)
 const world = new Container(); // camera-transformed
 app.stage.addChild(world);
-// Three fog states: unexplored = nothing drawn (black bg) · explored = dim "memory" terrain ·
-// currently visible = bright terrain on top.
-const exploredLayer = new Graphics(); // dim terrain you've seen before (persists)
-const revealLayer = new Graphics(); // bright terrain where you currently have vision
+// Terrain is BAKED ONCE into a texture (no per-tick tile redraw). Fog is a cheap, resolution-
+// independent VISION-MASK overlay: unexplored = stage bg shows through · explored = dim terrain
+// (expMask) · currently visible = bright terrain (visMask) drawn on top.
+const terrainDim = new Sprite(); // baked terrain, darkened — shown where ever-explored
+const terrainBright = new Sprite(); // baked terrain, full — shown where currently visible
+terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
-world.addChild(exploredLayer, revealLayer, entityLayer);
+const expMask = new Graphics(); // union of all explored vision (persists across the match)
+const visMask = new Graphics(); // union of current vision (rebuilt every tick)
+terrainDim.mask = expMask;
+terrainBright.mask = visMask;
+world.addChild(terrainDim, terrainBright, entityLayer, expMask, visMask);
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -58,76 +64,69 @@ function tint(hex: number, f: number): number {
   else { r *= 1 + f; g *= 1 + f; b *= 1 + f; }
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 }
-// small deterministic hash for decoration placement
-const dhash = (a: number, b: number) => { let n = (Math.imul(a, 2654435761) ^ Math.imul(b, 40503)) >>> 0; n ^= n >>> 15; return (n >>> 0) / 4294967296; };
-
 // darker, desaturated/teal-shifted terrain so neon units + cyan HUD pop on top
 const KIND_COLOR: Record<TerrainKind, number> = { water: 0x06303d, sand: 0x5b5638, grass: 0x163a2a, highland: 0x2b3a28, rock: 0x2e3848 };
 const elevAt = (gx: number, gy: number, seed: number, W: number, H: number) => terrainAt(gx, gy, seed, W, H).elev;
 
-function decorate(g: Graphics, kind: TerrainKind, gx: number, gy: number, seed: number, cx: number, cy: number) {
-  const r = dhash(gx * 7 + 1, gy * 13 + 3);
-  if (kind === "rock") { // mountain crag
-    g.poly([cx, cy - TILE_H * 0.9, cx + 6, cy - TILE_H * 0.1, cx - 6, cy - TILE_H * 0.1]).fill(tint(0x9a9488, 0.15));
-    g.poly([cx + 2, cy - TILE_H * 1.1, cx + 8, cy - TILE_H * 0.2, cx, cy - TILE_H * 0.2]).fill(tint(0x6f6a60, -0.05));
-  } else if ((kind === "grass" || kind === "highland") && r < 0.07) { // tree
-    g.rect(cx - 1, cy - 7, 2, 7).fill(0x5a4326);
-    g.circle(cx, cy - 10, 5).fill(tint(0x2e6b34, (r - 0.035) * 2));
-    g.circle(cx + 2, cy - 7, 3.5).fill(0x357a3c);
-  } else if (kind === "sand" && r > 0.96) { // occasional desert rock
-    g.circle(cx, cy - 2, 2.5).fill(0xb6a273);
-  }
-}
-
 let terrainKey = "";
-const explored = new Set<number>(); // tile keys ever seen (fog-of-war memory)
-let exploredDrawn = 0; // last count rendered into exploredLayer (throttle rebuilds)
+let terrainTex: import("pixi.js").Texture | null = null;
+const exploredCoarse = new Set<number>(); // coarse cells whose vision is already stamped into expMask
 
-function drawTile(layer: Graphics, gx: number, gy: number, seed: number, W: number, H: number, dim = false) {
-  const t = terrainAt(gx, gy, seed, W, H);
-  const base = tint(KIND_COLOR[t.kind], t.micro);
-  const col = dim ? tint(base, -0.6) : base; // dim = explored "memory" look
-  const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev;
-  const groundY = isoY(gx, gy);
-  if (!dim && t.elev > 4) { // side walls + detail only on the bright (current-vision) layer
-    layer.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.4));
-    layer.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.22));
+// Bake the ENTIRE map's terrain ONCE into a single texture (top faces + side walls on raised
+// ground). Painter-ordered by (gx+gy) so nearer tiles overlap correctly. Sheen/decoration are
+// dropped — invisible at this tile size and far too many polys at 16× density. The two terrain
+// sprites then just sample this texture (cheap), masked by vision — no per-tick tile redraw.
+function bakeTerrain(seed: number, W: number, H: number) {
+  const g = new Graphics();
+  for (let d = 0; d <= W - 1 + (H - 1); d++) {
+    for (let gx = Math.max(0, d - (H - 1)); gx <= Math.min(W - 1, d); gx++) {
+      const gy = d - gx;
+      const t = terrainAt(gx, gy, seed, W, H);
+      const col = tint(KIND_COLOR[t.kind], t.micro);
+      const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev, groundY = isoY(gx, gy);
+      if (t.elev > 1.2) { // side walls on raised ground for a sense of height
+        g.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.42));
+        g.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.24));
+      }
+      g.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
+    }
   }
-  layer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
-  if (!dim) {
-    // soft top sheen so tiles read as lit surfaces rather than flat blocks
-    layer.poly([cx, cy - TILE_H * 0.34, cx + TILE_W * 0.34, cy - TILE_H * 0.04, cx, cy + TILE_H * 0.18, cx - TILE_W * 0.34, cy - TILE_H * 0.04]).fill({ color: tint(col, 0.18), alpha: 0.4 });
-    decorate(layer, t.kind, gx, gy, seed, cx, cy);
-  }
+  const b = g.getLocalBounds();
+  if (terrainTex) terrainTex.destroy(true);
+  terrainTex = app.renderer.generateTexture({ target: g, resolution: 1 });
+  for (const sp of [terrainDim, terrainBright]) { sp.texture = terrainTex; sp.position.set(b.minX, b.minY); }
+  g.destroy();
 }
 
 function resetFog(seed: number, W: number, H: number) {
-  explored.clear(); exploredDrawn = 0;
-  exploredLayer.clear(); revealLayer.clear();
+  exploredCoarse.clear();
+  expMask.clear(); visMask.clear();
+  bakeTerrain(seed, W, H);
   terrainKey = `${seed}:${W}:${H}`;
 }
 
-let fogTick = 0;
-function renderFog(s: StateMsg) {
-  const vis = new Set<number>();
-  const addBox = (cx: number, cy: number, R: number) => {
-    for (let gx = Math.max(0, cx - R); gx <= Math.min(s.gridW - 1, cx + R); gx++)
-      for (let gy = Math.max(0, cy - R); gy <= Math.min(s.gridH - 1, cy + R); gy++) vis.add(gy * s.gridW + gx);
-  };
-  for (const b of s.bases) if (b.owner === s.you) addBox(b.x, b.y, BASE_VISION);
-  for (const u of s.units) if (u.owner === s.you) addBox(u.x, u.y, UNIT_STATS[u.unit].range * VISION_MULT);
-  for (const k of vis) explored.add(k);
+// The screen-space diamond covering a Chebyshev vision radius of R cells around (gx,gy):
+// moving ±R in gx/gy maps to corners (±R·TILE_W, 0) and (0, ±R·TILE_H). Exact, resolution-free.
+function visionDiamond(g: Graphics, gx: number, gy: number, R: number) {
+  const cx = isoX(gx, gy), cy = isoY(gx, gy);
+  g.poly([cx + R * TILE_W, cy, cx, cy + R * TILE_H, cx - R * TILE_W, cy, cx, cy - R * TILE_H]).fill(0xffffff);
+}
 
-  // explored "memory" layer (dim) — rebuilt occasionally as the explored set grows
-  if (explored.size > exploredDrawn && ++fogTick % 4 === 0) {
-    exploredLayer.clear();
-    for (const k of explored) drawTile(exploredLayer, k % s.gridW, Math.floor(k / s.gridW), s.seed, s.gridW, s.gridH, true);
-    exploredDrawn = explored.size;
-  }
-  // currently-visible (bright) layer — every tick, painter order for correct elevation overlap
-  revealLayer.clear();
-  [...vis].sort((a, b) => (Math.floor(a / s.gridW) + (a % s.gridW)) - (Math.floor(b / s.gridW) + (b % s.gridW)))
-    .forEach((k) => drawTile(revealLayer, k % s.gridW, Math.floor(k / s.gridW), s.seed, s.gridW, s.gridH, false));
+function renderFog(s: StateMsg) {
+  // current vision (bright layer mask) — rebuilt every tick from your bases + units
+  visMask.clear();
+  for (const b of s.bases) if (b.owner === s.you) visionDiamond(visMask, b.x, b.y, BASE_VISION);
+  for (const u of s.units) if (u.owner === s.you) visionDiamond(visMask, u.x, u.y, visionOf(u.unit));
+  // explored memory (dim layer mask) — stamp a diamond the first time a viewer enters a coarse
+  // cell, so the seen-area grows as you scout without ever redrawing the whole mask.
+  const stamp = (gx: number, gy: number, R: number) => {
+    const key = (gx >> 5) * 100003 + (gy >> 5);
+    if (exploredCoarse.has(key)) return;
+    exploredCoarse.add(key);
+    visionDiamond(expMask, gx, gy, R);
+  };
+  for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION);
+  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, visionOf(u.unit));
 }
 
 // ---- camera (pan + zoom), centered on your base ----
@@ -148,7 +147,7 @@ window.addEventListener("pointermove", (e) => {
 window.addEventListener("pointerup", () => { dragging = false; });
 app.canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  const ns = Math.max(0.4, Math.min(2.6, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const ns = Math.max(0.4, Math.min(5, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
   const r = app.canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   world.x = mx - (mx - world.x) * (ns / cam.scale); world.y = my - (my - world.y) * (ns / cam.scale);
   cam.scale = ns; world.scale.set(ns);
@@ -266,18 +265,21 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
   const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
+  // base art is drawn in TILE units; tiles shrank by GRID_SCALE, so scale back up to keep the
+  // fortress the same on-screen size as before (it spans more fine cells now, which is correct).
+  const BW = TILE_W * GRID_SCALE, BH = TILE_H * GRID_SCALE;
   // big iso fortress: shadow → team glow → stone platform → flanking towers → central keep → flag → hp
-  g.ellipse(cx, cy + TILE_H * 1.0, TILE_W * 2.5, TILE_H * 1.7).fill({ color: 0x000000, alpha: 0.32 });
-  g.ellipse(cx, cy + TILE_H * 0.9, TILE_W * 3.0, TILE_H * 2.1).fill({ color: team, alpha: 0.12 }); // team glow
-  isoBox(g, cx, cy + TILE_H * 1.3, TILE_W * 2.0, TILE_H * 2.0, 11, 0x3a4250); // platform
-  isoBox(g, cx - TILE_W * 1.25, cy + TILE_H * 0.5, TILE_W * 0.5, TILE_H * 0.5, TILE_H * 3.2, tint(team, -0.12)); // L tower
-  isoBox(g, cx + TILE_W * 1.25, cy + TILE_H * 0.5, TILE_W * 0.5, TILE_H * 0.5, TILE_H * 3.2, tint(team, -0.12)); // R tower
-  const keepH = TILE_H * 4.6, keepBaseY = cy + TILE_H * 0.2;
-  isoBox(g, cx, keepBaseY, TILE_W * 0.95, TILE_H * 0.95, keepH, team); // central keep
-  const topY = keepBaseY - keepH - TILE_H * 0.95;
+  g.ellipse(cx, cy + BH * 1.0, BW * 2.5, BH * 1.7).fill({ color: 0x000000, alpha: 0.32 });
+  g.ellipse(cx, cy + BH * 0.9, BW * 3.0, BH * 2.1).fill({ color: team, alpha: 0.12 }); // team glow
+  isoBox(g, cx, cy + BH * 1.3, BW * 2.0, BH * 2.0, BH * 0.6, 0x3a4250); // platform
+  isoBox(g, cx - BW * 1.25, cy + BH * 0.5, BW * 0.5, BH * 0.5, BH * 3.2, tint(team, -0.12)); // L tower
+  isoBox(g, cx + BW * 1.25, cy + BH * 0.5, BW * 0.5, BH * 0.5, BH * 3.2, tint(team, -0.12)); // R tower
+  const keepH = BH * 4.6, keepBaseY = cy + BH * 0.2;
+  isoBox(g, cx, keepBaseY, BW * 0.95, BH * 0.95, keepH, team); // central keep
+  const topY = keepBaseY - keepH - BH * 0.95;
   g.rect(cx - 1, topY - 18, 2, 18).fill(0xcfd8e3); // flag pole
   g.poly([cx + 1, topY - 18, cx + 15, topY - 13, cx + 1, topY - 8]).fill(tint(team, 0.35)); // banner
-  g.rect(cx - TILE_W * 0.95, topY - 26, (b.hp / b.maxHp) * TILE_W * 1.9, 4).fill(team); // hp bar
+  g.rect(cx - BW * 0.95, topY - 26, (b.hp / b.maxHp) * BW * 1.9, 4).fill(team); // hp bar
   g.zIndex = b.x + b.y;
   return g;
 }

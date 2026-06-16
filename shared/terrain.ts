@@ -1,5 +1,6 @@
 // Single source of truth for terrain. Deterministic from (seed, grid size), so the
 // server (movement/placement passability) and the client (rendering) always agree.
+import { GRID_SCALE } from "./units.js";
 export type TerrainKind = "water" | "sand" | "grass" | "highland" | "rock";
 
 export interface Tile {
@@ -10,7 +11,7 @@ export interface Tile {
   micro: number; // small per-tile color jitter [-0.07, 0.07]
 }
 
-const NOISE_SCALE = 22; // larger = bigger, smoother landmasses
+const NOISE_SCALE = 22 * GRID_SCALE; // larger = bigger, smoother landmasses (scaled so features keep their physical size on the finer grid)
 const cheb = (ax: number, ay: number, bx: number, by: number) => Math.max(Math.abs(ax - bx), Math.abs(ay - by));
 
 function h2(x: number, y: number, seed: number): number {
@@ -32,7 +33,7 @@ function fbm(x: number, y: number, seed: number): number {
 
 /** The two base spots — MUST match sim newGame() base positions. */
 export function baseSpots(W: number, H: number) {
-  return [{ x: 4, y: H >> 1 }, { x: W - 5, y: H >> 1 }];
+  return [{ x: 4 * GRID_SCALE, y: H >> 1 }, { x: W - 5 * GRID_SCALE, y: H >> 1 }];
 }
 
 export function terrainAt(gx: number, gy: number, seed: number, W: number, H: number): Tile {
@@ -40,16 +41,18 @@ export function terrainAt(gx: number, gy: number, seed: number, W: number, H: nu
   // carve flat, passable land around each base so spawns/builds are always valid
   for (const b of baseSpots(W, H)) {
     const d = cheb(gx, gy, b.x, b.y);
-    if (d < 11) h = Math.max(h, 0.5);
-    else if (d < 18) h = Math.max(h, 0.42);
+    if (d < 11 * GRID_SCALE) h = Math.max(h, 0.5);
+    else if (d < 18 * GRID_SCALE) h = Math.max(h, 0.42);
   }
   const micro = (h2(gx, gy, seed + 777) - 0.5) * 0.08; // gentle variation (less speckle)
+  // elev is a RENDER lift in px; divide by GRID_SCALE so slopes stay proportional to the (now 4× smaller) tiles
+  const E = (raw: number) => raw / GRID_SCALE;
   let kind: TerrainKind, passable = true, elev: number;
   if (h < 0.34) { kind = "water"; passable = false; elev = 0; }
-  else if (h < 0.39) { kind = "sand"; elev = 1; }
-  else if (h < 0.62) { kind = "grass"; elev = 2 + (h - 0.39) * 34; }
-  else if (h < 0.8) { kind = "highland"; elev = 2 + (h - 0.39) * 34; }
-  else { kind = "rock"; passable = false; elev = 2 + (h - 0.39) * 34; } // mountain peaks block land units
+  else if (h < 0.39) { kind = "sand"; elev = E(1); }
+  else if (h < 0.62) { kind = "grass"; elev = E(2 + (h - 0.39) * 34); }
+  else if (h < 0.8) { kind = "highland"; elev = E(2 + (h - 0.39) * 34); }
+  else { kind = "rock"; passable = false; elev = E(2 + (h - 0.39) * 34); } // mountain peaks block land units
   return { kind, height: h, elev, passable, micro };
 }
 

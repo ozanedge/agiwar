@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
@@ -12,8 +12,10 @@ const ARTIFACT_HP = 120;
 export type Bonus = { income: number; range: number; hp: number; damage: number };
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
-export const GRID_W = Number(process.env.GRID_W ?? 200); // large map -> long marches
-export const GRID_H = Number(process.env.GRID_H ?? 130);
+// 16× cell density (4× per axis) on the same physical map: smoother terrain + movement.
+// (was 200×130; ×GRID_SCALE per axis.)
+export const GRID_W = Number(process.env.GRID_W ?? 200 * GRID_SCALE); // 800
+export const GRID_H = Number(process.env.GRID_H ?? 130 * GRID_SCALE); // 520
 const BASE_HP = Number(process.env.BASE_HP ?? 400);
 export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 resources/sec at 10Hz
 const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
@@ -107,8 +109,8 @@ export const DEFAULT_ADVISOR_PROMPT =
 
 export function newGame(seed = 1): GameState {
   const bases: BaseState[] = [
-    { owner: 0, x: 4, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
-    { owner: 1, x: GRID_W - 5, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
+    { owner: 0, x: 4 * GRID_SCALE, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
+    { owner: 1, x: GRID_W - 5 * GRID_SCALE, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
   ];
   const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], players: [makePlayer(), makePlayer()], flow: [], nextUnitId: 1, nextArtifactId: 1 };
   g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
@@ -154,7 +156,7 @@ function stepToBase(g: GameState, u: UnitState, owner: number) {
 const ARTIFACT_BONUSES: { kind: ArtifactBonusKind; amount: number; label: string }[] = [
   { kind: "income", amount: 3, label: "+3 ⛃/s" },
   { kind: "income", amount: 2, label: "+2 ⛃/s" },
-  { kind: "range", amount: 1, label: "+1 unit range" },
+  { kind: "range", amount: GRID_SCALE, label: "+1 unit range" },
   { kind: "hp", amount: 5, label: "+5 unit HP" },
   { kind: "damage", amount: 2, label: "+2 attack dmg" },
 ];
@@ -166,7 +168,7 @@ function spawnArtifact(g: GameState) {
     const x = Math.round(GRID_W * (0.22 + 0.56 * r)); // mid-map band, away from the bases
     const y = Math.round(GRID_H * (0.12 + 0.76 * r2));
     if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
-    if (g.artifacts.some((a) => cheb(a.x, a.y, x, y) < 14)) continue; // spread them out
+    if (g.artifacts.some((a) => cheb(a.x, a.y, x, y) < 14 * GRID_SCALE)) continue; // spread them out
     const bonus = ARTIFACT_BONUSES[Math.floor(hash01(g.nextArtifactId * 7, g.seed) * ARTIFACT_BONUSES.length)];
     g.artifacts.push({ id: g.nextArtifactId++, x, y, owner: -1, hp: ARTIFACT_HP, maxHp: ARTIFACT_HP, bonus });
     return;
@@ -185,8 +187,8 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
     unit: type,
     dx: owner === 0 ? 1 : -1, // start facing the enemy
     dy: 0,
-    x: pos ? pos.x : base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)),
-    y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y - 2 + (jitter % 5))),
+    x: pos ? pos.x : base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)) * GRID_SCALE,
+    y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y + (-2 + (jitter % 5)) * GRID_SCALE)),
     hp,
     maxHp: hp,
     overrideUntil: 0,
@@ -257,7 +259,7 @@ function explore(g: GameState, u: UnitState) {
   const push = (sx: number, sy: number, w: number) => {
     const dx = u.x - sx, dy = u.y - sy, d = Math.sqrt(dx * dx + dy * dy);
     if (d < 0.5) { rx += 1; return; } // coincident -> arbitrary nudge
-    if (d > 32) return; // only nearby coverage repels
+    if (d > 32 * GRID_SCALE) return; // only nearby coverage repels
     rx += (dx / d) * (w / d); ry += (dy / d) * (w / d); // closer/already-covered = stronger push outward
   };
   const base = g.bases[u.owner];
@@ -273,7 +275,13 @@ function explore(g: GameState, u: UnitState) {
 function decide(g: GameState, u: UnitState) {
   const stats = UNIT_STATS[u.unit];
   const period = (n: number) => Math.max(1, Math.round(n * SPEED_MULT));
-  const canMove = (g.tick + u.id) % period(stats.moveEvery) === 0; // per-type speed
+  // Movement is on the finer grid (GRID_SCALE× cells/axis). To keep PHYSICAL speed + the
+  // per-type hierarchy: act ~GRID_SCALE× more often (movePeriod), and for units whose ideal
+  // cadence would drop below 1 tick, take `stepBoost` fine steps per action instead. Attack
+  // cadence is time-based, so it is NOT touched by the grid change.
+  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT));
+  const stepBoost = Math.max(1, Math.round(GRID_SCALE / stats.moveEvery));
+  const canMove = (g.tick + u.id) % movePeriod === 0; // per-type speed
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
@@ -291,15 +299,17 @@ function decide(g: GameState, u: UnitState) {
 
   const spec = effectiveSpec(g, u);
   const myBase = g.bases[u.owner];
-  const mv = (tx: number, ty: number) => { if (canMove) moveToward(g, u, tx, ty); };
-  const toBase = (owner: number) => { if (canMove) stepToBase(g, u, owner); }; // flow-field routed
+  // each move action advances `stepBoost` fine cells (see above) so fast units keep their speed
+  const mv = (tx: number, ty: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) moveToward(g, u, tx, ty); };
+  const toBase = (owner: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) stepToBase(g, u, owner); }; // flow-field routed
+  const roam = () => { if (canMove) for (let i = 0; i < stepBoost; i++) explore(g, u); };
 
   // Builder doctrine: roam to the nearest neutral artifact and claim it (engineers, not fighters)
   if (u.camp === "builder") {
     let target: Artifact | null = null, td = Infinity;
     for (const a of g.artifacts) if (a.owner < 0) { const d = cheb(u.x, u.y, a.x, a.y); if (d < td) { td = d; target = a; } }
-    if (!target) { if (canMove) explore(g, u); return; } // none known → scout for more
-    if (td <= 2) {
+    if (!target) { roam(); return; } // none known → scout for more
+    if (td <= 2 * GRID_SCALE) {
       const p = g.players[u.owner];
       if (p.resources >= CAPTURE_COST) { p.resources -= CAPTURE_COST; target.owner = u.owner; target.hp = target.maxHp; } // claim
       // else: wait on it until the bank can afford the claim
@@ -309,7 +319,7 @@ function decide(g: GameState, u: UnitState) {
 
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {
-    if (cheb(u.x, u.y, myBase.x, myBase.y) > 1) toBase(u.owner);
+    if (cheb(u.x, u.y, myBase.x, myBase.y) > GRID_SCALE) toBase(u.owner);
     return;
   }
 
@@ -318,18 +328,19 @@ function decide(g: GameState, u: UnitState) {
 
   // 2) leashed defenders: only engage intruders near base, else return to guard ring
   if (!isScout && spec.defendRadius != null) {
-    const intruder = enemy && cheb(enemy.x, enemy.y, myBase.x, myBase.y) <= spec.defendRadius;
+    const leash = spec.defendRadius * GRID_SCALE; // spec radii are in coarse cells → scale to fine cells
+    const intruder = enemy && cheb(enemy.x, enemy.y, myBase.x, myBase.y) <= leash;
     if (intruder) {
       if (enemyDist <= range) atk(enemy!);
       else mv(enemy!.x, enemy!.y);
-    } else if (cheb(u.x, u.y, myBase.x, myBase.y) > spec.defendRadius - 1) {
+    } else if (cheb(u.x, u.y, myBase.x, myBase.y) > leash - 1) {
       toBase(u.owner);
     }
     return;
   }
 
   // 3) engage if an enemy is in range + within engageRange and we're aggressive enough (armed units only)
-  const willEngage = !isScout && enemy && enemyDist <= range * VISION_MULT && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
+  const willEngage = !isScout && enemy && enemyDist <= range * VISION_MULT && enemyDist <= spec.engageRange * GRID_SCALE && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
   if (willEngage) {
     if (enemyDist <= range) atk(enemy!);
     else mv(enemy!.x, enemy!.y);
@@ -344,7 +355,7 @@ function decide(g: GameState, u: UnitState) {
   const wanderChance = spec.explorationBias;
   const forwardChance = spec.aggression * (1 - spec.explorationBias);
   if (roll < wanderChance) {
-    if (canMove) explore(g, u); // recon: head toward the fog, away from already-seen ground
+    roam(); // recon: head toward the fog, away from already-seen ground
   } else if (roll < wanderChance + forwardChance) {
     toBase(enemyBase.owner); // attack: advance on the enemy base (flow-field routed around terrain)
   } // else: hold position
@@ -410,7 +421,7 @@ export function step(g: GameState) {
 function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } | null {
   const anchors = [{ x: g.bases[owner].x, y: g.bases[owner].y }, ...g.artifacts.filter((a) => a.owner === owner)];
   for (const anchor of anchors) {
-    for (const R of [5, 8]) {
+    for (const R of [5 * GRID_SCALE, 8 * GRID_SCALE]) {
       const n = Math.round(R * 1.4);
       for (let i = 0; i < n; i++) {
         const ang = (i / n) * Math.PI * 2 + owner * 0.4;
@@ -418,7 +429,7 @@ function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } |
         const y = Math.round(anchor.y + Math.sin(ang) * R);
         if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_H) continue;
         if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
-        if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2)) continue;
+        if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2 * GRID_SCALE)) continue;
         return { x, y };
       }
     }

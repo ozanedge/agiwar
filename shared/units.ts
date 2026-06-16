@@ -2,6 +2,11 @@
 // its CAMP (doctrine) sets its behavior. You pick both when you create a troop.
 export type UnitType = "gunner" | "tank" | "humvee" | "drone" | "turret";
 
+// Spatial resolution multiplier (cells per axis vs. the original coarse grid). 4 → 16× cells
+// on the same physical map: finer terrain + smoother movement. All cell-denominated distances
+// below (range, vision, investment +range) are pre-multiplied so PHYSICAL reach is unchanged.
+export const GRID_SCALE = 4;
+
 export interface UnitTypeStats {
   label: string;
   maxHp: number;
@@ -22,11 +27,12 @@ export interface UnitTypeStats {
 }
 
 export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
-  gunner: { label: "Gunner Infantry", maxHp: 30, moveEvery: 4, attackEvery: 4, dmg: 2, cost: 50, range: 1, blurb: "balanced" },
-  tank: { label: "Tank", maxHp: 80, moveEvery: 9, attackEvery: 6, dmg: 6, cost: 150, range: 1, blurb: "strong but slow" },
-  humvee: { label: "Humvee", maxHp: 16, moveEvery: 2, attackEvery: 4, dmg: 1, cost: 40, range: 1, blurb: "fast but weak" },
-  drone: { label: "Drone", maxHp: 10, moveEvery: 2, attackEvery: 99, dmg: 0, cost: 90, range: 11, blurb: "unarmed, huge vision" },
-  turret: { label: "Turret", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 7, stationary: true, building: true, blurb: "placed strongpoint" },
+  // range is in (fine) cells = GRID_SCALE × the old coarse reach, so physical attack range is unchanged.
+  gunner: { label: "Gunner Infantry", maxHp: 30, moveEvery: 4, attackEvery: 4, dmg: 2, cost: 50, range: 4, blurb: "balanced" },
+  tank: { label: "Tank", maxHp: 80, moveEvery: 9, attackEvery: 6, dmg: 6, cost: 150, range: 4, blurb: "strong but slow" },
+  humvee: { label: "Humvee", maxHp: 16, moveEvery: 2, attackEvery: 4, dmg: 1, cost: 40, range: 4, blurb: "fast but weak" },
+  drone: { label: "Drone", maxHp: 10, moveEvery: 2, attackEvery: 99, dmg: 0, cost: 90, range: 44, blurb: "unarmed, huge vision" },
+  turret: { label: "Turret", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 28, stationary: true, building: true, blurb: "placed strongpoint" },
 };
 
 export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "drone", "turret"];
@@ -36,15 +42,15 @@ export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "drone", "tur
 export const INVESTMENTS: { kind: "income" | "range" | "hp" | "damage"; label: string; amount: number; base: number; effect: string }[] = [
   { kind: "damage", label: "Munitions", amount: 1, base: 120, effect: "+1 dmg" },
   { kind: "hp", label: "Plating", amount: 5, base: 120, effect: "+5 hp" },
-  { kind: "range", label: "Optics", amount: 1, base: 170, effect: "+1 range" },
+  { kind: "range", label: "Optics", amount: GRID_SCALE, base: 170, effect: "+1 range" },
   { kind: "income", label: "Reactor", amount: 1, base: 140, effect: "+1 ⛃/s" },
 ];
 export const investCost = (base: number, level: number) => base * (level + 1);
 
 // Units see far beyond their attack range; a base reveals a fixed radius.
 export const VISION_MULT = 9;
-export const VISION_CAP = 42; // so a long-range scout can't reveal the entire map
-export const BASE_VISION = 20;
+export const VISION_CAP = 42 * GRID_SCALE; // so a long-range scout can't reveal the entire map
+export const BASE_VISION = 20 * GRID_SCALE;
 export const visionOf = (u: UnitType) => Math.min(VISION_CAP, UNIT_STATS[u].range * VISION_MULT);
 // Units are trained at a camp; buildings are placed on the map (no doctrine).
 export const TRAINABLE: UnitType[] = UNIT_TYPES.filter((t) => !UNIT_STATS[t].building);
