@@ -10,6 +10,7 @@ const OWN_COLOR = 0x4aa3ff;
 const ENEMY_COLOR = 0xff6a5a;
 const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
 const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def" };
+const BUDGET_NAME: Record<DoctrineId, string> = { aggressive: "Attack", recon: "Intelligence", defensive: "Defense" };
 const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
 
 const stage = document.getElementById("stage")!;
@@ -185,7 +186,9 @@ function render(s: StateMsg) {
   for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
-  econEl.textContent = `⛃ ${s.resources}  ·  +${s.incomePerSec}/s`;
+  const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0);
+  const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
+  econEl.textContent = `⛃ ${s.resources}   ·   earning +${s.incomePerSec}/s   ·   spending ~${spend}/s   ·   saving ${Math.max(0, 100 - allocPct)}%`;
 }
 
 function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
@@ -273,7 +276,7 @@ function updateReadout() {
 
 // ---- camp panels: doctrine editor + continuous production rate ----
 let built = false;
-const rateVal = (id: DoctrineId) => Math.max(0, Math.min(60, parseInt((document.getElementById(`rate-${id}`) as HTMLInputElement).value) || 0));
+const budgetVal = (id: DoctrineId) => Math.max(0, Math.min(100, parseInt((document.getElementById(`rate-${id}`) as HTMLInputElement).value) || 0));
 const currentProdUnit = (id: DoctrineId): UnitType => (latestCamps.find((c) => c.id === id)?.production.unit ?? "gunner");
 
 function syncCamps(camps: Camp[]) {
@@ -286,12 +289,13 @@ function syncCamps(camps: Camp[]) {
     document.getElementById(`cool-${c.id}`)!.textContent = c.compiling ? "compiling…" : remain > 0 ? `cooldown: ${remain}s` : "";
     document.getElementById(`spec-${c.id}`)!.textContent =
       `agg ${c.spec.aggression.toFixed(2)} · engage ${c.spec.engageRange} · retreat<${(c.spec.retreatHealthPct * 100) | 0}% · explore ${c.spec.explorationBias.toFixed(2)} · leash ${c.spec.defendRadius ?? "none"}`;
-    // production UI
+    // production UI (budget % of income)
     const rateInput = document.getElementById(`rate-${c.id}`) as HTMLInputElement;
-    if (rateInput && document.activeElement !== rateInput) rateInput.value = String(c.production.ratePerMin);
+    if (rateInput && document.activeElement !== rateInput) rateInput.value = String(c.production.budgetPct);
     for (const b of document.getElementById(`prod-${c.id}`)!.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.prod === c.production.unit);
-    const cost = UNIT_STATS[c.production.unit].cost * c.production.ratePerMin;
-    document.getElementById(`prodcost-${c.id}`)!.textContent = c.production.ratePerMin > 0 ? `${UNIT_STATS[c.production.unit].label} · ⛃${cost}/min` : "production paused";
+    const spendPerSec = latestState ? Math.round((latestState.incomePerSec * c.production.budgetPct) / 100) : 0;
+    document.getElementById(`prodcost-${c.id}`)!.textContent =
+      c.production.budgetPct > 0 ? `${UNIT_STATS[c.production.unit].label} · ⛃${spendPerSec}/s` : "budget paused";
   }
 }
 function buildCamps(camps: Camp[]) {
@@ -304,7 +308,7 @@ function buildCamps(camps: Camp[]) {
       `<textarea id="ta-${c.id}">${c.prompt}</textarea>` +
       `<div class="row"><button id="btn-${c.id}">Retrain</button><span class="cool" id="cool-${c.id}"></span></div>` +
       `<div class="spec" id="spec-${c.id}"></div>` +
-      `<div class="row">train <input class="rate" type="number" id="rate-${c.id}" min="0" max="60" step="1" value="${c.production.ratePerMin}"> /min</div>` +
+      `<div class="row"><b class="${DOCTRINE_CLASS[c.id]}">${BUDGET_NAME[c.id]} budget</b> <input class="rate" type="number" id="rate-${c.id}" min="0" max="100" step="5" value="${c.production.budgetPct}">% of income</div>` +
       `<div class="seg" id="prod-${c.id}"></div>` +
       `<div class="sub" id="prodcost-${c.id}"></div>`;
     campsEl.appendChild(div);
@@ -315,11 +319,11 @@ function buildCamps(camps: Camp[]) {
       const b = document.createElement("button");
       b.dataset.prod = t;
       b.textContent = `${UNIT_STATS[t].label.replace(" Infantry", "")} ⛃${UNIT_STATS[t].cost}`;
-      b.onclick = () => sendCmd({ type: "setProduction", camp: c.id, unit: t, ratePerMin: rateVal(c.id) });
+      b.onclick = () => sendCmd({ type: "setProduction", camp: c.id, unit: t, budgetPct: budgetVal(c.id) });
       prodEl.appendChild(b);
     }
     (document.getElementById(`rate-${c.id}`) as HTMLInputElement).onchange = () =>
-      sendCmd({ type: "setProduction", camp: c.id, unit: currentProdUnit(c.id), ratePerMin: rateVal(c.id) });
+      sendCmd({ type: "setProduction", camp: c.id, unit: currentProdUnit(c.id), budgetPct: budgetVal(c.id) });
   }
 }
 setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown

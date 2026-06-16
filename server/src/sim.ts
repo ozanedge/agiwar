@@ -16,11 +16,12 @@ export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 
 const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 
-// thematic default training rates per camp (units/min); players tune these live
-const DEFAULT_PROD: Record<DoctrineId, { unit: UnitType; ratePerMin: number }> = {
-  aggressive: { unit: "gunner", ratePerMin: 6 },
-  recon: { unit: "humvee", ratePerMin: 6 },
-  defensive: { unit: "tank", ratePerMin: 2 },
+// default budget allocation per camp (% of income). Players tune these live.
+// Sum < 100 -> the remainder banks as savings for turrets.
+const DEFAULT_PROD: Record<DoctrineId, { unit: UnitType; budgetPct: number }> = {
+  aggressive: { unit: "gunner", budgetPct: 40 }, // Attack budget
+  recon: { unit: "humvee", budgetPct: 20 }, // Intelligence budget
+  defensive: { unit: "tank", budgetPct: 25 }, // Defense budget
 };
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
@@ -229,13 +230,14 @@ export function step(g: GameState) {
   for (let pi = 0; pi < g.players.length; pi++) {
     const player = g.players[pi];
     player.camps.forEach((camp, ci) => {
-      const rate = camp.production.ratePerMin;
-      if (rate <= 0) return;
-      const interval = Math.max(1, Math.round((60 * TICK_HZ) / rate));
-      if ((g.tick + ci * 7) % interval !== 0) return; // stagger camps
+      const pct = camp.production.budgetPct;
+      if (pct <= 0) return;
       const stats = UNIT_STATS[camp.production.unit];
       if (!stats || stats.building) return;
-      if (player.resources < stats.cost) return; // can't afford this cycle — skip
+      // spend rate = income * pct% ; ticks to fund one unit = cost / spendPerTick
+      const interval = Math.max(1, Math.round((stats.cost * 100) / (INCOME_PER_TICK * pct)));
+      if ((g.tick + ci * 7) % interval !== 0) return; // stagger camps
+      if (player.resources < stats.cost) return; // bank can't cover it this cycle — skip
       player.resources -= stats.cost;
       spawnUnit(g, pi, camp.id, camp.production.unit);
     });

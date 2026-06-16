@@ -150,7 +150,7 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     const stats = UNIT_STATS[msg.unit];
     if (!camp || !stats || stats.building) return; // trainable units only
     camp.production.unit = msg.unit;
-    camp.production.ratePerMin = Math.max(0, Math.min(60, Math.round(msg.ratePerMin) || 0));
+    camp.production.budgetPct = Math.max(0, Math.min(100, Math.round(msg.budgetPct) || 0));
     sendOwnCamps(ws, g, player);
     return;
   }
