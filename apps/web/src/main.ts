@@ -22,6 +22,7 @@ const campsEl = document.getElementById("camps")!;
 
 let latestState: StateMsg | null = null;
 let latestCamps: Camp[] = [];
+let latestTurretBudget = 0;
 let hovered: UnitState | null = null;
 
 const app = new Application();
@@ -155,7 +156,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state") { latestState = msg; render(msg); }
-    else if (msg.type === "camps") { latestCamps = msg.camps; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); }
+    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
   };
@@ -214,7 +215,7 @@ function render(s: StateMsg) {
   for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
-  const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0);
+  const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0) + latestTurretBudget;
   const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
   const b = s.bonuses;
   const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
@@ -375,7 +376,7 @@ const S_TOP = 22; // room for the income label
 let S_HC = 600; // usable chart height; recomputed from the panel each render
 let sankeyPxPerPct = 3; // px of band height per 1% of budget (for drag mapping)
 // two kinds of drag: a camp's budget share, or a unit's weight within a camp
-let dragBudgetId: DoctrineId | null = null, dragBudgetStartY = 0, dragBudgetStartPct = 0, dragBudgetPct = 0;
+let dragBudgetId: DoctrineId | "turret" | null = null, dragBudgetStartY = 0, dragBudgetStartPct = 0, dragBudgetPct = 0;
 let dragMixId: DoctrineId | null = null, dragMixUnit: UnitType | null = null, dragMixStartY = 0, dragMixStartW = 0, dragMixW = 0;
 const dragId = () => dragBudgetId || dragMixId; // any active drag (suppresses re-render from polling)
 
@@ -398,31 +399,34 @@ function renderSankey() {
   S_HC = Math.max(80, sankeyEl.clientHeight - S_TOP - 10); // fill the panel's full height
   while (sankeyEl.firstChild) sankeyEl.removeChild(sankeyEl.firstChild);
   const camps = DOCTRINES.map((d) => latestCamps.find((c) => c.id === d)!).filter(Boolean);
-  const savings = Math.max(0, 100 - camps.reduce((a, c) => a + budgetOf(c), 0));
-  const incX = 4, incW = 14, campX = 74, campW = 18, unitX = 196, unitW = 18, GAP = 8;
+  const campSum = camps.reduce((a, c) => a + budgetOf(c), 0);
+  const turretPct = dragBudgetId === "turret" ? dragBudgetPct : latestTurretBudget;
+  const savings = Math.max(0, 100 - campSum - turretPct);
+  const incX = 4, incW = 14, campX = 74, campW = 18, unitX = 196, unitW = 18, GAP = 7;
 
   mk("rect", { x: incX, y: S_TOP, width: incW, height: S_HC, rx: 2, fill: "#cdd6e0" }, sankeyEl);
   mk("text", { x: incX, y: S_TOP - 1, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`;
 
-  // Fit-based layout: 4 stacked bands (3 camps + savings) sum to `usable`, so the chart
-  // can never overflow/clip its box. Each band = a floor + a share of the remainder by %.
-  const CAMP_MIN = 14, UNIT_MIN = 8, n = TRAINABLE.length;
-  const usable = Math.max(40, S_HC - 3 * GAP);
-  const remainder = Math.max(1, usable - 4 * CAMP_MIN);
+  // Fit-based layout: 5 stacked bands (3 camps + turrets + savings) sum to `usable`, so the
+  // chart never overflows. Each band = a floor + a share of the remainder by %.
+  const CAMP_MIN = 13, UNIT_MIN = 8, n = TRAINABLE.length, NB = 5;
+  const usable = Math.max(40, S_HC - (NB - 1) * GAP);
+  const remainder = Math.max(1, usable - NB * CAMP_MIN);
   sankeyPxPerPct = remainder / 100;
-  const bands: { id: DoctrineId | "savings"; camp: Camp | null; pct: number; col: string }[] = [
-    ...camps.map((c) => ({ id: c.id, camp: c, pct: budgetOf(c), col: HEXCSS[c.id] })),
-    { id: "savings", camp: null, pct: savings, col: "#8794a3" },
+  type Band = { id: DoctrineId | "turret" | "savings"; camp: Camp | null; pct: number; col: string; label: string; drag: boolean };
+  const bands: Band[] = [
+    ...camps.map((c) => ({ id: c.id, camp: c, pct: budgetOf(c), col: HEXCSS[c.id], label: `${BUDGET_NAME[c.id]} ${Math.round(budgetOf(c))}%`, drag: true })),
+    { id: "turret", camp: null, pct: turretPct, col: "#9aa6b2", label: `Turrets ${Math.round(turretPct)}% → defenses`, drag: true },
+    { id: "savings", camp: null, pct: savings, col: "#5b6b74", label: `Savings ${Math.round(savings)}% (banked)`, drag: false },
   ];
   let y = S_TOP;
   for (const b of bands) {
     const h = CAMP_MIN + (b.pct / 100) * remainder; // bands sum to `usable`
     const on = b.pct > 0.5;
     mk("path", { d: ribbon(incX + incW, y, y + h, campX, y, y + h), fill: b.col, "fill-opacity": on ? 0.26 : 0.08 }, sankeyEl);
-    const node = mk("rect", { x: campX, y, width: campW, height: h, rx: 2, fill: b.col, "fill-opacity": on ? 0.92 : 0.34, class: b.camp ? "band" : "" }, sankeyEl);
-    if (b.camp) node.setAttribute("data-band", b.id);
-    mk("text", { x: 20, y: y + h / 2 + 3.5, "font-size": 10, "fill-opacity": on ? 1 : 0.6 }, sankeyEl).textContent =
-      b.camp ? `${BUDGET_NAME[b.camp.id]} ${Math.round(b.pct)}%` : `Savings ${Math.round(b.pct)}% → turrets`;
+    const node = mk("rect", { x: campX, y, width: campW, height: h, rx: 2, fill: b.col, "fill-opacity": on ? 0.92 : 0.34, class: b.drag ? "band" : "" }, sankeyEl);
+    if (b.drag) node.setAttribute("data-band", b.id);
+    mk("text", { x: 20, y: y + h / 2 + 3.5, "font-size": 10, "fill-opacity": on ? 1 : 0.6 }, sankeyEl).textContent = b.label;
 
     if (b.camp) {
       // split this camp band across unit types — sub-bands sum to the band height (fit)
@@ -449,8 +453,9 @@ sankeyEl.addEventListener("pointerdown", (e) => {
   const a = (e.target as Element).getAttribute?.("data-band");
   const m = (e.target as Element).getAttribute?.("data-mix");
   if (a) {
-    dragBudgetId = a as DoctrineId; dragBudgetStartY = e.clientY;
-    dragBudgetStartPct = latestCamps.find((c) => c.id === a)!.production.budgetPct; dragBudgetPct = dragBudgetStartPct;
+    dragBudgetId = a as DoctrineId | "turret"; dragBudgetStartY = e.clientY;
+    dragBudgetStartPct = a === "turret" ? latestTurretBudget : latestCamps.find((c) => c.id === a)!.production.budgetPct;
+    dragBudgetPct = dragBudgetStartPct;
     e.preventDefault();
   } else if (m) {
     const [cid, u] = m.split(":");
@@ -461,7 +466,10 @@ sankeyEl.addEventListener("pointerdown", (e) => {
 });
 window.addEventListener("pointermove", (e) => {
   if (dragBudgetId) {
-    const others = latestCamps.filter((c) => c.id !== dragBudgetId).reduce((a, c) => a + c.production.budgetPct, 0);
+    const campSum = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0);
+    const others = dragBudgetId === "turret"
+      ? campSum // savings absorbs the rest
+      : campSum - latestCamps.find((c) => c.id === dragBudgetId)!.production.budgetPct + latestTurretBudget;
     const raw = dragBudgetStartPct + (dragBudgetStartY - e.clientY) / sankeyPxPerPct;
     dragBudgetPct = Math.max(0, Math.min(100 - others, Math.round(raw / 5) * 5));
     renderSankey();
@@ -472,7 +480,8 @@ window.addEventListener("pointermove", (e) => {
   }
 });
 window.addEventListener("pointerup", () => {
-  if (dragBudgetId) { sendCmd({ type: "setBudget", camp: dragBudgetId, budgetPct: dragBudgetPct }); dragBudgetId = null; }
+  if (dragBudgetId === "turret") { sendCmd({ type: "setTurretBudget", budgetPct: dragBudgetPct }); dragBudgetId = null; }
+  else if (dragBudgetId) { sendCmd({ type: "setBudget", camp: dragBudgetId, budgetPct: dragBudgetPct }); dragBudgetId = null; }
   else if (dragMixId && dragMixUnit) { sendCmd({ type: "setMix", camp: dragMixId, unit: dragMixUnit, weight: dragMixW }); dragMixId = null; dragMixUnit = null; }
 });
 

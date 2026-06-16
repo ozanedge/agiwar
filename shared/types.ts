@@ -109,6 +109,7 @@ export interface CampsMsg {
   type: "camps";
   camps: Camp[];
   fieldGeneral: FieldGeneral;
+  turretBudget: number; // % of income spent auto-building turrets (separate from savings)
 }
 
 /** server -> client one-off notices (cooldown rejection, compile result, field order, etc). */
@@ -141,6 +142,7 @@ export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
   | { type: "setBudget"; camp: DoctrineId; budgetPct: number } // set a camp's share of income
+  | { type: "setTurretBudget"; budgetPct: number } // set the % of income spent on turrets
   | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "captureArtifact"; id: number } // invest to claim a neutral artifact

@@ -22,10 +22,11 @@ const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 // default budget allocation per camp (% of income) + unit mix (weights). Players tune live.
 // Sum of budgets < 100 -> the remainder banks as savings for turrets.
 const DEFAULT_PROD: Record<DoctrineId, { budgetPct: number; mix: Partial<Record<UnitType, number>> }> = {
-  aggressive: { budgetPct: 40, mix: { gunner: 100 } }, // Attack budget
-  recon: { budgetPct: 20, mix: { humvee: 100 } }, // Intelligence budget
-  defensive: { budgetPct: 25, mix: { tank: 100 } }, // Defense budget
+  aggressive: { budgetPct: 35, mix: { gunner: 100 } }, // Attack budget
+  recon: { budgetPct: 15, mix: { humvee: 100 } }, // Intelligence budget
+  defensive: { budgetPct: 20, mix: { tank: 100 } }, // Defense budget
 };
+const DEFAULT_TURRET_BUDGET = 15; // Attack35+Intel15+Defense20+Turret15 = 85 → 15% savings
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
@@ -37,6 +38,7 @@ export interface PlayerState {
   fieldGeneral: FieldGeneral;
   resources: number;
   invest: Bonus; // purchased investment levels per kind
+  turretBudget: number; // % of income auto-spent building turrets (separate from savings)
 }
 
 export interface GameState {
@@ -89,6 +91,7 @@ function makePlayer(): PlayerState {
     fieldGeneral: { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT },
     resources: STARTING_RESOURCES,
     invest: { income: 0, range: 0, hp: 0, damage: 0 },
+    turretBudget: DEFAULT_TURRET_BUDGET,
   };
 }
 
@@ -360,11 +363,10 @@ export function step(g: GameState) {
         spawnUnit(g, pi, camp.id, u);
       });
     });
-    // savings budget (income not allocated to camps) auto-builds a protective turret ring
-    const savingsPct = Math.max(0, 100 - player.camps.reduce((a, c) => a + c.production.budgetPct, 0));
-    if (savingsPct > 0) {
+    // turret budget auto-builds a protective turret ring (savings = the unspent remainder)
+    if (player.turretBudget > 0) {
       const tstats = UNIT_STATS.turret;
-      const interval = Math.max(1, Math.round((tstats.cost * 100) / (INCOME_PER_TICK * savingsPct)));
+      const interval = Math.max(1, Math.round((tstats.cost * 100) / (INCOME_PER_TICK * player.turretBudget)));
       if ((g.tick + pi * 5) % interval === 0 && player.resources >= tstats.cost) {
         const spot = freeTurretSlot(g, pi);
         if (spot) { player.resources -= tstats.cost; spawnUnit(g, pi, null, "turret", spot); }

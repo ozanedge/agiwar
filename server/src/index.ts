@@ -49,7 +49,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
   });
 };
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
-  send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral });
+  send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral, turretBudget: g.players[player].turretBudget });
 
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
@@ -152,6 +152,11 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     const camp = g.players[player].camps.find((c) => c.id === msg.camp);
     if (!camp) return;
     camp.production.budgetPct = Math.max(0, Math.min(100, Math.round(msg.budgetPct) || 0));
+    sendOwnCamps(ws, g, player);
+    return;
+  }
+  if (msg.type === "setTurretBudget") {
+    g.players[player].turretBudget = Math.max(0, Math.min(100, Math.round(msg.budgetPct) || 0));
     sendOwnCamps(ws, g, player);
     return;
   }
