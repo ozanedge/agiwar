@@ -148,6 +148,26 @@ function wander(g: GameState, u: UnitState) {
   tryStep(g, u, dx, dy);
 }
 
+// Recon exploration: move AWAY from our own vision sources (units + base) toward the fog,
+// so scouts fan out and uncover unseen map instead of milling around covered ground.
+function explore(g: GameState, u: UnitState) {
+  let rx = 0, ry = 0;
+  const push = (sx: number, sy: number, w: number) => {
+    const dx = u.x - sx, dy = u.y - sy, d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 0.5) { rx += 1; return; } // coincident -> arbitrary nudge
+    if (d > 32) return; // only nearby coverage repels
+    rx += (dx / d) * (w / d); ry += (dy / d) * (w / d); // closer/already-covered = stronger push outward
+  };
+  const base = g.bases[u.owner];
+  push(base.x, base.y, 6); // leave home
+  for (const f of g.units) if (f.owner === u.owner && f.id !== u.id) push(f.x, f.y, 1.6);
+  if (Math.abs(rx) < 0.05 && Math.abs(ry) < 0.05) { wander(g, u); return; } // already isolated -> meander
+  if (tryStep(g, u, sign(rx), sign(ry))) return;
+  if (tryStep(g, u, sign(rx), 0)) return;
+  if (tryStep(g, u, 0, sign(ry))) return;
+  wander(g, u);
+}
+
 function decide(g: GameState, u: UnitState) {
   const stats = UNIT_STATS[u.unit];
   const period = (n: number) => Math.max(1, Math.round(n * SPEED_MULT));
@@ -205,7 +225,7 @@ function decide(g: GameState, u: UnitState) {
   const wanderChance = spec.explorationBias;
   const forwardChance = spec.aggression * (1 - spec.explorationBias);
   if (roll < wanderChance) {
-    if (canMove) wander(g, u); // recon: many directions, including backward
+    if (canMove) explore(g, u); // recon: head toward the fog, away from already-seen ground
   } else if (roll < wanderChance + forwardChance) {
     mv(enemyBase.x, enemyBase.y); // attack: advance on the enemy base
   } // else: hold position
