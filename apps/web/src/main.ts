@@ -282,61 +282,80 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   return g;
 }
 
-function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
-  const g = new Graphics();
-  const elev = elevAt(u.x, u.y, s.seed, s.gridW, s.gridH);
-  const cx = isoX(u.x, u.y), cy = isoY(u.x, u.y) - elev;
-  const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR; // primary = side
-  const dark = tint(side, -0.28), light = tint(side, 0.28);
-  const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2; // accent outline = doctrine (neutral for buildings)
-  const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
-  g.ellipse(cx, cy + 3, 10, 4).fill({ color: 0x000000, alpha: 0.3 }); // ground shadow
-  const rad = u.unit === "tank" || u.unit === "turret" ? 9 : 7;
-  g.ellipse(cx, cy + 1, rad + 10, (rad + 10) * 0.5).fill({ color: side, alpha: 0.12 }); // soft outer glow
-  g.ellipse(cx, cy + 1, rad + 5, (rad + 5) * 0.5).fill({ color: side, alpha: 0.14 }); // inner glow
-
-  if (u.unit === "tank") {
-    const by = cy - 5;
-    g.roundRect(cx - 9, by - 5, 18, 10, 2).fill(side).stroke(ln);            // hull
-    g.rect(cx - 9, by + 3, 18, 2).fill(dark);                                  // tread shadow
-    g.roundRect(cx - 5, by - 9, 10, 7, 2).fill(light).stroke(ln);             // turret
-    g.rect(cx + 4, by - 7, 11, 2).fill(dark);                                  // barrel
-    g.circle(cx, by - 6, 1.5).fill(acc);                                       // doctrine pip
-  } else if (u.unit === "humvee") {
-    const by = cy - 4;
-    g.roundRect(cx - 8, by - 4, 16, 8, 2).fill(side).stroke(ln);             // body
-    g.roundRect(cx - 2, by - 7, 7, 5, 1).fill(light);                         // cabin
-    g.circle(cx - 5, by + 4, 1.8).fill(0x111417); g.circle(cx + 5, by + 4, 1.8).fill(0x111417); // wheels
-    g.circle(cx + 6, by - 4, 1.4).fill(acc);                                   // doctrine pip
-  } else if (u.unit === "gunner") {
-    const by = cy - 6;
-    g.ellipse(cx, by + 5, 6, 3).fill(dark);                                    // boots/base
-    g.roundRect(cx - 3, by - 4, 6, 9, 2).fill(side).stroke(ln);              // torso
-    g.circle(cx, by - 6, 3).fill(light).stroke(ln);                           // head
-    g.rect(cx + 2, by - 3, 8, 1.6).fill(dark);                                 // rifle
-    g.circle(cx - 4, by - 3, 1.4).fill(acc);                                   // doctrine pip
-  } else if (u.unit === "drone") {
-    const by = cy - 11; // hovers above its shadow
-    g.rect(cx - 6, by - 0.5, 12, 1).fill(dark); g.rect(cx - 0.5, by - 5, 1, 10).fill(dark); // arms
-    for (const [ox, oy] of [[-6, -5], [6, -5], [-6, 5], [6, 5]]) g.circle(cx + ox, by + oy, 1.7).fill(light); // rotors
-    g.circle(cx, by, 3).fill(side).stroke(ln);                                 // body
-    g.circle(cx, by, 1.2).fill(acc);                                           // doctrine pip
-  } else { // turret building: ringed base + rotating gun + barrel
-    const by = cy - 5;
-    g.ellipse(cx, by + 4, 11, 6).fill(dark).stroke(ln);                        // emplacement ring
-    g.circle(cx, by, 6).fill(side).stroke(ln);                                 // gun housing
-    g.rect(cx - 1, by - 14, 2, 14).fill(tint(side, -0.1));                      // tall barrel up
-    g.circle(cx, by, 2).fill(acc);
+// detailed sprite, drawn centered at (0,0) with FORWARD = +x; the container rotates it to face heading
+function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number; width: number; alpha: number }, acc: number) {
+  const dark = tint(side, -0.3), light = tint(side, 0.3), glass = 0x0b1620;
+  if (type === "tank") {
+    g.roundRect(-10, -7.5, 20, 4, 1.6).fill(dark); g.roundRect(-10, 3.5, 20, 4, 1.6).fill(dark); // treads
+    for (let i = -8; i <= 8; i += 4) { g.rect(i, -7.5, 1, 4).fill(tint(dark, -0.25)); g.rect(i, 3.5, 1, 4).fill(tint(dark, -0.25)); } // tread links
+    g.roundRect(-9, -5, 18, 10, 2.5).fill(side).stroke(ln); // hull
+    g.roundRect(-8, -4, 15, 3, 1.5).fill({ color: light, alpha: 0.5 }); // hull sheen
+    g.roundRect(-4.5, -4.5, 9, 9, 2.5).fill(light).stroke(ln); // turret
+    g.roundRect(4, -1.4, 14, 2.8, 1.2).fill(tint(dark, 0.1)); g.circle(18, 0, 1.7).fill(dark); // barrel + muzzle
+    g.circle(-0.5, 0, 2).fill(tint(side, -0.15)); g.circle(-0.5, 0, 1).fill(acc); // hatch + pip
+  } else if (type === "humvee") {
+    for (const [wx, wy] of [[-5.5, -6], [5.5, -6], [-5.5, 6], [5.5, 6]]) { g.circle(wx, wy, 2.4).fill(0x0c0f12); g.circle(wx, wy, 1.1).fill(0x2a2f33); }
+    g.roundRect(-9, -5, 18, 10, 2.5).fill(side).stroke(ln); // chassis
+    g.roundRect(2.5, -4.2, 6.5, 8.4, 1.5).fill(tint(side, -0.18)); // hood
+    g.roundRect(-4.5, -4.5, 7.5, 9, 2).fill(light).stroke(ln); // cabin
+    g.roundRect(0.5, -3.4, 2.4, 6.8, 1).fill(glass); // windshield (front)
+    g.roundRect(-8.5, -1, 2, 2, 0.5).fill({ color: 0xffe9a8, alpha: 0.5 }); // tail light cluster
+    g.circle(-6.5, 0, 1.2).fill(acc); // pip
+  } else if (type === "gunner") {
+    g.ellipse(-1, 0, 5, 4.2).fill(dark); // pack/base
+    g.roundRect(-3.5, -3, 7.5, 6, 2.6).fill(side).stroke(ln); // torso
+    g.roundRect(2.5, -0.8, 11, 1.7, 0.8).fill(0x15191c); g.rect(11, -1.3, 1.6, 2.6).fill(0x0d1013); // rifle + stock
+    g.circle(2.3, 0, 2.7).fill(light).stroke(ln); // helmet (front)
+    g.circle(2.3, 0, 1.1).fill({ color: glass, alpha: 0.8 }); // visor
+    g.circle(-4.2, 0, 1.1).fill(acc); // pip
+  } else if (type === "drone") {
+    for (const [rx, ry] of [[6, 6], [6, -6], [-6, 6], [-6, -6]]) g.moveTo(0, 0).lineTo(rx, ry).stroke({ color: dark, width: 1.6 });
+    for (const [rx, ry] of [[6, 6], [6, -6], [-6, 6], [-6, -6]]) { g.circle(rx, ry, 2.6).fill({ color: side, alpha: 0.25 }); g.circle(rx, ry, 2.6).stroke({ color: light, width: 0.9, alpha: 0.7 }); g.circle(rx, ry, 0.9).fill(dark); }
+    g.circle(0, 0, 3.4).fill(side).stroke(ln); // body
+    g.circle(3, 0, 1.5).fill(glass); // camera (front)
+    g.circle(0, 0, 1.1).fill(acc);
+  } else { // turret gun (the ground ring is drawn non-rotating in the base layer)
+    g.circle(0, 0, 6).fill(side).stroke(ln); // housing
+    g.circle(0, 0, 6).stroke({ color: tint(side, 0.3), width: 0.8, alpha: 0.6 });
+    g.roundRect(0, -1.7, 16, 3.4, 1.3).fill(tint(dark, 0.1)); g.circle(16, 0, 1.9).fill(dark); // barrel + muzzle
+    g.circle(0, 0, 2.4).fill(tint(side, 0.25)); g.circle(0, 0, 1.1).fill(acc);
   }
-  g.ellipse(cx - rad * 0.35, cy - rad * 1.2, rad * 0.5, rad * 0.28).fill({ color: 0xffffff, alpha: 0.2 }); // specular sheen
-  if (u.hp < u.maxHp) g.rect(cx - rad, cy - rad - 9, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
-  if (u.overrideUntil > s.tick) g.circle(cx, cy - rad, rad + 3).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
-  g.eventMode = "static";
-  g.cursor = "pointer";
-  g.on("pointerover", () => { hovered = u; updateReadout(); });
-  g.on("pointerout", () => { if (hovered?.id === u.id) { hovered = null; updateReadout(); } });
-  g.zIndex = u.x + u.y;
-  return g;
+}
+
+function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
+  const cont = new Container();
+  const elev = elevAt(u.x, u.y, s.seed, s.gridW, s.gridH);
+  cont.x = isoX(u.x, u.y); cont.y = isoY(u.x, u.y) - elev;
+  cont.zIndex = u.x + u.y;
+  const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
+  const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
+  const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
+  const rad = u.unit === "tank" || u.unit === "turret" ? 10 : 8;
+  const lift = u.unit === "drone" ? 13 : u.unit === "turret" ? 5 : rad;
+
+  const base = new Graphics(); // never rotates: shadow, glow, (turret ground ring)
+  base.ellipse(0, 3, 11, 4.5).fill({ color: 0x000000, alpha: 0.3 });
+  base.ellipse(0, 1, rad + 11, (rad + 11) * 0.5).fill({ color: side, alpha: 0.12 });
+  base.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.14 });
+  if (u.unit === "turret") base.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(ln);
+  cont.addChild(base);
+
+  const body = new Graphics(); // rotates to face heading (iso-projected)
+  drawBody(body, u.unit, side, ln, acc);
+  body.position.set(0, -lift);
+  body.rotation = (u.dx || u.dy) ? Math.atan2((u.dx + u.dy) * (TILE_H / 2), (u.dx - u.dy) * (TILE_W / 2)) : 0;
+  cont.addChild(body);
+
+  const top = new Graphics(); // never rotates: hp bar + override ring
+  if (u.hp < u.maxHp) top.rect(-rad, -lift - rad - 5, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
+  if (u.overrideUntil > s.tick) top.circle(0, -lift, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+  cont.addChild(top);
+
+  cont.eventMode = "static";
+  cont.cursor = "pointer";
+  cont.on("pointerover", () => { hovered = u; updateReadout(); });
+  cont.on("pointerout", () => { if (hovered?.id === u.id) { hovered = null; updateReadout(); } });
+  return cont;
 }
 
 function updateReadout() {

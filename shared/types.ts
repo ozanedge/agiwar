@@ -44,6 +44,8 @@ export interface UnitState {
   owner: number; // player index
   camp: DoctrineId | null; // trained doctrine; null for buildings (placed, not trained)
   unit: UnitType; // gunner / tank / humvee -> stats (hp, speed, damage)
+  dx: number; // facing direction (grid units, -1..1) — for sprite orientation
+  dy: number;
   x: number;
   y: number;
   hp: number;

@@ -147,6 +147,7 @@ function stepToBase(g: GameState, u: UnitState, owner: number) {
     const d = dist[ny * W + nx];
     if (d < best) { best = d; bx = nx; by = ny; }
   }
+  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); } // heading
   u.x = bx; u.y = by;
 }
 
@@ -182,6 +183,8 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
     owner,
     camp,
     unit: type,
+    dx: owner === 0 ? 1 : -1, // start facing the enemy
+    dy: 0,
     x: pos ? pos.x : base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)),
     y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y - 2 + (jitter % 5))),
     hp,
@@ -219,7 +222,7 @@ const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
   if (dx === 0 && dy === 0) return false;
   const nx = u.x + dx, ny = u.y + dy;
   if (!passable(g, nx, ny)) return false;
-  u.x = nx; u.y = ny; return true;
+  u.x = nx; u.y = ny; u.dx = dx; u.dy = dy; return true; // record heading
 };
 
 // Local stepper for DYNAMIC targets (chasing a unit, sieging an artifact): pick the passable
@@ -282,7 +285,7 @@ function decide(g: GameState, u: UnitState) {
   // 0) stationary buildings (turrets): no doctrine — just fire on the nearest enemy in range
   if (stats.stationary) {
     const e = nearestEnemy(g, u);
-    if (e && cheb(u.x, u.y, e.x, e.y) <= range) atk(e);
+    if (e) { u.dx = sign(e.x - u.x); u.dy = sign(e.y - u.y); if (cheb(u.x, u.y, e.x, e.y) <= range) atk(e); } // aim at target
     return;
   }
 
@@ -426,7 +429,7 @@ function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } |
 /** Public (wire) shape of a unit — drops the internal `_ovr` spec so it never leaks. */
 function pub(u: UnitState): UnitState {
   return {
-    id: u.id, owner: u.owner, camp: u.camp, unit: u.unit, x: u.x, y: u.y,
+    id: u.id, owner: u.owner, camp: u.camp, unit: u.unit, dx: u.dx, dy: u.dy, x: u.x, y: u.y,
     hp: u.hp, maxHp: u.maxHp, overrideUntil: u.overrideUntil, overrideLabel: u.overrideLabel,
   };
 }
