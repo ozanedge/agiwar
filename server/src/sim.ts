@@ -23,7 +23,7 @@ const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 // Sum of budgets < 100 -> the remainder banks as savings for turrets.
 const DEFAULT_PROD: Record<DoctrineId, { budgetPct: number; mix: Partial<Record<UnitType, number>> }> = {
   aggressive: { budgetPct: 30, mix: { gunner: 100 } }, // Attack budget
-  recon: { budgetPct: 10, mix: { humvee: 100 } }, // Intelligence budget
+  recon: { budgetPct: 12, mix: { drone: 100 } }, // Intelligence budget — drones are our eyes
   defensive: { budgetPct: 15, mix: { tank: 100 } }, // Defense budget
   builder: { budgetPct: 10, mix: { humvee: 100 } }, // Builder budget — units hunt artifacts
 };
