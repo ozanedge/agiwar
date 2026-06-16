@@ -13,10 +13,10 @@ const ARTIFACT_HP = 120;
 export type Bonus = { income: number; range: number; hp: number; damage: number };
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
-// 16× cell density (4× per axis) on the same physical map: smoother terrain + movement.
-// (was 200×130; ×GRID_SCALE per axis.)
-export const GRID_W = Number(process.env.GRID_W ?? 200 * GRID_SCALE); // 800
-export const GRID_H = Number(process.env.GRID_H ?? 130 * GRID_SCALE); // 520
+// 16× cell density (4× per axis). The march now runs SW→NE along the gy (H) axis, so H is the
+// LONG dimension — restores the original long-march distance in the reoriented layout. (520×800)
+export const GRID_W = Number(process.env.GRID_W ?? 130 * GRID_SCALE); // 520 (lateral)
+export const GRID_H = Number(process.env.GRID_H ?? 200 * GRID_SCALE); // 800 (march axis, base→base)
 const BASE_HP = Number(process.env.BASE_HP ?? 400);
 export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 resources/sec at 10Hz
 const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
