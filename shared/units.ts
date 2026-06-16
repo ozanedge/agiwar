@@ -29,6 +29,11 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
 };
 
 export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "turret"];
+
+// A unit sees 3× as far as it can shoot; a base reveals a fixed radius.
+export const VISION_MULT = 3;
+export const BASE_VISION = 16;
+export const visionOf = (u: UnitType) => UNIT_STATS[u].range * VISION_MULT;
 // Units are trained at a camp; buildings are placed on the map (no doctrine).
 export const TRAINABLE: UnitType[] = UNIT_TYPES.filter((t) => !UNIT_STATS[t].building);
 export const BUILDINGS: UnitType[] = UNIT_TYPES.filter((t) => UNIT_STATS[t].building);

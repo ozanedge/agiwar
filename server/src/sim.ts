@@ -3,15 +3,13 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION, visionOf } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
 export const GRID_W = Number(process.env.GRID_W ?? 200); // large map -> long marches
 export const GRID_H = Number(process.env.GRID_H ?? 130);
 const BASE_HP = Number(process.env.BASE_HP ?? 400);
-const SENSOR = Number(process.env.SENSOR ?? 18); // targeting range
-const VISION = Number(process.env.VISION ?? 14); // fog reveal range
 export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 resources/sec at 10Hz
 const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
@@ -192,7 +190,7 @@ function decide(g: GameState, u: UnitState) {
   }
 
   // 3) engage if an enemy is in sensor + within engageRange and we're aggressive enough
-  const willEngage = enemy && enemyDist <= SENSOR && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
+  const willEngage = enemy && enemyDist <= stats.range * VISION_MULT && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
   if (willEngage) {
     if (enemyDist <= stats.range) atk(enemy!);
     else mv(enemy!.x, enemy!.y);
@@ -294,10 +292,11 @@ function pub(u: UnitState): UnitState {
 /** Fog of war: what `player` can see. Own units/base always; enemy units/base only when
  *  within VISION of one of the player's units or base — so scouting (recon doctrine) pays off. */
 export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[] } {
-  const viewers = g.units.filter((u) => u.owner === player).map((u) => ({ x: u.x, y: u.y }));
+  const own = g.units.filter((u) => u.owner === player);
   const ownBase = g.bases[player];
-  if (ownBase) viewers.push({ x: ownBase.x, y: ownBase.y });
-  const visible = (x: number, y: number) => viewers.some((v) => cheb(v.x, v.y, x, y) <= VISION);
+  const visible = (x: number, y: number) =>
+    (!!ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION) ||
+    own.some((u) => cheb(u.x, u.y, x, y) <= visionOf(u.unit)); // each unit sees 3× its range
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),

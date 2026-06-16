@@ -1,7 +1,7 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, type UnitType } from "../../../shared/units.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
@@ -31,10 +31,12 @@ stage.appendChild(app.canvas);
 const TILE_W = 36, TILE_H = 18; // 2:1 isometric diamond
 const world = new Container(); // camera-transformed
 app.stage.addChild(world);
-const terrainLayer = new Graphics(); // built once per (seed, size)
+const terrainLayer = new Graphics(); // full terrain, built once per (seed, size)
+const shroudLayer = new Graphics(); // static dark overlay across the whole map (fog of war)
+const revealLayer = new Graphics(); // bright terrain redrawn where you currently have vision
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
-world.addChild(terrainLayer, entityLayer);
+world.addChild(terrainLayer, shroudLayer, revealLayer, entityLayer);
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -73,24 +75,44 @@ function decorate(g: Graphics, kind: TerrainKind, gx: number, gy: number, seed: 
 }
 
 let terrainKey = "";
+function drawTile(layer: Graphics, gx: number, gy: number, seed: number, W: number, H: number) {
+  const t = terrainAt(gx, gy, seed, W, H);
+  const col = tint(KIND_COLOR[t.kind], t.micro);
+  const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev;
+  const groundY = isoY(gx, gy);
+  if (t.elev > 4) { // earthy side walls for relief on raised ground
+    layer.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.4));
+    layer.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.22));
+  }
+  layer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
+  decorate(layer, t.kind, gx, gy, seed, cx, cy);
+}
+
 function buildTerrain(seed: number, W: number, H: number) {
   terrainLayer.clear();
   for (let sum = 0; sum <= W + H - 2; sum++) { // painter order: far tiles first
-    for (let gx = Math.max(0, sum - (H - 1)); gx <= Math.min(W - 1, sum); gx++) {
-      const gy = sum - gx;
-      const t = terrainAt(gx, gy, seed, W, H);
-      const col = tint(KIND_COLOR[t.kind], t.micro);
-      const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev;
-      const groundY = isoY(gx, gy);
-      if (t.elev > 4) { // earthy side walls for relief on raised ground
-        terrainLayer.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.4));
-        terrainLayer.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.22));
-      }
-      terrainLayer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
-      decorate(terrainLayer, t.kind, gx, gy, seed, cx, cy);
-    }
+    for (let gx = Math.max(0, sum - (H - 1)); gx <= Math.min(W - 1, sum); gx++) drawTile(terrainLayer, gx, sum - gx, seed, W, H);
   }
+  // one dark overlay across the whole map = fog of war; the reveal pass lifts it where you can see
+  shroudLayer.clear();
+  const x0 = isoX(0, H - 1) - TILE_W, x1 = isoX(W - 1, 0) + TILE_W, y0 = isoY(0, 0) - 60, y1 = isoY(W - 1, H - 1) + TILE_H * 2;
+  shroudLayer.rect(x0, y0, x1 - x0, y1 - y0).fill({ color: 0x060a12, alpha: 0.52 });
   terrainKey = `${seed}:${W}:${H}`;
+}
+
+// redraw full-brightness terrain everywhere the player currently has vision (over the shroud)
+function renderReveal(s: StateMsg) {
+  revealLayer.clear();
+  const seen = new Set<number>();
+  const addBox = (cx: number, cy: number, R: number) => {
+    for (let gx = Math.max(0, cx - R); gx <= Math.min(s.gridW - 1, cx + R); gx++)
+      for (let gy = Math.max(0, cy - R); gy <= Math.min(s.gridH - 1, cy + R); gy++) seen.add(gy * s.gridW + gx);
+  };
+  for (const b of s.bases) if (b.owner === s.you) addBox(b.x, b.y, BASE_VISION);
+  for (const u of s.units) if (u.owner === s.you) addBox(u.x, u.y, UNIT_STATS[u.unit].range * VISION_MULT);
+  // painter order so elevation side-walls overlap correctly
+  [...seen].sort((a, b) => (Math.floor(a / s.gridW) + (a % s.gridW)) - (Math.floor(b / s.gridW) + (b % s.gridW)))
+    .forEach((k) => drawTile(revealLayer, k % s.gridW, Math.floor(k / s.gridW), s.seed, s.gridW, s.gridH));
 }
 
 // ---- camera (pan + zoom), centered on your base ----
@@ -143,6 +165,7 @@ function showNotice(text: string, level: string) {
 // ---- rendering ----
 function render(s: StateMsg) {
   if (terrainKey !== `${s.seed}:${s.gridW}:${s.gridH}`) { buildTerrain(s.seed, s.gridW, s.gridH); centerOnBase(s); }
+  renderReveal(s); // lift the shroud where we currently have vision
   entityLayer.removeChildren();
   for (const b of s.bases) entityLayer.addChild(makeBase(b, s));
   for (const u of s.units) entityLayer.addChild(makeUnit(u, s));

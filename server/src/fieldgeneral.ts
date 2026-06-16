@@ -12,6 +12,7 @@
 // Net effect: from ~$8k/mo down to a few hundred for the same gameplay.
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import type { DoctrineId, FieldGeneralDecision } from "../../shared/types.js";
+import { visionOf } from "../../shared/units.js";
 import type { GameState } from "./sim.js";
 
 const ENABLED = (process.env.FIELD_GENERAL ?? "on") !== "off";
@@ -19,7 +20,6 @@ const MIN_INTERVAL_MS = Number(process.env.FG_MIN_INTERVAL_MS ?? 30_000); // 30s
 const REGION = process.env.AWS_REGION ?? "us-west-2";
 const MODEL_ID = process.env.FG_MODEL_ID ?? "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
-const SENSOR = 14;
 
 let client: BedrockRuntimeClient | null = null;
 const bedrock = () => (client ??= new BedrockRuntimeClient({ region: REGION }));
@@ -50,9 +50,9 @@ function summarize(g: GameState, player: number): Summary {
   let hpSum = 0;
   for (const u of own) { if (u.camp) byCamp[u.camp]++; hpSum += u.hp / u.maxHp; }
   const myBase = g.bases[player];
-  // enemy units seen by any of my units
+  // enemy units seen by any of my units (each sees 3× its range)
   const contacts = g.units.filter(
-    (e) => e.owner !== player && own.some((u) => Math.max(Math.abs(u.x - e.x), Math.abs(u.y - e.y)) <= SENSOR)
+    (e) => e.owner !== player && own.some((u) => Math.max(Math.abs(u.x - e.x), Math.abs(u.y - e.y)) <= visionOf(u.unit))
   );
   const baseHpPct = Math.round((myBase.hp / myBase.maxHp) * 100);
   const avgHp = own.length ? Math.round((hpSum / own.length) * 100) : 0;
