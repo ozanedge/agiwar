@@ -23,6 +23,11 @@
       .seg { display: flex; gap: 4px; flex-wrap: wrap; }
       .seg button { padding: 4px 7px; }
       .rate { width: 46px; background: #0e141b; color: #cdd6e0; border: 1px solid #243140; border-radius: 4px; padding: 2px 4px; font: inherit; }
+      #sankey-panel { min-width: 360px; }
+      #sankey { display: block; }
+      #sankey text { fill: #cdd6e0; font: 11px ui-monospace, monospace; pointer-events: none; }
+      #sankey .band { cursor: ns-resize; }
+      #sankey .out { cursor: pointer; }
       .sub { color: #6b7a8d; font-size: 11px; }
       .spec { color: #7f8fa3; font-size: 10.5px; }
       .cool { color: #e0a45a; font-size: 11px; }
@@ -42,6 +47,11 @@
         <div id="readout">hover a unit to inspect it</div>
       </div>
       <div id="controls">
+        <div class="panel" id="sankey-panel">
+          <h4>Budget flow</h4>
+          <svg id="sankey" width="344" height="196" viewBox="0 0 344 196"></svg>
+          <div class="sub">drag a band to reallocate · click an output to switch unit</div>
+        </div>
         <div id="camps"></div>
         <div class="panel">
           <h4>Build</h4>

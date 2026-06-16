@@ -274,9 +274,8 @@ function updateReadout() {
     `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
 }
 
-// ---- camp panels: doctrine editor + continuous production rate ----
+// ---- camp panels: doctrine editor only (budget/unit live in the Sankey chart) ----
 let built = false;
-const budgetVal = (id: DoctrineId) => Math.max(0, Math.min(100, parseInt((document.getElementById(`rate-${id}`) as HTMLInputElement).value) || 0));
 const currentProdUnit = (id: DoctrineId): UnitType => (latestCamps.find((c) => c.id === id)?.production.unit ?? "gunner");
 
 function syncCamps(camps: Camp[]) {
@@ -289,14 +288,8 @@ function syncCamps(camps: Camp[]) {
     document.getElementById(`cool-${c.id}`)!.textContent = c.compiling ? "compiling…" : remain > 0 ? `cooldown: ${remain}s` : "";
     document.getElementById(`spec-${c.id}`)!.textContent =
       `agg ${c.spec.aggression.toFixed(2)} · engage ${c.spec.engageRange} · retreat<${(c.spec.retreatHealthPct * 100) | 0}% · explore ${c.spec.explorationBias.toFixed(2)} · leash ${c.spec.defendRadius ?? "none"}`;
-    // production UI (budget % of income)
-    const rateInput = document.getElementById(`rate-${c.id}`) as HTMLInputElement;
-    if (rateInput && document.activeElement !== rateInput) rateInput.value = String(c.production.budgetPct);
-    for (const b of document.getElementById(`prod-${c.id}`)!.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.prod === c.production.unit);
-    const spendPerSec = latestState ? Math.round((latestState.incomePerSec * c.production.budgetPct) / 100) : 0;
-    document.getElementById(`prodcost-${c.id}`)!.textContent =
-      c.production.budgetPct > 0 ? `${UNIT_STATS[c.production.unit].label} · ⛃${spendPerSec}/s` : "budget paused";
   }
+  if (!dragId) renderSankey();
 }
 function buildCamps(camps: Camp[]) {
   campsEl.innerHTML = "";
@@ -307,26 +300,101 @@ function buildCamps(camps: Camp[]) {
       `<h4 class="${DOCTRINE_CLASS[c.id]}">${c.label}</h4>` +
       `<textarea id="ta-${c.id}">${c.prompt}</textarea>` +
       `<div class="row"><button id="btn-${c.id}">Retrain</button><span class="cool" id="cool-${c.id}"></span></div>` +
-      `<div class="spec" id="spec-${c.id}"></div>` +
-      `<div class="row"><b class="${DOCTRINE_CLASS[c.id]}">${BUDGET_NAME[c.id]} budget</b> <input class="rate" type="number" id="rate-${c.id}" min="0" max="100" step="5" value="${c.production.budgetPct}">% of income</div>` +
-      `<div class="seg" id="prod-${c.id}"></div>` +
-      `<div class="sub" id="prodcost-${c.id}"></div>`;
+      `<div class="spec" id="spec-${c.id}"></div>`;
     campsEl.appendChild(div);
     (document.getElementById(`btn-${c.id}`) as HTMLButtonElement).onclick = () =>
       sendCmd({ type: "editPrompt", camp: c.id, prompt: (document.getElementById(`ta-${c.id}`) as HTMLTextAreaElement).value });
-    const prodEl = document.getElementById(`prod-${c.id}`)!;
-    for (const t of TRAINABLE) {
-      const b = document.createElement("button");
-      b.dataset.prod = t;
-      b.textContent = `${UNIT_STATS[t].label.replace(" Infantry", "")} ⛃${UNIT_STATS[t].cost}`;
-      b.onclick = () => sendCmd({ type: "setProduction", camp: c.id, unit: t, budgetPct: budgetVal(c.id) });
-      prodEl.appendChild(b);
-    }
-    (document.getElementById(`rate-${c.id}`) as HTMLInputElement).onchange = () =>
-      sendCmd({ type: "setProduction", camp: c.id, unit: currentProdUnit(c.id), budgetPct: budgetVal(c.id) });
   }
 }
 setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown
+
+// ---- interactive Sankey: Income → Attack/Intel/Defense/Savings → unit outputs ----
+const NS = "http://www.w3.org/2000/svg";
+const sankeyEl = document.getElementById("sankey") as unknown as SVGSVGElement;
+const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff6b6b", recon: "#5aa9ff", defensive: "#5ad17a" };
+let dragId: DoctrineId | null = null, dragStartY = 0, dragStartPct = 0, dragPct = 0;
+const SANKEY_W = 344, SANKEY_H = 196, S_TOP = 8, S_BOT = 188, S_HC = S_BOT - S_TOP;
+
+function mk(tag: string, attrs: Record<string, string | number>, parent: Element): SVGElement {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, String(attrs[k]));
+  parent.appendChild(e);
+  return e as SVGElement;
+}
+function ribbon(xL: number, yL0: number, yL1: number, xR: number, yR0: number, yR1: number): string {
+  const mx = (xL + xR) / 2;
+  return `M${xL},${yL0} C${mx},${yL0} ${mx},${yR0} ${xR},${yR0} L${xR},${yR1} C${mx},${yR1} ${mx},${yL1} ${xL},${yL1} Z`;
+}
+function pctOf(c: Camp): number { return dragId === c.id ? dragPct : c.production.budgetPct; }
+
+function renderSankey() {
+  if (!latestState || latestCamps.length < 3) return;
+  while (sankeyEl.firstChild) sankeyEl.removeChild(sankeyEl.firstChild);
+  const camps = DOCTRINES.map((d) => latestCamps.find((c) => c.id === d)!).filter(Boolean);
+  const alloc = camps.reduce((a, c) => a + pctOf(c), 0);
+  const savings = Math.max(0, 100 - alloc);
+  const incomeX = 6, incomeW = 16, budX = 150, budW = 18, outX = 300, outW = 20, GAP = 5;
+
+  mk("rect", { x: incomeX, y: S_TOP, width: incomeW, height: S_HC, rx: 2, fill: "#cdd6e0" }, sankeyEl);
+  mk("text", { x: incomeX, y: S_TOP - 1, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`;
+
+  type Band = { id: DoctrineId | "savings"; name: string; col: string; v: number; unit?: UnitType };
+  const bands: Band[] = camps.map((c) => ({ id: c.id, name: BUDGET_NAME[c.id], col: HEXCSS[c.id], v: pctOf(c), unit: c.production.unit }));
+  bands.push({ id: "savings", name: "Savings", col: "#8794a3", v: savings });
+
+  let yInc = S_TOP, yBud = S_TOP;
+  for (const b of bands) {
+    const h = (b.v / 100) * S_HC;
+    const hInc0 = yInc, hInc1 = yInc + h, hBud0 = yBud, hBud1 = yBud + h;
+    // income -> budget ribbon
+    mk("path", { d: ribbon(incomeX + incomeW, hInc0, hInc1, budX, hBud0, hBud1), fill: b.col, "fill-opacity": 0.28 }, sankeyEl);
+    // budget node (draggable)
+    const node = mk("rect", { x: budX, y: hBud0, width: budW, height: Math.max(0, h), rx: 2, fill: b.col, "fill-opacity": 0.9, class: b.id === "savings" ? "" : "band" }, sankeyEl);
+    if (b.id !== "savings") node.setAttribute("data-band", b.id);
+    if (h > 11) mk("text", { x: budX + budW + 4, y: hBud0 + h / 2 + 3, "font-size": 10 }, sankeyEl).textContent = `${b.name} ${Math.round(b.v)}%`;
+    // budget -> output
+    if (b.unit) {
+      mk("path", { d: ribbon(budX + budW, hBud0, hBud1, outX, hBud0, hBud1), fill: b.col, "fill-opacity": 0.22 }, sankeyEl);
+      const out = mk("rect", { x: outX, y: hBud0, width: outW, height: Math.max(0, h), rx: 2, fill: b.col, "fill-opacity": 0.95, class: "out" }, sankeyEl);
+      out.setAttribute("data-out", b.id);
+      if (h > 11) mk("text", { x: outX - 2, y: hBud0 + h / 2 + 3, "font-size": 10, "text-anchor": "end" }, sankeyEl).textContent = UNIT_STATS[b.unit].label.replace(" Infantry", "");
+    } else if (h > 8) {
+      mk("path", { d: ribbon(budX + budW, hBud0, hBud1, outX, hBud0, hBud1), fill: b.col, "fill-opacity": 0.15 }, sankeyEl);
+      mk("text", { x: outX - 2, y: hBud0 + h / 2 + 3, "font-size": 10, "text-anchor": "end" }, sankeyEl).textContent = "→ turrets";
+    }
+    yInc = hInc1; yBud = hBud1 + GAP;
+  }
+}
+
+// drag a budget band to reallocate (savings absorbs the remainder)
+sankeyEl.addEventListener("pointerdown", (e) => {
+  const t = e.target as Element;
+  const band = t.getAttribute?.("data-band") as DoctrineId | null;
+  if (!band) return;
+  dragId = band; dragStartY = e.clientY; dragStartPct = latestCamps.find((c) => c.id === band)!.production.budgetPct; dragPct = dragStartPct;
+  e.preventDefault();
+});
+window.addEventListener("pointermove", (e) => {
+  if (!dragId) return;
+  const others = latestCamps.filter((c) => c.id !== dragId).reduce((a, c) => a + c.production.budgetPct, 0);
+  const raw = dragStartPct + ((dragStartY - e.clientY) / S_HC) * 100;
+  dragPct = Math.max(0, Math.min(100 - others, Math.round(raw / 5) * 5));
+  renderSankey();
+});
+window.addEventListener("pointerup", () => {
+  if (!dragId) return;
+  sendCmd({ type: "setProduction", camp: dragId, unit: currentProdUnit(dragId), budgetPct: dragPct });
+  dragId = null;
+});
+// click an output to cycle that camp's produced unit type
+sankeyEl.addEventListener("click", (e) => {
+  const id = (e.target as Element).getAttribute?.("data-out") as DoctrineId | null;
+  if (!id || id === ("savings" as any)) return;
+  const cur = currentProdUnit(id);
+  const next = TRAINABLE[(TRAINABLE.indexOf(cur) + 1) % TRAINABLE.length];
+  const pct = latestCamps.find((c) => c.id === id)!.production.budgetPct;
+  sendCmd({ type: "setProduction", camp: id, unit: next, budgetPct: pct });
+});
 
 // ---- field general doctrine editor ----
 let fgBuilt = false;
