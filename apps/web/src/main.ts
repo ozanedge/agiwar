@@ -309,6 +309,7 @@ const sankeyEl = document.getElementById("sankey") as unknown as SVGSVGElement;
 const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff5d73", recon: "#5ab0ff", defensive: "#2fe0bd" };
 const S_TOP = 22; // room for the income label
 let S_HC = 600; // usable chart height; recomputed from the panel each render
+let sankeyPxPerPct = 3; // px of band height per 1% of budget (for drag mapping)
 // two kinds of drag: a camp's budget share, or a unit's weight within a camp
 let dragBudgetId: DoctrineId | null = null, dragBudgetStartY = 0, dragBudgetStartPct = 0, dragBudgetPct = 0;
 let dragMixId: DoctrineId | null = null, dragMixUnit: UnitType | null = null, dragMixStartY = 0, dragMixStartW = 0, dragMixW = 0;
@@ -339,42 +340,44 @@ function renderSankey() {
   mk("rect", { x: incX, y: S_TOP, width: incW, height: S_HC, rx: 2, fill: "#cdd6e0" }, sankeyEl);
   mk("text", { x: incX, y: S_TOP - 1, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`;
 
-  const MINBAND = 13; // every draggable band keeps this height even at 0%, so you can grab it
-  let yInc = S_TOP, yCamp = S_TOP, yUnit = S_TOP;
-  for (const c of camps) {
-    const bp = budgetOf(c);
-    const h = (bp / 100) * S_HC;
-    const dispH = Math.max(h, MINBAND);
-    const col = HEXCSS[c.id];
-    mk("path", { d: ribbon(incX + incW, yInc, yInc + h, campX, yCamp, yCamp + dispH), fill: col, "fill-opacity": bp > 0 ? 0.26 : 0.08 }, sankeyEl);
-    const node = mk("rect", { x: campX, y: yCamp, width: campW, height: dispH, rx: 2, fill: col, "fill-opacity": bp > 0 ? 0.92 : 0.32, class: "band" }, sankeyEl);
-    node.setAttribute("data-band", c.id);
-    mk("text", { x: 20, y: yCamp + dispH / 2 + 3, "font-size": 10, "fill-opacity": bp > 0 ? 1 : 0.55 }, sankeyEl).textContent = `${BUDGET_NAME[c.id]} ${Math.round(bp)}%`;
+  // Fit-based layout: 4 stacked bands (3 camps + savings) sum to `usable`, so the chart
+  // can never overflow/clip its box. Each band = a floor + a share of the remainder by %.
+  const CAMP_MIN = 14, UNIT_MIN = 8, n = TRAINABLE.length;
+  const usable = Math.max(40, S_HC - 3 * GAP);
+  const remainder = Math.max(1, usable - 4 * CAMP_MIN);
+  sankeyPxPerPct = remainder / 100;
+  const bands: { id: DoctrineId | "savings"; camp: Camp | null; pct: number; col: string }[] = [
+    ...camps.map((c) => ({ id: c.id, camp: c, pct: budgetOf(c), col: HEXCSS[c.id] })),
+    { id: "savings", camp: null, pct: savings, col: "#8794a3" },
+  ];
+  let y = S_TOP;
+  for (const b of bands) {
+    const h = CAMP_MIN + (b.pct / 100) * remainder; // bands sum to `usable`
+    const on = b.pct > 0.5;
+    mk("path", { d: ribbon(incX + incW, y, y + h, campX, y, y + h), fill: b.col, "fill-opacity": on ? 0.26 : 0.08 }, sankeyEl);
+    const node = mk("rect", { x: campX, y, width: campW, height: h, rx: 2, fill: b.col, "fill-opacity": on ? 0.92 : 0.34, class: b.camp ? "band" : "" }, sankeyEl);
+    if (b.camp) node.setAttribute("data-band", b.id);
+    mk("text", { x: 20, y: y + h / 2 + 3.5, "font-size": 10, "fill-opacity": on ? 1 : 0.6 }, sankeyEl).textContent =
+      b.camp ? `${BUDGET_NAME[b.camp.id]} ${Math.round(b.pct)}%` : `Savings ${Math.round(b.pct)}% → turrets`;
 
-    // split the (displayed) camp band across unit types (Camp → Unit Type layer)
-    const total = TRAINABLE.reduce((a, u) => a + mixOf(c, u), 0);
-    let ySeg = yCamp;
-    for (const u of TRAINABLE) {
-      const w = mixOf(c, u);
-      const frac = total > 0 ? w / total : 0;
-      const segH = frac * dispH;
-      const nodeH = Math.max(segH, MINBAND); // grabbable even at 0%
-      const on = w > 0;
-      mk("path", { d: ribbon(campX + campW, ySeg, ySeg + segH, unitX, yUnit, yUnit + nodeH), fill: col, "fill-opacity": on ? 0.2 : 0.07 }, sankeyEl);
-      const un = mk("rect", { x: unitX, y: yUnit, width: unitW, height: nodeH, rx: 2, fill: col, "fill-opacity": on ? 0.95 : 0.32, class: "band" }, sankeyEl);
-      un.setAttribute("data-mix", `${c.id}:${u}`);
-      mk("text", { x: unitX + unitW + 5, y: yUnit + nodeH / 2 + 3, "font-size": 10, "fill-opacity": on ? 1 : 0.55 }, sankeyEl).textContent =
-        `${UNIT_STATS[u].label.replace(" Infantry", "")} ${Math.round(frac * 100)}%`;
-      ySeg += segH; yUnit += nodeH + 6;
+    if (b.camp) {
+      // split this camp band across unit types — sub-bands sum to the band height (fit)
+      const W = TRAINABLE.reduce((a, u) => a + mixOf(b.camp!, u), 0);
+      let ySeg = y;
+      for (const u of TRAINABLE) {
+        const w = mixOf(b.camp, u);
+        const segH = W <= 0 ? h / n : h >= n * UNIT_MIN ? UNIT_MIN + (w / W) * (h - n * UNIT_MIN) : (w / W) * h;
+        if (segH < 0.5) continue;
+        const onu = w > 0;
+        mk("path", { d: ribbon(campX + campW, ySeg, ySeg + segH, unitX, ySeg, ySeg + segH), fill: b.col, "fill-opacity": onu ? 0.2 : 0.07 }, sankeyEl);
+        const un = mk("rect", { x: unitX, y: ySeg, width: unitW, height: segH, rx: 2, fill: b.col, "fill-opacity": onu ? 0.95 : 0.34, class: "band" }, sankeyEl);
+        un.setAttribute("data-mix", `${b.camp.id}:${u}`);
+        if (segH > 9) mk("text", { x: unitX + unitW + 5, y: ySeg + segH / 2 + 3.5, "font-size": 10, "fill-opacity": onu ? 1 : 0.55 }, sankeyEl).textContent =
+          `${UNIT_STATS[u].label.replace(" Infantry", "")} ${Math.round((W > 0 ? w / W : 0) * 100)}%`;
+        ySeg += segH;
+      }
     }
-    yInc += h; yCamp += dispH + GAP;
-  }
-  // savings → turrets
-  if (savings > 0) {
-    const h = (savings / 100) * S_HC;
-    mk("path", { d: ribbon(incX + incW, yInc, yInc + h, campX, yCamp, yCamp + h), fill: "#8794a3", "fill-opacity": 0.22 }, sankeyEl);
-    mk("rect", { x: campX, y: yCamp, width: campW, height: Math.max(0, h), rx: 2, fill: "#8794a3", "fill-opacity": 0.9 }, sankeyEl);
-    if (h > 10) mk("text", { x: 22, y: yCamp + h / 2 + 3, "font-size": 10 }, sankeyEl).textContent = `Savings ${Math.round(savings)}% → turrets`;
+    y += h + GAP;
   }
 }
 
@@ -395,7 +398,7 @@ sankeyEl.addEventListener("pointerdown", (e) => {
 window.addEventListener("pointermove", (e) => {
   if (dragBudgetId) {
     const others = latestCamps.filter((c) => c.id !== dragBudgetId).reduce((a, c) => a + c.production.budgetPct, 0);
-    const raw = dragBudgetStartPct + ((dragBudgetStartY - e.clientY) / S_HC) * 100;
+    const raw = dragBudgetStartPct + (dragBudgetStartY - e.clientY) / sankeyPxPerPct;
     dragBudgetPct = Math.max(0, Math.min(100 - others, Math.round(raw / 5) * 5));
     renderSankey();
   } else if (dragMixId) {
