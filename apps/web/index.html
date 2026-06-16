@@ -29,12 +29,12 @@
         background: repeating-linear-gradient(to bottom, rgba(0,255,209,.022) 0, rgba(0,255,209,.022) 1px, transparent 1px, transparent 3px); }
 
       #app { display: grid; grid-template-columns: 332px 1fr 320px; grid-template-rows: 1fr 248px; height: 100vh; }
-      #left { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #left { grid-column: 1; grid-row: 1; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #left h4 { margin: 0; }
       #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
-      #controls { grid-column: 2; grid-row: 2; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); overflow-x: auto; align-items: flex-end; justify-content: center; background: var(--bg-panel); backdrop-filter: blur(6px); }
-      /* every commander card is the SAME fixed size no matter which panel hosts it */
-      .cmd { box-sizing: border-box; width: 188px; height: 224px; flex: 0 0 188px; border: 1px solid var(--edge); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
+      /* full-width bottom strip; 6 equal flex cards fill it */
+      #controls { grid-column: 1 / 4; grid-row: 2; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      .cmd { box-sizing: border-box; flex: 1 1 0; min-width: 0; border: 1px solid var(--edge); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
       .cmd h4 { font-size: 11px; }
       .cmd .mem { flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; font-size: 10px; line-height: 1.35; color: #9db8b2; border-left: 2px solid var(--accent-dim); padding: 3px 6px; background: rgba(0,255,209,.03); }
       .cmd h4 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -42,8 +42,7 @@
       .cmd input { flex: 1; min-width: 0; background: #04090e; color: var(--text); border: 1px solid rgba(0,255,209,.18); border-radius: 4px; padding: 4px 6px; font: inherit; }
       .cmd input:focus { outline: none; border-color: var(--accent); }
       .cmd .send { padding: 4px 8px; }
-      #cmd-advisor, #cmd-field { display: flex; justify-content: center; }
-      #right { grid-column: 3; grid-row: 1 / 3; border-left: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #right { grid-column: 3; grid-row: 1; border-left: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #invest { display: flex; flex-direction: column; gap: 5px; }
       #invest button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
       #fglog { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
@@ -88,7 +87,6 @@
         <svg id="sankey"></svg>
         <div class="sub">set live by your commanders</div>
         <div class="sub" id="invest-status"></div>
-        <div id="cmd-advisor" style="margin-top: auto"></div>
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
@@ -100,7 +98,6 @@
       <div id="right">
         <h4>Command log</h4>
         <div id="fglog"></div>
-        <div id="cmd-field"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
