@@ -184,10 +184,31 @@ function addLog(text: string, tick: number) {
   while (fglogEl.childElementCount > 60) fglogEl.lastElementChild?.remove();
 }
 
-// ---- investments status (read-only; the Advisor buys them) ----
-const investStatusEl = document.getElementById("invest-status")!;
+// ---- upgrades panel (read-only; the Advisor buys them) ----
+const investEl = document.getElementById("invest")!;
+const UP_ICON: Record<string, string> = { damage: "◆", hp: "✚", range: "◎", income: "⛃" };
+const UP_PIPS = 6;
+let upgradesBuilt = false;
 function syncInvest(levels: Record<string, number>) {
-  investStatusEl.textContent = "Upgrades: " + INVESTMENTS.map((inv) => `${inv.label.slice(0, 4)} Lv${levels[inv.kind] || 0}`).join(" · ");
+  if (!upgradesBuilt) {
+    for (const inv of INVESTMENTS) {
+      const row = document.createElement("div");
+      row.className = "up";
+      row.innerHTML =
+        `<span class="ico">${UP_ICON[inv.kind]}</span>` +
+        `<span class="nm">${inv.label}<small>${inv.effect} per level</small></span>` +
+        `<span class="meter" id="up-m-${inv.kind}">${Array.from({ length: UP_PIPS }, () => "<i></i>").join("")}</span>` +
+        `<span class="lv" id="up-lv-${inv.kind}"></span>`;
+      investEl.appendChild(row);
+    }
+    upgradesBuilt = true;
+  }
+  for (const inv of INVESTMENTS) {
+    const lvl = levels[inv.kind] || 0;
+    document.getElementById(`up-lv-${inv.kind}`)!.textContent = `Lv${lvl}`;
+    const pips = document.getElementById(`up-m-${inv.kind}`)!.children;
+    for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("on", i < lvl);
+  }
 }
 
 // ---- rendering ----

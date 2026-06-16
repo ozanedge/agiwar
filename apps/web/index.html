@@ -65,6 +65,15 @@
       #sankey text { fill: var(--text); font: 11px "JetBrains Mono", monospace; pointer-events: none; }
       #sankey .band { cursor: ns-resize; }
       .sub { color: rgba(0,255,209,.45); font-size: 11px; }
+      #invest { display: flex; flex-direction: column; gap: 6px; }
+      .up { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid rgba(0,255,209,.16); border-radius: 6px; background: rgba(0,255,209,.04); }
+      .up .ico { width: 20px; height: 20px; flex: 0 0 20px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: rgba(0,255,209,.1); color: var(--accent); font-size: 12px; text-shadow: 0 0 6px rgba(0,255,209,.6); }
+      .up .nm { flex: 1; font-size: 11px; color: var(--text); line-height: 1.25; }
+      .up .nm small { display: block; color: #6b7a8d; font-size: 9.5px; }
+      .up .meter { display: flex; gap: 2px; }
+      .up .meter i { width: 6px; height: 6px; border-radius: 1px; background: rgba(0,255,209,.12); }
+      .up .meter i.on { background: var(--accent); box-shadow: 0 0 5px rgba(0,255,209,.7); }
+      .up .lv { min-width: 30px; text-align: right; color: var(--accent); font-weight: 700; font-size: 11px; text-shadow: 0 0 6px rgba(0,255,209,.4); }
       .spec { color: var(--accent-dim); font-size: 10.5px; }
       .cool { color: var(--warn); font-size: 11px; text-shadow: 0 0 6px rgba(255,181,71,.5); }
       .agg { color: #ff5d73; } .rec { color: #5ab0ff; } .def { color: #2fe0bd; } .bld { color: #ffb547; }
@@ -85,8 +94,9 @@
       <div id="left">
         <h4>Budget flow</h4>
         <svg id="sankey"></svg>
-        <div class="sub">set live by your commanders</div>
-        <div class="sub" id="invest-status"></div>
+        <div class="sub">set live by your Investment Advisor</div>
+        <h4 style="margin-top: 10px">Upgrades</h4>
+        <div id="invest"></div>
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
