@@ -186,7 +186,6 @@ function render(s: StateMsg) {
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
   econEl.textContent = `⛃ ${s.resources}  ·  +${s.incomePerSec}/s`;
-  refreshTroop();
 }
 
 function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
@@ -272,22 +271,27 @@ function updateReadout() {
     `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
 }
 
-// ---- camp doctrine editors ----
+// ---- camp panels: doctrine editor + continuous production rate ----
 let built = false;
+const rateVal = (id: DoctrineId) => Math.max(0, Math.min(60, parseInt((document.getElementById(`rate-${id}`) as HTMLInputElement).value) || 0));
+const currentProdUnit = (id: DoctrineId): UnitType => (latestCamps.find((c) => c.id === id)?.production.unit ?? "gunner");
+
 function syncCamps(camps: Camp[]) {
   if (!built) { buildCamps(camps); built = true; }
   for (const c of camps) {
-    const cool = document.getElementById(`cool-${c.id}`)!;
     const now = Date.now();
     const remain = Math.max(0, Math.ceil((c.cooldownUntil - now) / 1000));
     const btn = document.getElementById(`btn-${c.id}`) as HTMLButtonElement;
     btn.disabled = c.compiling || remain > 0;
-    cool.textContent = c.compiling ? "compiling doctrine…" : remain > 0 ? `cooldown: ${remain}s` : "";
-    const spec = document.getElementById(`spec-${c.id}`)!;
-    spec.textContent =
-      `aggression ${c.spec.aggression.toFixed(2)} · engage ${c.spec.engageRange} · ` +
-      `retreat<${(c.spec.retreatHealthPct * 100) | 0}% · explore ${c.spec.explorationBias.toFixed(2)} · ` +
-      `leash ${c.spec.defendRadius ?? "none"}`;
+    document.getElementById(`cool-${c.id}`)!.textContent = c.compiling ? "compiling…" : remain > 0 ? `cooldown: ${remain}s` : "";
+    document.getElementById(`spec-${c.id}`)!.textContent =
+      `agg ${c.spec.aggression.toFixed(2)} · engage ${c.spec.engageRange} · retreat<${(c.spec.retreatHealthPct * 100) | 0}% · explore ${c.spec.explorationBias.toFixed(2)} · leash ${c.spec.defendRadius ?? "none"}`;
+    // production UI
+    const rateInput = document.getElementById(`rate-${c.id}`) as HTMLInputElement;
+    if (rateInput && document.activeElement !== rateInput) rateInput.value = String(c.production.ratePerMin);
+    for (const b of document.getElementById(`prod-${c.id}`)!.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.prod === c.production.unit);
+    const cost = UNIT_STATS[c.production.unit].cost * c.production.ratePerMin;
+    document.getElementById(`prodcost-${c.id}`)!.textContent = c.production.ratePerMin > 0 ? `${UNIT_STATS[c.production.unit].label} · ⛃${cost}/min` : "production paused";
   }
 }
 function buildCamps(camps: Camp[]) {
@@ -298,11 +302,24 @@ function buildCamps(camps: Camp[]) {
     div.innerHTML =
       `<h4 class="${DOCTRINE_CLASS[c.id]}">${c.label}</h4>` +
       `<textarea id="ta-${c.id}">${c.prompt}</textarea>` +
-      `<div class="row"><button id="btn-${c.id}">Retrain doctrine</button><span class="cool" id="cool-${c.id}"></span></div>` +
-      `<div class="spec" id="spec-${c.id}"></div>`;
+      `<div class="row"><button id="btn-${c.id}">Retrain</button><span class="cool" id="cool-${c.id}"></span></div>` +
+      `<div class="spec" id="spec-${c.id}"></div>` +
+      `<div class="row">train <input class="rate" type="number" id="rate-${c.id}" min="0" max="60" step="1" value="${c.production.ratePerMin}"> /min</div>` +
+      `<div class="seg" id="prod-${c.id}"></div>` +
+      `<div class="sub" id="prodcost-${c.id}"></div>`;
     campsEl.appendChild(div);
     (document.getElementById(`btn-${c.id}`) as HTMLButtonElement).onclick = () =>
       sendCmd({ type: "editPrompt", camp: c.id, prompt: (document.getElementById(`ta-${c.id}`) as HTMLTextAreaElement).value });
+    const prodEl = document.getElementById(`prod-${c.id}`)!;
+    for (const t of TRAINABLE) {
+      const b = document.createElement("button");
+      b.dataset.prod = t;
+      b.textContent = `${UNIT_STATS[t].label.replace(" Infantry", "")} ⛃${UNIT_STATS[t].cost}`;
+      b.onclick = () => sendCmd({ type: "setProduction", camp: c.id, unit: t, ratePerMin: rateVal(c.id) });
+      prodEl.appendChild(b);
+    }
+    (document.getElementById(`rate-${c.id}`) as HTMLInputElement).onchange = () =>
+      sendCmd({ type: "setProduction", camp: c.id, unit: currentProdUnit(c.id), ratePerMin: rateVal(c.id) });
   }
 }
 setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown
@@ -324,40 +341,6 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) 
     sendCmd({ type: "fieldOrder", order: { kind, target: "all", durationTicks: 100, label: kind === "push" ? "Push enemy base" : "Defend base" } });
   };
 }
-
-// ---- train unit: pick a (trainable) unit type + a training camp, then deploy ----
-let selType: UnitType = "gunner";
-let selCamp: DoctrineId = "aggressive";
-const unitTypesEl = document.getElementById("unit-types")!;
-const troopCampsEl = document.getElementById("troop-camps")!;
-const troopSelEl = document.getElementById("troop-sel")!;
-for (const t of TRAINABLE) {
-  const b = document.createElement("button");
-  b.dataset.unit = t;
-  b.textContent = `${UNIT_STATS[t].label.replace(" Infantry", "")} ⛃${UNIT_STATS[t].cost}`;
-  b.onclick = () => { selType = t; refreshTroop(); };
-  unitTypesEl.appendChild(b);
-}
-for (const d of DOCTRINES) {
-  const b = document.createElement("button");
-  b.dataset.tcamp = d;
-  b.textContent = d;
-  b.className = DOCTRINE_CLASS[d];
-  b.onclick = () => { selCamp = d; refreshTroop(); };
-  troopCampsEl.appendChild(b);
-}
-const deployBtn = document.getElementById("deploy") as HTMLButtonElement;
-function refreshTroop() {
-  for (const b of unitTypesEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.unit === selType);
-  for (const b of troopCampsEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.tcamp === selCamp);
-  const st = UNIT_STATS[selType];
-  const afford = !latestState || latestState.resources >= st.cost;
-  deployBtn.disabled = !afford;
-  deployBtn.textContent = afford ? `Deploy ⛃${st.cost} ▸` : `Need ⛃${st.cost}`;
-  troopSelEl.textContent = `${st.label} — ${st.blurb}, ${st.maxHp}hp → ${selCamp} doctrine`;
-}
-deployBtn.onclick = () => sendCmd({ type: "spawn", camp: selCamp, unit: selType });
-refreshTroop();
 
 // ---- build: pick a building, then click the map to place it (no doctrine) ----
 const buildTypesEl = document.getElementById("build-types")!;

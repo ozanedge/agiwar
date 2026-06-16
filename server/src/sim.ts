@@ -14,6 +14,14 @@ const SENSOR = Number(process.env.SENSOR ?? 18); // targeting range
 const VISION = Number(process.env.VISION ?? 14); // fog reveal range
 export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 resources/sec at 10Hz
 const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
+const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
+
+// thematic default training rates per camp (units/min); players tune these live
+const DEFAULT_PROD: Record<DoctrineId, { unit: UnitType; ratePerMin: number }> = {
+  aggressive: { unit: "gunner", ratePerMin: 6 },
+  recon: { unit: "humvee", ratePerMin: 6 },
+  defensive: { unit: "tank", ratePerMin: 2 },
+};
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
@@ -51,7 +59,7 @@ function hash01(a: number, b: number): number {
 }
 
 function makeCamp(id: DoctrineId, label: string): Camp {
-  return { id, label, prompt: PRESET_PROMPTS[id], spec: { ...PRESET_SPECS[id] }, cooldownUntil: 0, compiling: false };
+  return { id, label, prompt: PRESET_PROMPTS[id], spec: { ...PRESET_SPECS[id] }, cooldownUntil: 0, compiling: false, production: { ...DEFAULT_PROD[id] } };
 }
 
 function makePlayer(): PlayerState {
@@ -217,6 +225,21 @@ export function step(g: GameState) {
     }
   }
   for (const p of g.players) p.resources += INCOME_PER_TICK; // fixed income
+  // continuous production: each camp trains its unit at its rate (deterministic cadence)
+  for (let pi = 0; pi < g.players.length; pi++) {
+    const player = g.players[pi];
+    player.camps.forEach((camp, ci) => {
+      const rate = camp.production.ratePerMin;
+      if (rate <= 0) return;
+      const interval = Math.max(1, Math.round((60 * TICK_HZ) / rate));
+      if ((g.tick + ci * 7) % interval !== 0) return; // stagger camps
+      const stats = UNIT_STATS[camp.production.unit];
+      if (!stats || stats.building) return;
+      if (player.resources < stats.cost) return; // can't afford this cycle — skip
+      player.resources -= stats.cost;
+      spawnUnit(g, pi, camp.id, camp.production.unit);
+    });
+  }
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   g.units = g.units.filter((u) => u.hp > 0);

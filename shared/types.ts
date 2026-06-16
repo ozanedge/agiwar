@@ -34,6 +34,8 @@ export interface Camp {
   cooldownUntil: number;
   /** true while a compile is in flight (client shows a spinner, blocks edits). */
   compiling: boolean;
+  /** continuous production: train this unit type at this rate (units/min). 0 = paused. */
+  production: { unit: UnitType; ratePerMin: number };
 }
 
 export interface UnitState {
@@ -113,7 +115,7 @@ export interface FieldGeneralDecision {
 export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
-  | { type: "spawn"; camp: DoctrineId; unit: UnitType } // train a unit (type) at a camp (doctrine)
+  | { type: "setProduction"; camp: DoctrineId; unit: UnitType; ratePerMin: number } // set a camp's training rate
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 

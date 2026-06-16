@@ -82,8 +82,6 @@ function tickRoom(room: Room) {
   const g = room.game;
   step(g);
 
-  if (room.bot && g.tick % 80 === 0 && g.units.filter((u) => u.owner === 1).length < 6) spawnUnit(g, 1, "aggressive");
-
   // each human player's field general evaluates (event-gated); notices go only to that player
   for (const m of room.members) {
     const fg = room.runners[m.player];
@@ -147,17 +145,13 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   const g = room.game;
   const player = member.player;
 
-  if (msg.type === "spawn") {
+  if (msg.type === "setProduction") {
+    const camp = g.players[player].camps.find((c) => c.id === msg.camp);
     const stats = UNIT_STATS[msg.unit];
-    const validCamp = g.players[player].camps.some((c) => c.id === msg.camp);
-    if (!stats || stats.building || !validCamp) return; // units only; buildings use "build"
-    const p = g.players[player];
-    if (p.resources < stats.cost) {
-      send(ws, { type: "notice", level: "error", text: `Not enough resources for ${stats.label} — need ${stats.cost}, have ${Math.floor(p.resources)}.` });
-      return;
-    }
-    p.resources -= stats.cost;
-    spawnUnit(g, player, msg.camp, msg.unit);
+    if (!camp || !stats || stats.building) return; // trainable units only
+    camp.production.unit = msg.unit;
+    camp.production.ratePerMin = Math.max(0, Math.min(60, Math.round(msg.ratePerMin) || 0));
+    sendOwnCamps(ws, g, player);
     return;
   }
 

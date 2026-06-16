@@ -22,6 +22,7 @@
       .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       .seg { display: flex; gap: 4px; flex-wrap: wrap; }
       .seg button { padding: 4px 7px; }
+      .rate { width: 46px; background: #0e141b; color: #cdd6e0; border: 1px solid #243140; border-radius: 4px; padding: 2px 4px; font: inherit; }
       .sub { color: #6b7a8d; font-size: 11px; }
       .spec { color: #7f8fa3; font-size: 10.5px; }
       .cool { color: #e0a45a; font-size: 11px; }
@@ -41,18 +42,13 @@
         <div id="readout">hover a unit to inspect it</div>
       </div>
       <div id="controls">
+        <div id="camps"></div>
         <div class="panel">
-          <h4>Train unit</h4>
-          <div class="seg" id="unit-types"></div>
-          <div class="sub">→ training camp (doctrine)</div>
-          <div class="seg" id="troop-camps"></div>
-          <button id="deploy">Deploy ▸</button>
-          <div class="sub" id="troop-sel"></div>
-          <h4 style="margin-top: 6px">Build</h4>
+          <h4>Build</h4>
+          <div class="sub">placed on the map (no doctrine)</div>
           <div class="seg" id="build-types"></div>
           <div class="sub" id="build-hint">select a building, then click the map</div>
         </div>
-        <div id="camps"></div>
         <div class="panel">
           <h4 id="fg-label">Field General</h4>
           <div class="sub">Live, event-gated overrides — then units revert to native training.</div>
