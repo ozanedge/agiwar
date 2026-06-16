@@ -39,7 +39,7 @@ export interface Camp {
 export interface UnitState {
   id: number;
   owner: number; // player index
-  camp: DoctrineId; // which general trained it -> its NATIVE doctrine
+  camp: DoctrineId | null; // trained doctrine; null for buildings (placed, not trained)
   unit: UnitType; // gunner / tank / humvee -> stats (hp, speed, damage)
   x: number;
   y: number;
@@ -114,6 +114,7 @@ export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
   | { type: "spawn"; camp: DoctrineId; unit: UnitType } // train a unit (type) at a camp (doctrine)
+  | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 
 /** A field-general command: a *time-boxed override* of native doctrine.

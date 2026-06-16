@@ -1,7 +1,7 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, UNIT_TYPES, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, BUILDINGS, type UnitType } from "../../../shared/units.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 // Primary color = SIDE (all your units share it). Doctrine is shown as an accent outline.
@@ -99,6 +99,7 @@ function buildTerrain(seed: number, W: number, H: number) {
 
 // ---- camera (pan + zoom), centered on your base ----
 const cam = { scale: 1 };
+let armedBuilding: UnitType | null = null; // building selected for placement (build mode)
 function centerOnBase(s: StateMsg) {
   const mine = s.bases.find((b) => b.owner === s.you) ?? s.bases[0];
   if (!mine) return;
@@ -106,13 +107,29 @@ function centerOnBase(s: StateMsg) {
   world.x = app.screen.width / 2 - isoX(mine.x, mine.y);
   world.y = app.screen.height / 2 - isoY(mine.x, mine.y);
 }
-let dragging = false, lastX = 0, lastY = 0;
-app.canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
-window.addEventListener("pointerup", () => { dragging = false; });
+let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0, pressOnCanvas = false;
+app.canvas.addEventListener("pointerdown", (e) => { dragging = true; pressOnCanvas = true; lastX = downX = e.clientX; lastY = downY = e.clientY; });
 window.addEventListener("pointermove", (e) => {
   if (!dragging) return;
   world.x += e.clientX - lastX; world.y += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY;
 });
+window.addEventListener("pointerup", (e) => {
+  // a click (not a drag) while a building is armed = place it
+  if (pressOnCanvas && armedBuilding && Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) < 6) {
+    const { gx, gy } = screenToGrid(e.clientX, e.clientY);
+    sendCmd({ type: "build", unit: armedBuilding, x: gx, y: gy });
+  }
+  dragging = false; pressOnCanvas = false;
+});
+
+// screen pixel -> grid cell (inverse iso; ignores elevation, close enough for placement)
+function screenToGrid(clientX: number, clientY: number): { gx: number; gy: number } {
+  const rect = app.canvas.getBoundingClientRect();
+  const wx = (clientX - rect.left - world.x) / cam.scale;
+  const wy = (clientY - rect.top - world.y) / cam.scale;
+  const a = wx / (TILE_W / 2), b = wy / (TILE_H / 2); // a = gx-gy, b = gx+gy
+  return { gx: Math.round((a + b) / 2), gy: Math.round((b - a) / 2) };
+}
 app.canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const ns = Math.max(0.4, Math.min(2.6, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
@@ -181,7 +198,7 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
   const elev = elevAt(u.x, u.y, s.seed);
   const cx = isoX(u.x, u.y), cy = isoY(u.x, u.y) - elev;
   const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR; // primary = side
-  const acc = DOCTRINE_COLOR[u.camp]; // accent outline = doctrine
+  const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2; // accent outline = doctrine (neutral for buildings)
   const r = u.unit === "tank" || u.unit === "turret" ? 8 : u.unit === "gunner" ? 6 : 5; // shape/size = type
   g.ellipse(cx, cy + 2, r * 1.25, r * 0.6).fill({ color: 0x000000, alpha: 0.3 }); // ground shadow
   const by = cy - r - 1; // body stands above the tile
@@ -203,13 +220,16 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
 }
 
 function updateReadout() {
-  if (!hovered || !latestState) { readoutEl.textContent = "hover a unit to inspect its doctrine"; return; }
+  if (!hovered || !latestState) { readoutEl.textContent = "hover a unit to inspect it"; return; }
   const u = hovered;
+  const who = u.owner === latestState.you ? "yours" : "enemy";
+  const header = `${UNIT_STATS[u.unit].label} #${u.id} · ${who} · hp ${u.hp}/${u.maxHp}`;
+  if (!u.camp) { readoutEl.innerHTML = `${header}<br><b>Building</b> — stationary, no doctrine`; return; } // building
   const overridden = u.overrideUntil > latestState.tick;
   const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;
   const cls = DOCTRINE_CLASS[u.camp];
   readoutEl.innerHTML =
-    `${UNIT_STATS[u.unit].label} #${u.id} · ${u.owner === latestState.you ? "yours" : "enemy"} · hp ${u.hp}/${u.maxHp}<br>` +
+    `${header}<br>` +
     `<b>Native:</b> <span class="${cls}">${u.camp}</span><br>` +
     `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
 }
@@ -267,13 +287,13 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) 
   };
 }
 
-// ---- create troop: pick a unit type + a training camp, then deploy ----
+// ---- train unit: pick a (trainable) unit type + a training camp, then deploy ----
 let selType: UnitType = "gunner";
 let selCamp: DoctrineId = "aggressive";
 const unitTypesEl = document.getElementById("unit-types")!;
 const troopCampsEl = document.getElementById("troop-camps")!;
 const troopSelEl = document.getElementById("troop-sel")!;
-for (const t of UNIT_TYPES) {
+for (const t of TRAINABLE) {
   const b = document.createElement("button");
   b.dataset.unit = t;
   b.textContent = `${UNIT_STATS[t].label.replace(" Infantry", "")} ⛃${UNIT_STATS[t].cost}`;
@@ -300,3 +320,21 @@ function refreshTroop() {
 }
 deployBtn.onclick = () => sendCmd({ type: "spawn", camp: selCamp, unit: selType });
 refreshTroop();
+
+// ---- build: pick a building, then click the map to place it (no doctrine) ----
+const buildTypesEl = document.getElementById("build-types")!;
+const buildHintEl = document.getElementById("build-hint")!;
+for (const t of BUILDINGS) {
+  const b = document.createElement("button");
+  b.dataset.build = t;
+  b.textContent = `${UNIT_STATS[t].label} ⛃${UNIT_STATS[t].cost}`;
+  b.onclick = () => setArmed(armedBuilding === t ? null : t);
+  buildTypesEl.appendChild(b);
+}
+function setArmed(t: UnitType | null) {
+  armedBuilding = t;
+  for (const b of buildTypesEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.build === t);
+  app.canvas.style.cursor = t ? "crosshair" : "";
+  buildHintEl.textContent = t ? `click the map to place ${UNIT_STATS[t].label} (⛃${UNIT_STATS[t].cost}) · Esc to cancel` : "select a building, then click the map";
+}
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") setArmed(null); });

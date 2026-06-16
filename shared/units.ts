@@ -16,6 +16,8 @@ export interface UnitTypeStats {
   range: number;
   /** stationary units never move (turrets). */
   stationary?: boolean;
+  /** buildings are placed on the map (no training camp / doctrine). */
+  building?: boolean;
   blurb: string;
 }
 
@@ -23,7 +25,10 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   gunner: { label: "Gunner Infantry", maxHp: 30, moveEvery: 4, attackEvery: 4, dmg: 2, cost: 50, range: 1, blurb: "balanced" },
   tank: { label: "Tank", maxHp: 80, moveEvery: 9, attackEvery: 6, dmg: 6, cost: 150, range: 1, blurb: "strong but slow" },
   humvee: { label: "Humvee", maxHp: 16, moveEvery: 2, attackEvery: 4, dmg: 1, cost: 40, range: 1, blurb: "fast but weak" },
-  turret: { label: "Turret", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 7, stationary: true, blurb: "stationary strongpoint" },
+  turret: { label: "Turret", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 7, stationary: true, building: true, blurb: "placed strongpoint" },
 };
 
 export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "turret"];
+// Units are trained at a camp; buildings are placed on the map (no doctrine).
+export const TRAINABLE: UnitType[] = UNIT_TYPES.filter((t) => !UNIT_STATS[t].building);
+export const BUILDINGS: UnitType[] = UNIT_TYPES.filter((t) => UNIT_STATS[t].building);

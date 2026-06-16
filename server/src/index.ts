@@ -14,6 +14,7 @@ const NET_HZ = Number(process.env.NET_HZ ?? 5); // broadcast rate (<= TICK_HZ) �
 const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
 const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 6000); // wait this long for a human, then give a bot
+const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32); // buildings must be placed within this many tiles of your base
 
 // Date.now() is banned inside the sim, but cooldowns are wall-clock UX, not sim state.
 const epoch0 = Date.now() - Number(process.hrtime.bigint() / 1_000_000n);
@@ -47,7 +48,8 @@ const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
   send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral });
 
 function seed(g: GameState, player: number, bot: boolean) {
-  spawnUnit(g, player, "defensive", "turret"); // a starting strongpoint by base
+  const b = g.bases[player];
+  spawnUnit(g, player, null, "turret", { x: b.x + (player === 0 ? 1 : -1) * 3, y: b.y }); // starting strongpoint
   if (bot) { for (let i = 0; i < 4; i++) spawnUnit(g, player, "aggressive"); return; }
   for (const c of ["aggressive", "recon", "defensive"] as const) { spawnUnit(g, player, c); spawnUnit(g, player, c); }
 }
@@ -147,7 +149,7 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   if (msg.type === "spawn") {
     const stats = UNIT_STATS[msg.unit];
     const validCamp = g.players[player].camps.some((c) => c.id === msg.camp);
-    if (!stats || !validCamp) return; // ignore malformed spawn
+    if (!stats || stats.building || !validCamp) return; // units only; buildings use "build"
     const p = g.players[player];
     if (p.resources < stats.cost) {
       send(ws, { type: "notice", level: "error", text: `Not enough resources for ${stats.label} — need ${stats.cost}, have ${Math.floor(p.resources)}.` });
@@ -155,6 +157,27 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     }
     p.resources -= stats.cost;
     spawnUnit(g, player, msg.camp, msg.unit);
+    return;
+  }
+
+  if (msg.type === "build") {
+    const stats = UNIT_STATS[msg.unit];
+    if (!stats || !stats.building) return; // buildings only
+    const x = Math.round(msg.x), y = Math.round(msg.y);
+    if (!(x >= 0 && x < GRID_W && y >= 0 && y < GRID_H)) return;
+    const myBase = g.bases[player];
+    if (Math.max(Math.abs(x - myBase.x), Math.abs(y - myBase.y)) > BUILD_RADIUS) {
+      send(ws, { type: "notice", level: "error", text: `Build closer to your base (within ${BUILD_RADIUS} tiles).` });
+      return;
+    }
+    const p = g.players[player];
+    if (p.resources < stats.cost) {
+      send(ws, { type: "notice", level: "error", text: `Not enough resources for ${stats.label} — need ${stats.cost}, have ${Math.floor(p.resources)}.` });
+      return;
+    }
+    p.resources -= stats.cost;
+    spawnUnit(g, player, null, msg.unit, { x, y });
+    send(ws, { type: "notice", level: "info", text: `${stats.label} placed.` });
     return;
   }
 

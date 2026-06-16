@@ -73,7 +73,8 @@ export function newGame(seed = 1): GameState {
   return { tick: 0, seed: seed >>> 0, units: [], bases, players: [makePlayer(), makePlayer()], nextUnitId: 1 };
 }
 
-export function spawnUnit(g: GameState, owner: number, camp: DoctrineId, type: UnitType = "gunner"): void {
+/** Spawn a unit (camp = doctrine) near base, or place a building (camp = null) at `pos`. */
+export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, type: UnitType = "gunner", pos?: { x: number; y: number }): void {
   const base = g.bases[owner];
   const jitter = g.units.length;
   const hp = UNIT_STATS[type].maxHp;
@@ -82,8 +83,8 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId, type: U
     owner,
     camp,
     unit: type,
-    x: base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)),
-    y: Math.max(0, Math.min(GRID_H - 1, base.y - 2 + (jitter % 5))),
+    x: pos ? pos.x : base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)),
+    y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y - 2 + (jitter % 5))),
     hp,
     maxHp: hp,
     overrideUntil: 0,
@@ -95,6 +96,7 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId, type: U
  *  doctrine; otherwise the unit runs its camp's compiled doctrine. */
 function effectiveSpec(g: GameState, u: UnitState): BehaviorSpec {
   if (u.overrideUntil > g.tick && (u as any)._ovr) return (u as any)._ovr as BehaviorSpec;
+  if (!u.camp) return PRESET_SPECS.defensive; // building fallback (buildings never reach here)
   const camp = g.players[u.owner]?.camps.find((c) => c.id === u.camp);
   return camp ? camp.spec : PRESET_SPECS[u.camp];
 }
@@ -138,17 +140,18 @@ function decide(g: GameState, u: UnitState) {
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
-  const spec = effectiveSpec(g, u);
-  const myBase = g.bases[u.owner];
-  const mv = (tx: number, ty: number) => { if (canMove) moveToward(u, tx, ty); };
   const atk = (t: { isBase: boolean; ref: UnitState | BaseState }) => { if (canAttack) attack(g, u, t); };
 
-  // 0) stationary strongpoints (turrets): never move, fire on the nearest enemy in range
+  // 0) stationary buildings (turrets): no doctrine — just fire on the nearest enemy in range
   if (stats.stationary) {
     const e = nearestEnemy(g, u);
     if (e && cheb(u.x, u.y, e.x, e.y) <= stats.range) atk(e);
     return;
   }
+
+  const spec = effectiveSpec(g, u);
+  const myBase = g.bases[u.owner];
+  const mv = (tx: number, ty: number) => { if (canMove) moveToward(u, tx, ty); };
 
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {

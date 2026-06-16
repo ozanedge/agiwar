@@ -10,7 +10,7 @@
       body { margin: 0; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0f14; color: #cdd6e0; }
       #app { display: flex; flex-direction: column; height: 100vh; }
       #stage { position: relative; flex: 1; overflow: hidden; min-height: 0; }
-      #controls { display: flex; gap: 10px; padding: 10px; height: 236px; border-top: 1px solid #1d2733; overflow-x: auto; align-items: stretch; background: #0a0e13; }
+      #controls { display: flex; gap: 10px; padding: 10px; height: 264px; border-top: 1px solid #1d2733; overflow-x: auto; align-items: stretch; background: #0a0e13; }
       .panel { border: 1px solid #1d2733; border-radius: 6px; padding: 8px; min-width: 224px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
       #camps { display: flex; gap: 10px; }
       .panel h4 { margin: 0; font-size: 12px; letter-spacing: .3px; }
@@ -42,13 +42,15 @@
       </div>
       <div id="controls">
         <div class="panel">
-          <h4>Create troop</h4>
-          <div class="sub">1 · pick a unit type</div>
+          <h4>Train unit</h4>
           <div class="seg" id="unit-types"></div>
-          <div class="sub">2 · send to a training camp</div>
+          <div class="sub">→ training camp (doctrine)</div>
           <div class="seg" id="troop-camps"></div>
           <button id="deploy">Deploy ▸</button>
           <div class="sub" id="troop-sel"></div>
+          <h4 style="margin-top: 6px">Build</h4>
+          <div class="seg" id="build-types"></div>
+          <div class="sub" id="build-hint">select a building, then click the map</div>
         </div>
         <div id="camps"></div>
         <div class="panel">
