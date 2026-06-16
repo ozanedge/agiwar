@@ -5,6 +5,7 @@ import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, Doctri
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, GRID_SCALE } from "../../shared/units.js";
 import { isPassable, terrainAt } from "../../shared/terrain.js";
+import { modsFor, type ArmyMods } from "../../shared/doctrine.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
 const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 150); // ticks between spawns (~15s)
@@ -49,7 +50,12 @@ export interface PlayerState {
   invest: Bonus; // purchased investment levels per kind
   turretBudget: number; // % of income auto-spent building turrets (separate from savings)
   advisor: FieldGeneral; // investment advisor (label + editable economic doctrine)
+  armyDoctrine: string; // once-per-match build identity (id from shared/doctrine.ts)
+  rally: { x: number; y: number; until: number } | null; // commitment point: forward units concentrate here until `until` tick
 }
+
+/** This player's army-wide modifiers, derived from their chosen doctrine. */
+export const playerMods = (g: GameState, owner: number): ArmyMods => modsFor(g.players[owner]?.armyDoctrine);
 
 export interface GameState {
   tick: number;
@@ -104,6 +110,8 @@ function makePlayer(): PlayerState {
     invest: { income: 0, range: 0, hp: 0, damage: 0 },
     turretBudget: DEFAULT_TURRET_BUDGET,
     advisor: { label: "Advisor Holt", prompt: DEFAULT_ADVISOR_PROMPT },
+    armyDoctrine: "balanced", // neutral until the player chooses
+    rally: null,
   };
 }
 
@@ -185,7 +193,8 @@ function spawnArtifact(g: GameState) {
 export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, type: UnitType = "gunner", pos?: { x: number; y: number }): void {
   const base = g.bases[owner];
   const jitter = g.units.length;
-  const hp = UNIT_STATS[type].maxHp + playerBonus(g, owner).hp;
+  const mods = playerMods(g, owner);
+  const hp = Math.round((UNIT_STATS[type].maxHp + playerBonus(g, owner).hp) * (type === "turret" ? mods.turretHpMult : mods.hpMult));
   g.units.push({
     id: g.nextUnitId++,
     owner,
@@ -285,7 +294,8 @@ function decide(g: GameState, u: UnitState) {
   // per-type hierarchy: act ~GRID_SCALE× more often (movePeriod), and for units whose ideal
   // cadence would drop below 1 tick, take `stepBoost` fine steps per action instead. Attack
   // cadence is time-based, so it is NOT touched by the grid change.
-  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT));
+  const mods = playerMods(g, u.owner);
+  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT * mods.speedMult)); // doctrine speed
   const stepBoost = Math.max(1, Math.round(GRID_SCALE / stats.moveEvery));
   const canMove = (g.tick + u.id) % movePeriod === 0; // per-type speed
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
@@ -360,19 +370,26 @@ function decide(g: GameState, u: UnitState) {
   const roll = hash01(u.id, g.tick);
   const wanderChance = spec.explorationBias;
   const forwardChance = spec.aggression * (1 - spec.explorationBias);
+  // an active RALLY point (player commitment, #5) redirects advancing units to concentrate there
+  // until they arrive / it expires — then they resume pushing the enemy base.
+  const rally = g.players[u.owner].rally;
+  const rallyActive = rally && rally.until > g.tick && cheb(u.x, u.y, rally.x, rally.y) > 3 * GRID_SCALE;
   if (roll < wanderChance) {
     roam(); // recon: head toward the fog, away from already-seen ground
   } else if (roll < wanderChance + forwardChance) {
-    toBase(enemyBase.owner); // attack: advance on the enemy base (flow-field routed around terrain)
+    if (rallyActive) mv(rally!.x, rally!.y); // converge on the rally/commitment point
+    else toBase(enemyBase.owner); // advance on the enemy base (flow-field routed around terrain)
   } // else: hold position
 }
 
 function attack(g: GameState, u: UnitState, target: Target) {
   const base = UNIT_STATS[u.unit].dmg;
   if (base <= 0) return; // unarmed (drones)
-  const dmg = base + playerBonus(g, u.owner).damage; // artifact/investment damage bonus
-  // high-ground rule: scale by elevation delta (attacker height − target height), clamped
-  const dh = groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y);
+  const mods = playerMods(g, u.owner);
+  const dmg = (base + playerBonus(g, u.owner).damage) * (UNIT_STATS[u.unit].building ? mods.turretDmgMult : mods.dmgMult); // artifact/investment + doctrine
+  // high-ground rule: scale by elevation delta (attacker height − target height), clamped.
+  // the Highland doctrine amplifies the swing via highGroundMult.
+  const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
   const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
   target.ref.hp -= dmg * mult;
 }
@@ -387,11 +404,12 @@ export function step(g: GameState) {
       delete (u as any)._ovr;
     }
   }
-  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK + playerBonus(g, i).income / TICK_HZ)); // income + artifact bonus
+  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult + playerBonus(g, i).income / TICK_HZ)); // income (doctrine-scaled) + artifact bonus
   if (g.tick % ARTIFACT_EVERY === 0 && g.artifacts.length < ARTIFACT_CAP) spawnArtifact(g);
   // continuous production: each camp trains its unit at its rate (deterministic cadence)
   for (let pi = 0; pi < g.players.length; pi++) {
     const player = g.players[pi];
+    const mods = playerMods(g, pi);
     player.camps.forEach((camp, ci) => {
       const pct = camp.production.budgetPct;
       if (pct <= 0) return;
@@ -401,22 +419,22 @@ export function step(g: GameState) {
       TRAINABLE.forEach((u, ui) => {
         const w = mix[u] || 0;
         if (w <= 0) return;
-        const stats = UNIT_STATS[u];
+        const cost = Math.round(UNIT_STATS[u].cost * mods.costMult); // doctrine-scaled train cost
         const spendShare = (pct / 100) * (w / total); // fraction of income on this unit
-        const interval = Math.max(1, Math.round(stats.cost / (INCOME_PER_TICK * spendShare)));
+        const interval = Math.max(1, Math.round(cost / (INCOME_PER_TICK * spendShare)));
         if ((g.tick + ci * 7 + ui * 13) % interval !== 0) return; // stagger camp×unit
-        if (player.resources < stats.cost) return; // bank can't cover it — skip
-        player.resources -= stats.cost;
+        if (player.resources < cost) return; // bank can't cover it — skip
+        player.resources -= cost;
         spawnUnit(g, pi, camp.id, u);
       });
     });
     // turret budget auto-builds a protective turret ring (savings = the unspent remainder)
     if (player.turretBudget > 0) {
-      const tstats = UNIT_STATS.turret;
-      const interval = Math.max(1, Math.round((tstats.cost * 100) / (INCOME_PER_TICK * player.turretBudget)));
-      if ((g.tick + pi * 5) % interval === 0 && player.resources >= tstats.cost) {
+      const tcost = Math.round(UNIT_STATS.turret.cost * mods.turretCostMult);
+      const interval = Math.max(1, Math.round((tcost * 100) / (INCOME_PER_TICK * player.turretBudget)));
+      if ((g.tick + pi * 5) % interval === 0 && player.resources >= tcost) {
         const spot = freeTurretSlot(g, pi);
-        if (spot) { player.resources -= tstats.cost; spawnUnit(g, pi, null, "turret", spot); }
+        if (spot) { player.resources -= tcost; spawnUnit(g, pi, null, "turret", spot); }
       }
     }
   }
@@ -461,9 +479,10 @@ export function computeVisibleState(g: GameState, player: number): { units: Unit
   const own = g.units.filter((u) => u.owner === player);
   const ownBase = g.bases[player];
   const vr = playerBonus(g, player).range; // artifact range bonus widens vision too
+  const vm = playerMods(g, player).visionMult; // doctrine vision (e.g. Phantom sees farther)
   const visible = (x: number, y: number) =>
-    (!!ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION) ||
-    own.some((u) => cheb(u.x, u.y, x, y) <= Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr) * VISION_MULT)); // wide vision, capped
+    (!!ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION * vm) ||
+    own.some((u) => cheb(u.x, u.y, x, y) <= Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr) * VISION_MULT) * vm); // wide vision, capped
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),

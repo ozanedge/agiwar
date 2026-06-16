@@ -97,6 +97,28 @@
       @keyframes endfade { from { opacity: 0 } to { opacity: 1 } }
       @keyframes endin { 0% { opacity: 0; transform: scale(.55); filter: blur(12px) } 55% { opacity: 1 } 100% { opacity: 1; transform: scale(1); filter: blur(0) } }
       #title small { display: block; font-size: 9px; letter-spacing: .18em; color: rgba(0,255,209,.45); text-shadow: none; text-align: left; margin-top: 2px; }
+      /* army doctrine picker (match start) */
+      #doctrine { position: absolute; inset: 0; z-index: 46; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(2,6,10,.72), rgba(2,6,10,.92)); backdrop-filter: blur(3px); }
+      .dpanel { width: min(880px, 92%); border: 1px solid var(--edge); border-radius: 10px; background: var(--bg-panel); padding: 18px; box-shadow: 0 0 40px rgba(0,255,209,.12); }
+      .dpanel h3 { margin: 0 0 2px; color: var(--accent); letter-spacing: .14em; text-transform: uppercase; font-size: 15px; text-shadow: 0 0 10px rgba(0,255,209,.5); }
+      .dsub { color: rgba(0,255,209,.5); font-size: 11px; margin-bottom: 14px; }
+      .dcards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+      .dcard { text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 11px 12px; border: 1px solid rgba(0,255,209,.2); border-radius: 8px; background: rgba(0,255,209,.04); cursor: pointer; transition: background .12s, box-shadow .12s, transform .08s; }
+      .dcard:hover { background: rgba(0,255,209,.12); box-shadow: 0 0 16px rgba(0,255,209,.25); transform: translateY(-2px); }
+      .dcard.cur { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,255,209,.3); }
+      .dcard .dl { color: #eafffb; font-weight: 700; font-size: 13px; letter-spacing: .04em; }
+      .dcard .dh { color: var(--accent); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+      .dcard .db { color: #9db8b2; font-size: 10.5px; line-height: 1.4; }
+      /* strategic fork banner (a commander asks for a decision) */
+      #decision { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 44; width: min(560px, 78%); border: 1px solid var(--accent); border-radius: 9px; background: var(--bg-panel); backdrop-filter: blur(6px); padding: 11px 13px 9px; box-shadow: 0 0 26px rgba(0,255,209,.22); animation: endfade .25s ease both; }
+      #decision .dq { font-size: 12.5px; color: #eafffb; line-height: 1.4; margin-bottom: 9px; }
+      #decision .dfrom { color: var(--accent); font-weight: 700; margin-right: 6px; text-shadow: 0 0 8px rgba(0,255,209,.5); }
+      #decision .dopts { display: flex; gap: 8px; }
+      #decision .dopt { flex: 1; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 6px; }
+      #decision .dopt b { font-size: 11.5px; color: #eafffb; }
+      #decision .dopt small { font-size: 9.5px; color: #9db8b2; line-height: 1.3; }
+      #decision .dcd { height: 2px; margin-top: 9px; background: rgba(0,255,209,.12); border-radius: 2px; overflow: hidden; }
+      #decision .dcd i { display: block; height: 100%; width: 100%; background: var(--accent); box-shadow: 0 0 6px rgba(0,255,209,.7); }
       * { scrollbar-width: thin; scrollbar-color: rgba(0,255,209,.18) transparent; }
       *::-webkit-scrollbar { width: 8px; height: 8px; }
       *::-webkit-scrollbar-thumb { background: rgba(0,255,209,.18); border-radius: 4px; }

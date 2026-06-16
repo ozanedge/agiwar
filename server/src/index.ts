@@ -9,6 +9,8 @@ import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
 import { AdvisorRunner, createAdvisor } from "./advisor.js";
+import { DecisionRunner, createDecisionRunner } from "./decisions.js";
+import { ARMY_DOCTRINES } from "../../shared/doctrine.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
@@ -30,6 +32,7 @@ interface Room {
   members: Member[];
   runners: (FieldGeneralRunner | null)[]; // index = player; null for the bot
   advisors: (AdvisorRunner | null)[]; // investment advisor per player
+  decisions: (DecisionRunner | null)[]; // strategic-fork engine per player
   bot: boolean;
   netTick: number;
   over: boolean;
@@ -47,7 +50,9 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
   send(ws, {
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
     resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ + b.income,
-    bonuses: b, invest: g.players[player].invest, ...computeVisibleState(g, player), you: player,
+    bonuses: b, invest: g.players[player].invest, armyDoctrine: g.players[player].armyDoctrine,
+    rally: g.players[player].rally ? { x: g.players[player].rally!.x, y: g.players[player].rally!.y } : null,
+    ...computeVisibleState(g, player), you: player,
   });
 };
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
@@ -75,9 +80,10 @@ function createRoom(humans: WebSocket[], bot: boolean) {
   const members: Member[] = humans.map((ws, i) => ({ ws, player: i }));
   const runners: (FieldGeneralRunner | null)[] = [createFieldGeneral(0), bot ? null : createFieldGeneral(1)];
   const advisors: (AdvisorRunner | null)[] = [createAdvisor(0), bot ? null : createAdvisor(1)];
+  const decisions: (DecisionRunner | null)[] = [createDecisionRunner(0), bot ? null : createDecisionRunner(1)];
 
   const room: Room = {
-    id: roomSeq++, game, members, runners, advisors, bot, netTick: 0, over: false,
+    id: roomSeq++, game, members, runners, advisors, decisions, bot, netTick: 0, over: false,
     interval: setInterval(() => tickRoom(room), 1000 / TICK_HZ),
   };
   rooms.add(room);
@@ -86,6 +92,7 @@ function createRoom(humans: WebSocket[], bot: boolean) {
     send(m.ws, { type: "notice", level: "info", text: `Matched — you are Player ${m.player + 1} (vs ${bot ? "bot" : "human"}).` });
     sendOwnCamps(m.ws, game, m.player);
     sendState(m.ws, game, m.player);
+    send(m.ws, { type: "doctrineOffer", current: game.players[m.player].armyDoctrine }); // pick a build identity
   }
   console.log(`[room ${room.id}] started · ${bot ? "vs bot" : "PvP"} · ${rooms.size} active`);
 }
@@ -98,8 +105,10 @@ function tickRoom(room: Room) {
   // each human player's field general evaluates (event-gated); notices go only to that player
   for (const m of room.members) {
     const log = (text: string) => send(m.ws, { type: "fieldlog", text, tick: g.tick });
+    const refresh = () => sendOwnCamps(m.ws, g, m.player);
     room.runners[m.player]?.maybe(g, applyFieldOrder, log);
-    room.advisors[m.player]?.maybe(g, log, () => sendOwnCamps(m.ws, g, m.player));
+    room.advisors[m.player]?.maybe(g, log, refresh);
+    room.decisions[m.player]?.maybe(g, (d) => send(m.ws, d), log, refresh);
   }
 
   // win check
@@ -257,6 +266,29 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     const o = msg.order;
     applyFieldOrder(g, player, o.kind, o.target, o.durationTicks, o.label);
     send(ws, { type: "notice", level: "info", text: `Field order: ${o.label}` });
+    return;
+  }
+
+  if (msg.type === "chooseArmyDoctrine") {
+    const d = ARMY_DOCTRINES.find((x) => x.id === msg.id);
+    if (!d) return;
+    g.players[player].armyDoctrine = d.id;
+    sendState(ws, g, player);
+    send(ws, { type: "notice", level: "info", text: `Army doctrine: ${d.label} — ${d.hint}.` });
+    return;
+  }
+
+  if (msg.type === "decide") {
+    const log = (text: string) => send(ws, { type: "fieldlog", text, tick: g.tick });
+    room.decisions[player]?.answer(g, msg.id, msg.key, log, () => sendOwnCamps(ws, g, player));
+    return;
+  }
+
+  if (msg.type === "setRally") {
+    const x = Math.round(msg.x), y = Math.round(msg.y);
+    if (!(x >= 0 && x < GRID_W && y >= 0 && y < GRID_H)) return;
+    g.players[player].rally = { x, y, until: g.tick + 30 * TICK_HZ }; // manual rally lasts 30s
+    send(ws, { type: "notice", level: "info", text: "Rally point set — forces will concentrate there." });
     return;
   }
 

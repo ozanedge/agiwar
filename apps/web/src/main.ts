@@ -2,6 +2,7 @@
 import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS, investCost, visionOf, GRID_SCALE, type UnitType } from "../../../shared/units.js";
+import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
@@ -115,8 +116,9 @@ function visionDiamond(g: Graphics, gx: number, gy: number, R: number) {
 function renderFog(s: StateMsg) {
   // current vision (bright layer mask) — rebuilt every tick from your bases + units
   visMask.clear();
-  for (const b of s.bases) if (b.owner === s.you) visionDiamond(visMask, b.x, b.y, BASE_VISION);
-  for (const u of s.units) if (u.owner === s.you) visionDiamond(visMask, u.x, u.y, visionOf(u.unit));
+  const vm = modsFor(s.armyDoctrine).visionMult; // doctrine vision (Phantom sees farther)
+  for (const b of s.bases) if (b.owner === s.you) visionDiamond(visMask, b.x, b.y, BASE_VISION * vm);
+  for (const u of s.units) if (u.owner === s.you) visionDiamond(visMask, u.x, u.y, visionOf(u.unit) * vm);
   // explored memory (dim layer mask) — stamp a diamond the first time a viewer enters a coarse
   // cell, so the seen-area grows as you scout without ever redrawing the whole mask.
   const stamp = (gx: number, gy: number, R: number) => {
@@ -125,8 +127,8 @@ function renderFog(s: StateMsg) {
     exploredCoarse.add(key);
     visionDiamond(expMask, gx, gy, R);
   };
-  for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION);
-  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, visionOf(u.unit));
+  for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
+  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, visionOf(u.unit) * vm);
 }
 
 // ---- camera (pan + zoom), centered on your base ----
@@ -152,6 +154,16 @@ app.canvas.addEventListener("wheel", (e) => {
   world.x = mx - (mx - world.x) * (ns / cam.scale); world.y = my - (my - world.y) * (ns / cam.scale);
   cam.scale = ns; world.scale.set(ns);
 }, { passive: false });
+// double-click the map to drop a RALLY/commitment point — forward units concentrate there (#5)
+app.canvas.addEventListener("dblclick", (e) => {
+  if (!latestState) return;
+  const r = app.canvas.getBoundingClientRect();
+  const wx = (e.clientX - r.left - world.x) / cam.scale, wy = (e.clientY - r.top - world.y) / cam.scale;
+  const a = (2 * wx) / TILE_W, b = (2 * wy) / TILE_H; // invert iso: a = gx-gy, b = gx+gy
+  const gx = Math.round((a + b) / 2), gy = Math.round((b - a) / 2);
+  if (gx < 0 || gy < 0 || gx >= latestState.gridW || gy >= latestState.gridH) return;
+  sendCmd({ type: "setRally", x: gx, y: gy });
+});
 
 // ---- networking ----
 let ws: WebSocket;
@@ -164,6 +176,8 @@ function connect() {
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
     else if (msg.type === "gameover") { showEndscreen(msg.won); }
+    else if (msg.type === "doctrineOffer") { showDoctrinePicker(msg.current); }
+    else if (msg.type === "decision") { showDecision(msg); }
   };
   ws.onclose = () => setTimeout(connect, 1000);
 }
@@ -174,6 +188,47 @@ function showEndscreen(won: boolean) {
   const el = document.getElementById("endscreen")!;
   el.innerHTML = `<div class="big">${won ? "VICTORY" : "DEFEAT"}</div><div class="end2">${won ? "Enemy base destroyed" : "Your base has fallen"}</div>`;
   el.className = "show " + (won ? "win" : "lose"); // re-set class so the entrance animation replays
+}
+
+// ---- army doctrine picker (once per match, #4): your build identity ----
+function showDoctrinePicker(current: string) {
+  document.getElementById("doctrine")?.remove();
+  const el = document.createElement("div");
+  el.id = "doctrine";
+  el.innerHTML = `<div class="dpanel"><h3>Choose your army doctrine</h3><div class="dsub">Your build identity for this match — pick how you want to win. You can play on without choosing (Combined Arms).</div><div class="dcards"></div></div>`;
+  const cards = el.querySelector(".dcards")!;
+  for (const d of ARMY_DOCTRINES) {
+    const c = document.createElement("button");
+    c.className = "dcard" + (d.id === current ? " cur" : "");
+    c.innerHTML = `<div class="dl">${d.label}</div><div class="dh">${d.hint}</div><div class="db">${d.blurb}</div>`;
+    c.onclick = () => { sendCmd({ type: "chooseArmyDoctrine", id: d.id }); el.remove(); };
+    cards.appendChild(c);
+  }
+  stage.appendChild(el);
+}
+
+// ---- strategic fork banner (#1/#5): a commander asks; you answer (or it auto-resolves) ----
+let decisionTimer: number | undefined;
+interface DecisionMsg { id: number; fromLabel: string; question: string; options: { key: string; label: string; detail: string }[]; expiresInSec: number }
+function showDecision(d: DecisionMsg) {
+  document.getElementById("decision")?.remove();
+  const el = document.createElement("div");
+  el.id = "decision";
+  el.innerHTML = `<div class="dq"><span class="dfrom">${d.fromLabel}</span>${d.question}</div><div class="dopts"></div><div class="dcd"><i></i></div>`;
+  const opts = el.querySelector(".dopts")!;
+  for (const o of d.options) {
+    const b = document.createElement("button");
+    b.className = "dopt";
+    b.innerHTML = `<b>${o.label}</b><small>${o.detail}</small>`;
+    b.onclick = () => { sendCmd({ type: "decide", id: d.id, key: o.key }); el.remove(); clearTimeout(decisionTimer); };
+    opts.appendChild(b);
+  }
+  stage.appendChild(el);
+  const bar = el.querySelector(".dcd i") as HTMLElement; // countdown drains over the answer window
+  bar.style.transition = `width ${d.expiresInSec}s linear`;
+  requestAnimationFrame(() => { bar.style.width = "0%"; });
+  clearTimeout(decisionTimer);
+  decisionTimer = window.setTimeout(() => el.remove(), d.expiresInSec * 1000);
 }
 
 let noticeTimer: number | undefined;
@@ -226,6 +281,7 @@ function render(s: StateMsg) {
   if (terrainKey !== `${s.seed}:${s.gridW}:${s.gridH}`) { resetFog(s.seed, s.gridW, s.gridH); centerOnBase(s); }
   renderFog(s); // unexplored = black · explored = dim memory · visible = bright
   entityLayer.removeChildren();
+  if (s.rally) entityLayer.addChild(makeRally(s.rally, s));
   for (const a of s.artifacts) entityLayer.addChild(makeArtifact(a, s));
   for (const b of s.bases) entityLayer.addChild(makeBase(b, s));
   for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
@@ -237,6 +293,20 @@ function render(s: StateMsg) {
   const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
   econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
   syncInvest(s.invest);
+}
+
+// the player's rally/commitment beacon — a pulsing flag forward units concentrate on
+function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
+  const g = new Graphics();
+  const elev = elevAt(p.x, p.y, s.seed, s.gridW, s.gridH);
+  const cx = isoX(p.x, p.y), cy = isoY(p.x, p.y) - elev;
+  const pulse = 0.5 + 0.5 * Math.sin(s.tick / 5);
+  g.ellipse(cx, cy + 3, 15 + 6 * pulse, 7.5 + 3 * pulse).stroke({ color: OWN_COLOR, width: 1.6, alpha: 0.3 + 0.45 * pulse });
+  g.rect(cx - 1, cy - 28, 2, 28).fill(OWN_COLOR); // pole
+  g.poly([cx + 1, cy - 28, cx + 15, cy - 22.5, cx + 1, cy - 17]).fill({ color: OWN_COLOR, alpha: 0.92 }); // banner
+  g.circle(cx, cy + 2, 2).fill(OWN_COLOR);
+  g.zIndex = p.x + p.y;
+  return g;
 }
 
 function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {

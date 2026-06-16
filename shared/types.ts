@@ -95,6 +95,8 @@ export interface StateMsg {
   artifacts: Artifact[]; // visible artifacts (fog-gated)
   bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's total bonuses (artifacts + investments)
   invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
+  armyDoctrine: string; // recipient's chosen build identity (id from shared/doctrine.ts); "balanced" until chosen
+  rally: { x: number; y: number } | null; // recipient's active rally/commitment point (units concentrate here)
   you: number; // which player index this client controls
 }
 
@@ -135,7 +137,25 @@ export interface GameOver {
   won: boolean;
 }
 
-export type ServerMsg = StateMsg | CampsMsg | Notice | FieldLog | GameOver;
+/** Sent once on connect: prompt the player to pick a one-per-match army doctrine (build identity).
+ *  The full option list is static (shared/doctrine.ts ARMY_DOCTRINES); this just opens the picker. */
+export interface DoctrineOffer {
+  type: "doctrineOffer";
+  current: string; // currently-applied doctrine id (defaults to "balanced" until chosen)
+}
+
+/** A strategic FORK the player's commander surfaces at a key moment. The player answers with one
+ *  option (or it auto-resolves to `defaultKey` on expiry) — low-stress, high-impact agency. */
+export interface DecisionPrompt {
+  type: "decision";
+  id: number;
+  fromLabel: string; // which commander is asking, e.g. "Field Gen. Mercer"
+  question: string;
+  options: { key: string; label: string; detail: string }[];
+  expiresInSec: number;
+}
+
+export type ServerMsg = StateMsg | CampsMsg | Notice | FieldLog | GameOver | DoctrineOffer | DecisionPrompt;
 
 /** The field general's structured decision (LLM output, clamped before use).
  *  "hold" = issue no order; units keep running their native doctrine. */
@@ -157,7 +177,10 @@ export type ClientMsg =
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "captureArtifact"; id: number } // invest to claim a neutral artifact
   | { type: "invest"; kind: ArtifactBonusKind } // buy the next level of a permanent army upgrade
-  | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
+  | { type: "fieldOrder"; order: FieldOrder } // manual time-boxed override (debug/UI)
+  | { type: "chooseArmyDoctrine"; id: string } // pick the once-per-match build identity
+  | { type: "decide"; id: number; key: string } // answer a commander's strategic fork
+  | { type: "setRally"; x: number; y: number }; // set a rally/commitment point (double-click the map)
 
 /** A field-general command: a *time-boxed override* of native doctrine.
  *  Units revert to their camp doctrine when `durationTicks` elapses. */
