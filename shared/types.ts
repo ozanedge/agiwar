@@ -1,6 +1,8 @@
 // Shared protocol + domain types for agiwar.
 // Imported by both the server (tsx) and the web client (Vite) via relative path.
 
+import type { UnitType } from "./units.js";
+
 /** A clamped behavior spec — the *compiled* output of a general's natural-language style.
  *  This is the contract between the LLM "policy compiler" and the deterministic sim.
  *  Nothing outside these fields can influence a unit, so a hostile prompt cannot
@@ -38,6 +40,7 @@ export interface UnitState {
   id: number;
   owner: number; // player index
   camp: DoctrineId; // which general trained it -> its NATIVE doctrine
+  unit: UnitType; // gunner / tank / humvee -> stats (hp, speed, damage)
   x: number;
   y: number;
   hp: number;
@@ -107,7 +110,7 @@ export interface FieldGeneralDecision {
 export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
-  | { type: "spawn"; camp: DoctrineId } // train a unit at a camp
+  | { type: "spawn"; camp: DoctrineId; unit: UnitType } // train a unit (type) at a camp (doctrine)
   | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 
 /** A field-general command: a *time-boxed override* of native doctrine.

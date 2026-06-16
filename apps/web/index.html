@@ -7,48 +7,57 @@
     <style>
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
-      body { margin: 0; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0f14; color: #cdd6e0; }
-      #app { display: grid; grid-template-columns: 1fr 320px; height: 100vh; }
-      #stage { position: relative; overflow: hidden; }
-      #side { border-left: 1px solid #1d2733; padding: 12px; overflow-y: auto; }
-      h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .5px; }
-      .sub { color: #6b7a8d; margin: 0 0 12px; }
-      .camp { border: 1px solid #1d2733; border-radius: 6px; padding: 8px; margin-bottom: 10px; }
-      .camp h3 { margin: 0 0 6px; font-size: 13px; }
-      textarea { width: 100%; height: 64px; background: #0e141b; color: #cdd6e0; border: 1px solid #243140; border-radius: 4px; padding: 6px; resize: vertical; font: inherit; }
-      button { background: #1b2532; color: #cdd6e0; border: 1px solid #2c3a4c; border-radius: 4px; padding: 5px 9px; cursor: pointer; }
+      body { margin: 0; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0f14; color: #cdd6e0; }
+      #app { display: flex; flex-direction: column; height: 100vh; }
+      #stage { position: relative; flex: 1; overflow: hidden; min-height: 0; }
+      #controls { display: flex; gap: 10px; padding: 10px; height: 236px; border-top: 1px solid #1d2733; overflow-x: auto; align-items: stretch; background: #0a0e13; }
+      .panel { border: 1px solid #1d2733; border-radius: 6px; padding: 8px; min-width: 224px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+      #camps { display: flex; gap: 10px; }
+      .panel h4 { margin: 0; font-size: 12px; letter-spacing: .3px; }
+      textarea { width: 100%; flex: 1; min-height: 64px; background: #0e141b; color: #cdd6e0; border: 1px solid #243140; border-radius: 4px; padding: 6px; resize: none; font: inherit; }
+      button { background: #1b2532; color: #cdd6e0; border: 1px solid #2c3a4c; border-radius: 4px; padding: 5px 9px; cursor: pointer; font: inherit; }
       button:hover:not(:disabled) { background: #243446; }
       button:disabled { opacity: .45; cursor: not-allowed; }
-      .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
-      .spec { color: #7f8fa3; font-size: 11px; margin-top: 6px; white-space: pre; }
+      button.active { background: #2c4a63; border-color: #4d7ba8; color: #eaf2fb; }
+      .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+      .seg button { padding: 4px 7px; }
+      .sub { color: #6b7a8d; font-size: 11px; }
+      .spec { color: #7f8fa3; font-size: 10.5px; }
       .cool { color: #e0a45a; font-size: 11px; }
-      #readout { position: absolute; left: 10px; bottom: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 8px 10px; max-width: 360px; pointer-events: none; }
       .agg { color: #ff6b6b; } .rec { color: #5aa9ff; } .def { color: #5ad17a; }
+      #readout { position: absolute; left: 10px; bottom: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 8px 10px; max-width: 380px; pointer-events: none; }
       #notice { position: absolute; left: 10px; top: 10px; background: #0e141bdd; border: 1px solid #243140; border-radius: 6px; padding: 6px 10px; }
-      .field h3 { margin: 14px 0 6px; font-size: 13px; }
+      #title { position: absolute; right: 10px; top: 10px; color: #6b7a8d; }
     </style>
   </head>
   <body>
     <div id="app">
       <div id="stage">
         <div id="notice"></div>
-        <div id="readout">hover a unit to inspect its doctrine</div>
+        <div id="title">agiwar · author generals, not clicks</div>
+        <div id="readout">hover a unit to inspect it</div>
       </div>
-      <div id="side">
-        <h1>agiwar</h1>
-        <p class="sub">Edit a general's doctrine. Watch the army change. 3-min retrain cooldown.</p>
+      <div id="controls">
+        <div class="panel">
+          <h4>Create troop</h4>
+          <div class="sub">1 · pick a unit type</div>
+          <div class="seg" id="unit-types"></div>
+          <div class="sub">2 · send to a training camp</div>
+          <div class="seg" id="troop-camps"></div>
+          <button id="deploy">Deploy ▸</button>
+          <div class="sub" id="troop-sel"></div>
+        </div>
         <div id="camps"></div>
-        <div class="field">
-          <h3 id="fg-label">Field General</h3>
-          <p class="sub" style="margin-top:0">Authors live, time-boxed overrides on a material change (event-gated, Haiku). Edit its command style — it has no cooldown; the new doctrine applies on the next decision.</p>
+        <div class="panel">
+          <h4 id="fg-label">Field General</h4>
+          <div class="sub">Live, event-gated overrides — then units revert to native training.</div>
           <textarea id="fg-prompt"></textarea>
-          <div class="row"><button id="fg-rebrief">Re-brief field general</button></div>
-          <div class="row" style="margin-top:10px">
-            <span class="sub">manual test:</span>
+          <div class="row">
+            <button id="fg-rebrief">Re-brief</button>
             <button data-order="push">Push all</button>
             <button data-order="defend">Recall all</button>
           </div>
-          <p class="sub" style="margin-top:6px">Overrides last ~10s, then units revert to their native training.</p>
         </div>
       </div>
     </div>

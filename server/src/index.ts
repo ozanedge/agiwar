@@ -136,7 +136,7 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   const g = room.game;
   const player = member.player;
 
-  if (msg.type === "spawn") { spawnUnit(g, player, msg.camp); return; }
+  if (msg.type === "spawn") { spawnUnit(g, player, msg.camp, msg.unit); return; }
 
   if (msg.type === "editFieldGeneral") {
     g.players[player].fieldGeneral.prompt = msg.prompt;

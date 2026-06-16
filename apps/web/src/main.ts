@@ -1,10 +1,12 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
+import { UNIT_STATS, UNIT_TYPES, type UnitType } from "../../../shared/units.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
 const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def" };
+const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
 
 const stage = document.getElementById("stage")!;
 const noticeEl = document.getElementById("notice")!;
@@ -67,15 +69,16 @@ function render(s: StateMsg) {
     const overridden = u.overrideUntil > s.tick;
     const g = new Graphics();
     const cx = u.x * cell + cell / 2, cy = u.y * cell + cell / 2;
-    const color = DOCTRINE_COLOR[u.camp];
+    const color = DOCTRINE_COLOR[u.camp]; // color = doctrine
     const dim = u.owner === s.you ? 1 : 0.45; // enemy units dimmed
-    // native-doctrine badge shape: ▲ aggressive · ◆ recon · ⬟ defensive
-    if (u.camp === "aggressive") g.poly([cx, cy - 5, cx + 5, cy + 4, cx - 5, cy + 4]);
-    else if (u.camp === "recon") g.poly([cx, cy - 5, cx + 5, cy, cx, cy + 5, cx - 5, cy]);
-    else g.rect(cx - 4.5, cy - 4.5, 9, 9);
+    // shape + size = unit type: ■ tank (big) · ● gunner (mid) · ▲ humvee (small/fast)
+    const r = Math.max(2.5, cell * (u.unit === "tank" ? 0.46 : u.unit === "gunner" ? 0.36 : 0.3));
+    if (u.unit === "tank") g.rect(cx - r, cy - r, r * 2, r * 2);
+    else if (u.unit === "gunner") g.circle(cx, cy, r);
+    else g.poly([cx, cy - r, cx + r, cy + r, cx - r, cy + r]);
     g.fill({ color, alpha: dim });
-    if (u.hp < u.maxHp) g.rect(cx - 5, cy - 8, (u.hp / u.maxHp) * 10, 1.5).fill(0xcdd6e0);
-    if (overridden) g.circle(cx, cy, 8).stroke({ color: 0xffd76b, width: 1, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+    if (u.hp < u.maxHp) g.rect(cx - r, cy - r - 3, (u.hp / u.maxHp) * r * 2, 1.5).fill(0xcdd6e0);
+    if (overridden) g.circle(cx, cy, r + 3).stroke({ color: 0xffd76b, width: 1, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
     g.eventMode = "static";
     g.cursor = "pointer";
     g.on("pointerover", () => { hovered = u; updateReadout(); });
@@ -93,7 +96,7 @@ function updateReadout() {
   const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;
   const cls = DOCTRINE_CLASS[u.camp];
   readoutEl.innerHTML =
-    `unit #${u.id} · ${u.owner === latestState.you ? "yours" : "enemy"} · hp ${u.hp}/${u.maxHp}<br>` +
+    `${UNIT_STATS[u.unit].label} #${u.id} · ${u.owner === latestState.you ? "yours" : "enemy"} · hp ${u.hp}/${u.maxHp}<br>` +
     `<b>Native:</b> <span class="${cls}">${u.camp}</span><br>` +
     `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
 }
@@ -122,15 +125,13 @@ function buildCamps(camps: Camp[]) {
     const div = document.createElement("div");
     div.className = "camp";
     div.innerHTML =
-      `<h3 class="${DOCTRINE_CLASS[c.id]}">${c.label}</h3>` +
+      `<h4 class="${DOCTRINE_CLASS[c.id]}">${c.label}</h4>` +
       `<textarea id="ta-${c.id}">${c.prompt}</textarea>` +
-      `<div class="row"><button id="btn-${c.id}">Retrain doctrine</button>` +
-      `<button id="spawn-${c.id}">+ train unit</button><span class="cool" id="cool-${c.id}"></span></div>` +
+      `<div class="row"><button id="btn-${c.id}">Retrain doctrine</button><span class="cool" id="cool-${c.id}"></span></div>` +
       `<div class="spec" id="spec-${c.id}"></div>`;
     campsEl.appendChild(div);
     (document.getElementById(`btn-${c.id}`) as HTMLButtonElement).onclick = () =>
       sendCmd({ type: "editPrompt", camp: c.id, prompt: (document.getElementById(`ta-${c.id}`) as HTMLTextAreaElement).value });
-    (document.getElementById(`spawn-${c.id}`) as HTMLButtonElement).onclick = () => sendCmd({ type: "spawn", camp: c.id });
   }
 }
 setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // live cooldown countdown
@@ -152,3 +153,33 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-order]")) 
     sendCmd({ type: "fieldOrder", order: { kind, target: "all", durationTicks: 100, label: kind === "push" ? "Push enemy base" : "Defend base" } });
   };
 }
+
+// ---- create troop: pick a unit type + a training camp, then deploy ----
+let selType: UnitType = "gunner";
+let selCamp: DoctrineId = "aggressive";
+const unitTypesEl = document.getElementById("unit-types")!;
+const troopCampsEl = document.getElementById("troop-camps")!;
+const troopSelEl = document.getElementById("troop-sel")!;
+for (const t of UNIT_TYPES) {
+  const b = document.createElement("button");
+  b.dataset.unit = t;
+  b.textContent = UNIT_STATS[t].label.replace(" Infantry", "");
+  b.onclick = () => { selType = t; refreshTroop(); };
+  unitTypesEl.appendChild(b);
+}
+for (const d of DOCTRINES) {
+  const b = document.createElement("button");
+  b.dataset.tcamp = d;
+  b.textContent = d;
+  b.className = DOCTRINE_CLASS[d];
+  b.onclick = () => { selCamp = d; refreshTroop(); };
+  troopCampsEl.appendChild(b);
+}
+function refreshTroop() {
+  for (const b of unitTypesEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.unit === selType);
+  for (const b of troopCampsEl.querySelectorAll<HTMLButtonElement>("button")) b.classList.toggle("active", b.dataset.tcamp === selCamp);
+  const st = UNIT_STATS[selType];
+  troopSelEl.textContent = `${st.label} — ${st.blurb}, ${st.maxHp}hp → ${selCamp} doctrine`;
+}
+(document.getElementById("deploy") as HTMLButtonElement).onclick = () => sendCmd({ type: "spawn", camp: selCamp, unit: selType });
+refreshTroop();

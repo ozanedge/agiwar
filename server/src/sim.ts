@@ -3,15 +3,19 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
+import { UNIT_STATS, UnitType } from "../../shared/units.js";
 
-export const GRID_W = 48;
-export const GRID_H = 32;
+// Pacing knobs (env-tunable so we can dial feel without code edits).
+export const GRID_W = Number(process.env.GRID_W ?? 128); // much bigger map -> long marches
+export const GRID_H = Number(process.env.GRID_H ?? 80);
 const ATTACK_RANGE = 1; // Chebyshev cells
-const ATTACK_DMG = 2;
-const UNIT_HP = 20;
-const BASE_HP = 200;
-const SENSOR = 14; // how far a unit can "see" an enemy for targeting
-const VISION = 11; // fog-of-war: how far a unit reveals enemies to its owner
+const BASE_HP = Number(process.env.BASE_HP ?? 400);
+const SENSOR = Number(process.env.SENSOR ?? 18); // targeting range
+const VISION = Number(process.env.VISION ?? 14); // fog reveal range
+// Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
+// gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
+// all cadences if we want to slow/speed everything uniformly without touching per-type feel.
+const SPEED_MULT = Number(process.env.SPEED_MULT ?? 1);
 
 /** Everything that belongs to one player: their three camp generals and their field general. */
 export interface PlayerState {
@@ -65,17 +69,19 @@ export function newGame(): GameState {
   return { tick: 0, units: [], bases, players: [makePlayer(), makePlayer()], nextUnitId: 1 };
 }
 
-export function spawnUnit(g: GameState, owner: number, camp: DoctrineId): void {
+export function spawnUnit(g: GameState, owner: number, camp: DoctrineId, type: UnitType = "gunner"): void {
   const base = g.bases[owner];
   const jitter = g.units.length;
+  const hp = UNIT_STATS[type].maxHp;
   g.units.push({
     id: g.nextUnitId++,
     owner,
     camp,
+    unit: type,
     x: base.x + (owner === 0 ? 1 : -1) * (1 + (jitter % 3)),
     y: Math.max(0, Math.min(GRID_H - 1, base.y - 2 + (jitter % 5))),
-    hp: UNIT_HP,
-    maxHp: UNIT_HP,
+    hp,
+    maxHp: hp,
     overrideUntil: 0,
     overrideLabel: "",
   });
@@ -122,12 +128,20 @@ function wander(g: GameState, u: UnitState) {
 }
 
 function decide(g: GameState, u: UnitState) {
+  const stats = UNIT_STATS[u.unit];
+  const period = (n: number) => Math.max(1, Math.round(n * SPEED_MULT));
+  const canMove = (g.tick + u.id) % period(stats.moveEvery) === 0; // per-type speed
+  const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
+  if (!canMove && !canAttack) return; // between actions this tick — do nothing
+
   const spec = effectiveSpec(g, u);
   const myBase = g.bases[u.owner];
+  const mv = (tx: number, ty: number) => { if (canMove) moveToward(u, tx, ty); };
+  const atk = (t: { isBase: boolean; ref: UnitState | BaseState }) => { if (canAttack) attack(g, u, t); };
 
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {
-    if (cheb(u.x, u.y, myBase.x, myBase.y) > 1) moveToward(u, myBase.x, myBase.y);
+    if (cheb(u.x, u.y, myBase.x, myBase.y) > 1) mv(myBase.x, myBase.y);
     return;
   }
 
@@ -138,10 +152,10 @@ function decide(g: GameState, u: UnitState) {
   if (spec.defendRadius != null) {
     const intruder = enemy && cheb(enemy.x, enemy.y, myBase.x, myBase.y) <= spec.defendRadius;
     if (intruder) {
-      if (enemyDist <= ATTACK_RANGE) attack(g, u, enemy!);
-      else moveToward(u, enemy!.x, enemy!.y);
+      if (enemyDist <= ATTACK_RANGE) atk(enemy!);
+      else mv(enemy!.x, enemy!.y);
     } else if (cheb(u.x, u.y, myBase.x, myBase.y) > spec.defendRadius - 1) {
-      moveToward(u, myBase.x, myBase.y);
+      mv(myBase.x, myBase.y);
     }
     return;
   }
@@ -149,22 +163,22 @@ function decide(g: GameState, u: UnitState) {
   // 3) engage if an enemy is in sensor + within engageRange and we're aggressive enough
   const willEngage = enemy && enemyDist <= SENSOR && enemyDist <= spec.engageRange && hash01(u.id, g.tick) < 0.5 + spec.aggression / 2;
   if (willEngage) {
-    if (enemyDist <= ATTACK_RANGE) attack(g, u, enemy!);
-    else moveToward(u, enemy!.x, enemy!.y);
+    if (enemyDist <= ATTACK_RANGE) atk(enemy!);
+    else mv(enemy!.x, enemy!.y);
     return;
   }
 
   // 4) no fight: explorers roam, aggressors march on the enemy base
   if (spec.explorationBias > 0.5) {
-    wander(g, u);
+    if (canMove) wander(g, u);
   } else {
     const enemyBase = g.bases.find((b) => b.owner !== u.owner)!;
-    moveToward(u, enemyBase.x, enemyBase.y);
+    mv(enemyBase.x, enemyBase.y);
   }
 }
 
 function attack(g: GameState, u: UnitState, target: { isBase: boolean; ref: UnitState | BaseState }) {
-  target.ref.hp -= ATTACK_DMG;
+  target.ref.hp -= UNIT_STATS[u.unit].dmg;
 }
 
 export function step(g: GameState) {
@@ -177,6 +191,7 @@ export function step(g: GameState) {
       delete (u as any)._ovr;
     }
   }
+  // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   g.units = g.units.filter((u) => u.hp > 0);
 }
@@ -184,7 +199,7 @@ export function step(g: GameState) {
 /** Public (wire) shape of a unit — drops the internal `_ovr` spec so it never leaks. */
 function pub(u: UnitState): UnitState {
   return {
-    id: u.id, owner: u.owner, camp: u.camp, x: u.x, y: u.y,
+    id: u.id, owner: u.owner, camp: u.camp, unit: u.unit, x: u.x, y: u.y,
     hp: u.hp, maxHp: u.maxHp, overrideUntil: u.overrideUntil, overrideLabel: u.overrideLabel,
   };
 }
