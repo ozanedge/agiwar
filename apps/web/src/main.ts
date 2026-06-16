@@ -1,7 +1,7 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS, investCost, type UnitType } from "../../../shared/units.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
@@ -157,6 +157,7 @@ function connect() {
     if (msg.type === "state") { latestState = msg; render(msg); }
     else if (msg.type === "camps") { latestCamps = msg.camps; syncCamps(msg.camps); syncFieldGeneral(msg.fieldGeneral); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
+    else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
   };
   ws.onclose = () => setTimeout(connect, 1000);
 }
@@ -169,6 +170,38 @@ function showNotice(text: string, level: string) {
   noticeEl.style.borderColor = level === "error" ? "#7a2c2c" : "#243140";
   clearTimeout(noticeTimer);
   noticeTimer = window.setTimeout(() => (noticeEl.textContent = ""), 4000);
+}
+
+// ---- field general command log (right panel) ----
+const fglogEl = document.getElementById("fglog")!;
+function addLog(text: string, tick: number) {
+  const d = document.createElement("div");
+  d.className = "logline";
+  d.innerHTML = `<span class="t">t${Math.floor(tick / 10)}s · </span>${text.replace(/^(\d+u[^→]*→ )?/, (m) => m && `<b>${m}</b>`)}`;
+  fglogEl.prepend(d);
+  while (fglogEl.childElementCount > 60) fglogEl.lastElementChild?.remove();
+}
+
+// ---- investments (permanent army upgrades) ----
+const investEl = document.getElementById("invest")!;
+let investBuilt = false;
+function syncInvest(levels: Record<string, number>) {
+  if (!investBuilt) {
+    for (const inv of INVESTMENTS) {
+      const b = document.createElement("button");
+      b.innerHTML = `<span>${inv.label} <span class="sub">${inv.effect}</span></span><span id="invc-${inv.kind}"></span>`;
+      b.onclick = () => sendCmd({ type: "invest", kind: inv.kind });
+      investEl.appendChild(b);
+    }
+    investBuilt = true;
+  }
+  for (const inv of INVESTMENTS) {
+    const lvl = levels[inv.kind] || 0;
+    const cost = investCost(inv.base, lvl);
+    const el = document.getElementById(`invc-${inv.kind}`)!;
+    el.textContent = `Lv${lvl} · ⛃${cost}`;
+    (el.closest("button") as HTMLButtonElement).disabled = !latestState || latestState.resources < cost;
+  }
 }
 
 // ---- rendering ----
@@ -186,6 +219,7 @@ function render(s: StateMsg) {
   const b = s.bonuses;
   const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
   econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
+  syncInvest(s.invest);
 }
 
 function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {

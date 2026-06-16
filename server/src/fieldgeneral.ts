@@ -42,6 +42,8 @@ interface Summary {
   text: string;
   sig: string;
   ownCount: number;
+  contacts: number;
+  baseHpPct: number;
 }
 
 function summarize(g: GameState, player: number): Summary {
@@ -72,7 +74,7 @@ function summarize(g: GameState, player: number): Summary {
     Math.round(avgHp / 25),
   ].join("/");
 
-  return { text, sig, ownCount: own.length };
+  return { text, sig, ownCount: own.length, contacts: contacts.length, baseHpPct };
 }
 
 function clampDecision(raw: any): FieldGeneralDecision {
@@ -129,21 +131,22 @@ export function createFieldGeneral(player: number): FieldGeneralRunner {
     resetGate() { lastSig = null; },
     maybe(g, apply, notify) {
       if (!ENABLED || inFlight) return;
-      const { text, sig, ownCount } = summarize(g, player);
-      if (ownCount === 0) return; // nothing to command
+      const sum = summarize(g, player);
+      if (sum.ownCount === 0) return; // nothing to command
 
       const now = Date.now();
-      if (sig === lastSig) return; // EVENT GATE: no material change -> no LLM call, $0
+      if (sum.sig === lastSig) return; // EVENT GATE: no material change -> no LLM call, $0
       if (now - lastCallMs < MIN_INTERVAL_MS) return; // 30s floor even when things change
 
       lastCallMs = now;
-      lastSig = sig;
+      lastSig = sum.sig;
       inFlight = true;
-      decide(text, g.players[player].fieldGeneral.prompt)
+      const obs = `${sum.ownCount}u · ${sum.contacts} contacts · base ${sum.baseHpPct}%`;
+      decide(sum.text, g.players[player].fieldGeneral.prompt)
         .then((d) => {
-          if (d.action === "hold") { notify(`Field general: holding — ${d.reason || "doctrines holding"}`); return; }
+          if (d.action === "hold") { notify(`${obs} → HOLD — ${d.reason || "doctrines handling it"}`); return; }
           apply(g, player, d.action, d.target, d.durationSec * TICK_HZ, `${d.action} (${d.reason || "field order"})`);
-          notify(`Field general → ${d.action} ${d.target} for ${d.durationSec}s — ${d.reason}`);
+          notify(`${obs} → ${d.action.toUpperCase()} ${d.target} ${d.durationSec}s — ${d.reason}`);
         })
         .catch((err) => console.warn(`[fieldgeneral p${player}] skipped (${(err as Error).message})`))
         .finally(() => { inFlight = false; });

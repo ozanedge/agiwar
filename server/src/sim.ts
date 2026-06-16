@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 5);
@@ -36,6 +36,7 @@ export interface PlayerState {
   camps: Camp[];
   fieldGeneral: FieldGeneral;
   resources: number;
+  invest: Bonus; // purchased investment levels per kind
 }
 
 export interface GameState {
@@ -54,6 +55,8 @@ export interface GameState {
 export function playerBonus(g: GameState, player: number): Bonus {
   const b: Bonus = { income: 0, range: 0, hp: 0, damage: 0 };
   for (const a of g.artifacts) if (a.owner === player) b[a.bonus.kind] += a.bonus.amount;
+  const inv = g.players[player].invest; // permanent investments stack with artifacts
+  for (const i of INVESTMENTS) b[i.kind] += inv[i.kind] * i.amount;
   return b;
 }
 
@@ -85,6 +88,7 @@ function makePlayer(): PlayerState {
     ],
     fieldGeneral: { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT },
     resources: STARTING_RESOURCES,
+    invest: { income: 0, range: 0, hp: 0, damage: 0 },
   };
 }
 

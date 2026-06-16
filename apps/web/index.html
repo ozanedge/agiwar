@@ -28,11 +28,18 @@
       body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 51; mix-blend-mode: screen;
         background: repeating-linear-gradient(to bottom, rgba(0,255,209,.022) 0, rgba(0,255,209,.022) 1px, transparent 1px, transparent 3px); }
 
-      #app { display: grid; grid-template-columns: 332px 1fr; grid-template-rows: 1fr 248px; height: 100vh; }
-      #left { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #app { display: grid; grid-template-columns: 332px 1fr 320px; grid-template-rows: 1fr 248px; height: 100vh; }
+      #left { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #left h4 { margin: 0; }
       #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
       #controls { grid-column: 2; grid-row: 2; display: flex; gap: 10px; padding: 10px; border-top: 1px solid var(--edge); overflow-x: auto; align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      #right { grid-column: 3; grid-row: 1 / 3; border-left: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #invest { display: flex; flex-direction: column; gap: 5px; }
+      #invest button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
+      #fglog { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
+      .logline { border-left: 2px solid var(--accent-dim); padding: 3px 7px; background: rgba(0,255,209,.04); color: #b9d6cf; }
+      .logline b { color: var(--accent); }
+      .logline .t { color: #5b6b6a; }
       .panel { background: rgba(6, 12, 20, 0.6); border: 1px solid var(--edge); border-radius: 6px; padding: 9px; min-width: 224px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,255,209,.04), 0 0 18px rgba(0,255,209,.05); }
       #camps { display: flex; gap: 10px; }
       h4 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 7px rgba(0,255,209,.5); }
@@ -70,6 +77,9 @@
         <h4>Budget flow</h4>
         <svg id="sankey"></svg>
         <div class="sub">drag a <b>camp band</b> to set its % of income · drag a <b>unit band</b> to set that camp's mix</div>
+        <h4 style="margin-top:6px">Investments</h4>
+        <div class="sub">permanent army-wide upgrades</div>
+        <div id="invest"></div>
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
@@ -79,16 +89,18 @@
       </div>
       <div id="controls">
         <div id="camps"></div>
-        <div class="panel">
-          <h4 id="fg-label">Field General</h4>
-          <div class="sub">Live, event-gated overrides — then units revert to native training.</div>
-          <textarea id="fg-prompt"></textarea>
-          <div class="row">
-            <button id="fg-rebrief">Re-brief</button>
-            <button data-order="push">Push all</button>
-            <button data-order="defend">Recall all</button>
-          </div>
+      </div>
+      <div id="right">
+        <h4 id="fg-label">Field General</h4>
+        <div class="sub">Live, event-gated overrides — then units revert to native training.</div>
+        <textarea id="fg-prompt" style="min-height:70px;max-height:90px;flex:0 0 auto"></textarea>
+        <div class="row">
+          <button id="fg-rebrief">Re-brief</button>
+          <button data-order="push">Push all</button>
+          <button data-order="defend">Recall all</button>
         </div>
+        <h4 style="margin-top:6px">Command log</h4>
+        <div id="fglog"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

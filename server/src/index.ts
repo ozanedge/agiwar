@@ -4,7 +4,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
 import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, playerBonus, spawnUnit, step } from "./sim.js";
-import { UNIT_STATS } from "../../shared/units.js";
+import { UNIT_STATS, INVESTMENTS, investCost } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
@@ -45,7 +45,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
   send(ws, {
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
     resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ + b.income,
-    bonuses: b, ...computeVisibleState(g, player), you: player,
+    bonuses: b, invest: g.players[player].invest, ...computeVisibleState(g, player), you: player,
   });
 };
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
@@ -88,7 +88,7 @@ function tickRoom(room: Room) {
   // each human player's field general evaluates (event-gated); notices go only to that player
   for (const m of room.members) {
     const fg = room.runners[m.player];
-    fg?.maybe(g, applyFieldOrder, (text) => send(m.ws, { type: "notice", level: "info", text }));
+    fg?.maybe(g, applyFieldOrder, (text) => send(m.ws, { type: "fieldlog", text, tick: g.tick }));
   }
 
   // win check
@@ -186,6 +186,22 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     p.resources -= stats.cost;
     spawnUnit(g, player, null, msg.unit, { x, y });
     send(ws, { type: "notice", level: "info", text: `${stats.label} placed.` });
+    return;
+  }
+
+  if (msg.type === "invest") {
+    const inv = INVESTMENTS.find((i) => i.kind === msg.kind);
+    if (!inv) return;
+    const p = g.players[player];
+    const level = p.invest[inv.kind];
+    const cost = investCost(inv.base, level);
+    if (p.resources < cost) {
+      send(ws, { type: "notice", level: "error", text: `Not enough resources for ${inv.label} Lv${level + 1} — need ${cost}.` });
+      return;
+    }
+    p.resources -= cost;
+    p.invest[inv.kind] = level + 1;
+    send(ws, { type: "notice", level: "info", text: `Invested in ${inv.label} → Lv${level + 1} (${inv.effect}).` });
     return;
   }
 

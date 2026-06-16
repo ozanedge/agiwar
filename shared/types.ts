@@ -91,7 +91,8 @@ export interface StateMsg {
   units: UnitState[];
   bases: BaseState[];
   artifacts: Artifact[]; // visible artifacts (fog-gated)
-  bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's active artifact bonuses
+  bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's total bonuses (artifacts + investments)
+  invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
   you: number; // which player index this client controls
 }
 
@@ -117,7 +118,14 @@ export interface Notice {
   text: string;
 }
 
-export type ServerMsg = StateMsg | CampsMsg | Notice;
+/** A field-general observation/decision, streamed to the command-log panel. */
+export interface FieldLog {
+  type: "fieldlog";
+  text: string;
+  tick: number;
+}
+
+export type ServerMsg = StateMsg | CampsMsg | Notice | FieldLog;
 
 /** The field general's structured decision (LLM output, clamped before use).
  *  "hold" = issue no order; units keep running their native doctrine. */
@@ -136,6 +144,7 @@ export type ClientMsg =
   | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "captureArtifact"; id: number } // invest to claim a neutral artifact
+  | { type: "invest"; kind: ArtifactBonusKind } // buy the next level of a permanent army upgrade
   | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 
 /** A field-general command: a *time-boxed override* of native doctrine.

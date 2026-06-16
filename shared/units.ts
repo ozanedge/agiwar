@@ -31,6 +31,16 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
 
 export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "drone", "turret"];
 
+// Permanent, repeatable investments — each level adds to that player's army-wide bonus.
+// (kind matches the artifact bonus pool, so they stack.) Cost escalates per level.
+export const INVESTMENTS: { kind: "income" | "range" | "hp" | "damage"; label: string; amount: number; base: number; effect: string }[] = [
+  { kind: "damage", label: "Munitions", amount: 1, base: 120, effect: "+1 dmg" },
+  { kind: "hp", label: "Plating", amount: 5, base: 120, effect: "+5 hp" },
+  { kind: "range", label: "Optics", amount: 1, base: 170, effect: "+1 range" },
+  { kind: "income", label: "Reactor", amount: 1, base: 140, effect: "+1 ⛃/s" },
+];
+export const investCost = (base: number, level: number) => base * (level + 1);
+
 // A unit sees 3× as far as it can shoot; a base reveals a fixed radius.
 export const VISION_MULT = 3;
 export const BASE_VISION = 16;
