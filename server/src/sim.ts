@@ -45,6 +45,7 @@ export interface GameState {
   bases: BaseState[];
   artifacts: Artifact[];
   players: PlayerState[]; // index = player/owner
+  flow: Int32Array[]; // BFS distance-to-base field per base, for obstacle-routed movement
   nextUnitId: number;
   nextArtifactId: number;
 }
@@ -92,7 +93,44 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: 4, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W - 5, y: GRID_H >> 1, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  return { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], players: [makePlayer(), makePlayer()], nextUnitId: 1, nextArtifactId: 1 };
+  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], players: [makePlayer(), makePlayer()], flow: [], nextUnitId: 1, nextArtifactId: 1 };
+  g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
+  return g;
+}
+
+/** BFS distance (in 8-dir steps) from base[owner] to every passable cell. Unreachable = INF. */
+function computeFlow(g: GameState, owner: number): Int32Array {
+  const W = GRID_W, H = GRID_H, INF = 1e9;
+  const dist = new Int32Array(W * H).fill(INF);
+  const b = g.bases[owner];
+  const q: number[] = [b.y * W + b.x];
+  dist[b.y * W + b.x] = 0;
+  for (let head = 0; head < q.length; head++) {
+    const k = q[head], cx = k % W, cy = (k / W) | 0, nd = dist[k] + 1;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const nk = ny * W + nx;
+      if (dist[nk] <= nd || !isPassable(nx, ny, g.seed, W, H)) continue;
+      dist[nk] = nd; q.push(nk);
+    }
+  }
+  return dist;
+}
+
+/** Step one cell down the flow field toward base[owner] — globally routed around terrain. */
+function stepToBase(g: GameState, u: UnitState, owner: number) {
+  const W = GRID_W, dist = g.flow[owner];
+  let bx = u.x, by = u.y, best = dist[u.y * W + u.x];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    if (!dx && !dy) continue;
+    const nx = u.x + dx, ny = u.y + dy;
+    if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
+    const d = dist[ny * W + nx];
+    if (d < best) { best = d; bx = nx; by = ny; }
+  }
+  u.x = bx; u.y = by;
 }
 
 const ARTIFACT_BONUSES: { kind: ArtifactBonusKind; amount: number; label: string }[] = [
@@ -167,12 +205,22 @@ const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
   u.x = nx; u.y = ny; return true;
 };
 
-// Move one cell toward target, avoiding water/mountains: try the direct step, then
-// axis-aligned slides, then a sidestep. Stays put only if fully boxed in.
+// Local stepper for DYNAMIC targets (chasing a unit, sieging an artifact): pick the passable
+// neighbor that gets closest to the target; if none improves, slide laterally to skirt walls.
 function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
-  const dx = sign(tx - u.x), dy = sign(ty - u.y);
-  const cands: [number, number][] = [[dx, dy], [dx, 0], [0, dy], [dx, -dy], [-dx, dy], [0, dy || 1], [0, -(dy || 1)]];
-  for (const [cx, cy] of cands) if (tryStep(g, u, cx, cy)) return;
+  const cur = cheb(u.x, u.y, tx, ty);
+  let bx = u.x, by = u.y, best = cur;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    if (!dx && !dy) continue;
+    const nx = u.x + dx, ny = u.y + dy;
+    if (!passable(g, nx, ny)) continue;
+    const d = cheb(nx, ny, tx, ty);
+    if (d < best) { best = d; bx = nx; by = ny; }
+  }
+  if (bx !== u.x || by !== u.y) { u.x = bx; u.y = by; return; }
+  // local minimum — slide along the obstacle (any passable neighbor that doesn't retreat)
+  for (const [cx, cy] of [[sign(tx - u.x), 0], [0, sign(ty - u.y)], [sign(tx - u.x), -sign(ty - u.y) || 1], [-sign(tx - u.x) || 1, sign(ty - u.y)]] as [number, number][])
+    if (cheb(u.x + cx, u.y + cy, tx, ty) <= cur && tryStep(g, u, cx, cy)) return;
 }
 
 function wander(g: GameState, u: UnitState) {
@@ -224,10 +272,11 @@ function decide(g: GameState, u: UnitState) {
   const spec = effectiveSpec(g, u);
   const myBase = g.bases[u.owner];
   const mv = (tx: number, ty: number) => { if (canMove) moveToward(g, u, tx, ty); };
+  const toBase = (owner: number) => { if (canMove) stepToBase(g, u, owner); }; // flow-field routed
 
   // 1) retreat if wounded past threshold
   if (u.hp / u.maxHp < spec.retreatHealthPct) {
-    if (cheb(u.x, u.y, myBase.x, myBase.y) > 1) mv(myBase.x, myBase.y);
+    if (cheb(u.x, u.y, myBase.x, myBase.y) > 1) toBase(u.owner);
     return;
   }
 
@@ -241,7 +290,7 @@ function decide(g: GameState, u: UnitState) {
       if (enemyDist <= range) atk(enemy!);
       else mv(enemy!.x, enemy!.y);
     } else if (cheb(u.x, u.y, myBase.x, myBase.y) > spec.defendRadius - 1) {
-      mv(myBase.x, myBase.y);
+      toBase(u.owner);
     }
     return;
   }
@@ -264,7 +313,7 @@ function decide(g: GameState, u: UnitState) {
   if (roll < wanderChance) {
     if (canMove) explore(g, u); // recon: head toward the fog, away from already-seen ground
   } else if (roll < wanderChance + forwardChance) {
-    mv(enemyBase.x, enemyBase.y); // attack: advance on the enemy base
+    toBase(enemyBase.owner); // attack: advance on the enemy base (flow-field routed around terrain)
   } // else: hold position
 }
 
