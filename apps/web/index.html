@@ -83,11 +83,11 @@
       .agg { color: #ff5d73; } .rec { color: #5ab0ff; } .def { color: #2fe0bd; } .bld { color: #ffb547; }
       .panel-overlay { position: absolute; background: var(--bg-panel); backdrop-filter: blur(6px); border: 1px solid var(--edge); border-radius: 6px; box-shadow: 0 0 18px rgba(0,255,209,.07); }
       #readout { left: 12px; bottom: 12px; padding: 9px 11px; max-width: 380px; pointer-events: none; }
-      /* resource chip is the top-left HUD anchor; the notice sits below it and only appears when it has a message */
-      #econ { left: 12px; top: 12px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
-      #notice { left: 12px; top: 50px; padding: 7px 11px; color: var(--accent); max-width: 340px; }
+      /* top-left HUD stack: title → resource chip → notice, each clearly below the last (no overlap) */
+      #title { left: 16px; top: 14px; font-size: 17px; font-weight: 700; letter-spacing: .34em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); pointer-events: none; }
+      #econ { left: 16px; top: 56px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
+      #notice { left: 16px; top: 96px; padding: 7px 11px; color: var(--accent); max-width: 340px; }
       #notice:empty { display: none; } /* no stray empty bordered box when there's nothing to show */
-      #title { right: 14px; top: 12px; font-size: 17px; font-weight: 700; letter-spacing: .34em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); pointer-events: none; }
       #endscreen { position: absolute; inset: 0; z-index: 45; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; pointer-events: none; background: radial-gradient(circle at center, rgba(2,6,10,.45), rgba(2,6,10,.78)); }
       #endscreen.show { display: flex; animation: endfade .5s ease both; }
       #endscreen .big { font-size: 13vw; font-weight: 700; letter-spacing: .32em; line-height: 1; transform-origin: center; animation: endin 1.05s cubic-bezier(.16,.9,.24,1) both; }
@@ -96,7 +96,7 @@
       #endscreen.lose .big { color: var(--danger); text-shadow: 0 0 60px rgba(255,56,96,.7), 0 0 18px rgba(255,56,96,.95); }
       @keyframes endfade { from { opacity: 0 } to { opacity: 1 } }
       @keyframes endin { 0% { opacity: 0; transform: scale(.55); filter: blur(12px) } 55% { opacity: 1 } 100% { opacity: 1; transform: scale(1); filter: blur(0) } }
-      #title small { display: block; font-size: 9px; letter-spacing: .18em; color: rgba(0,255,209,.45); text-shadow: none; text-align: right; margin-top: 2px; }
+      #title small { display: block; font-size: 9px; letter-spacing: .18em; color: rgba(0,255,209,.45); text-shadow: none; text-align: left; margin-top: 2px; }
       * { scrollbar-width: thin; scrollbar-color: rgba(0,255,209,.18) transparent; }
       *::-webkit-scrollbar { width: 8px; height: 8px; }
       *::-webkit-scrollbar-thumb { background: rgba(0,255,209,.18); border-radius: 4px; }
