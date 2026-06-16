@@ -43,7 +43,7 @@ export function terrainAt(gx: number, gy: number, seed: number, W: number, H: nu
     if (d < 11) h = Math.max(h, 0.5);
     else if (d < 18) h = Math.max(h, 0.42);
   }
-  const micro = (h2(gx, gy, seed + 777) - 0.5) * 0.14;
+  const micro = (h2(gx, gy, seed + 777) - 0.5) * 0.08; // gentle variation (less speckle)
   let kind: TerrainKind, passable = true, elev: number;
   if (h < 0.34) { kind = "water"; passable = false; elev = 0; }
   else if (h < 0.39) { kind = "sand"; elev = 1; }

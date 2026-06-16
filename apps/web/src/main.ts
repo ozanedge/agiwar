@@ -94,7 +94,11 @@ function drawTile(layer: Graphics, gx: number, gy: number, seed: number, W: numb
     layer.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.22));
   }
   layer.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
-  if (!dim) decorate(layer, t.kind, gx, gy, seed, cx, cy);
+  if (!dim) {
+    // soft top sheen so tiles read as lit surfaces rather than flat blocks
+    layer.poly([cx, cy - TILE_H * 0.34, cx + TILE_W * 0.34, cy - TILE_H * 0.04, cx, cy + TILE_H * 0.18, cx - TILE_W * 0.34, cy - TILE_H * 0.04]).fill({ color: tint(col, 0.18), alpha: 0.4 });
+    decorate(layer, t.kind, gx, gy, seed, cx, cy);
+  }
 }
 
 function resetFog(seed: number, W: number, H: number) {
@@ -286,9 +290,10 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
   const dark = tint(side, -0.28), light = tint(side, 0.28);
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2; // accent outline = doctrine (neutral for buildings)
   const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
-  g.ellipse(cx, cy + 2, 9, 4).fill({ color: 0x000000, alpha: 0.32 }); // ground shadow
+  g.ellipse(cx, cy + 3, 10, 4).fill({ color: 0x000000, alpha: 0.3 }); // ground shadow
   const rad = u.unit === "tank" || u.unit === "turret" ? 9 : 7;
-  g.ellipse(cx, cy + 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.16 }); // neon glow
+  g.ellipse(cx, cy + 1, rad + 10, (rad + 10) * 0.5).fill({ color: side, alpha: 0.12 }); // soft outer glow
+  g.ellipse(cx, cy + 1, rad + 5, (rad + 5) * 0.5).fill({ color: side, alpha: 0.14 }); // inner glow
 
   if (u.unit === "tank") {
     const by = cy - 5;
@@ -323,6 +328,7 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Graphics {
     g.rect(cx - 1, by - 14, 2, 14).fill(tint(side, -0.1));                      // tall barrel up
     g.circle(cx, by, 2).fill(acc);
   }
+  g.ellipse(cx - rad * 0.35, cy - rad * 1.2, rad * 0.5, rad * 0.28).fill({ color: 0xffffff, alpha: 0.2 }); // specular sheen
   if (u.hp < u.maxHp) g.rect(cx - rad, cy - rad - 9, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
   if (u.overrideUntil > s.tick) g.circle(cx, cy - rad, rad + 3).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
   g.eventMode = "static";

@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
@@ -439,7 +439,7 @@ export function computeVisibleState(g: GameState, player: number): { units: Unit
   const vr = playerBonus(g, player).range; // artifact range bonus widens vision too
   const visible = (x: number, y: number) =>
     (!!ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION) ||
-    own.some((u) => cheb(u.x, u.y, x, y) <= (UNIT_STATS[u.unit].range + vr) * VISION_MULT); // each unit sees 3× its range
+    own.some((u) => cheb(u.x, u.y, x, y) <= Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr) * VISION_MULT)); // wide vision, capped
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),

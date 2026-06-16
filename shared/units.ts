@@ -41,10 +41,11 @@ export const INVESTMENTS: { kind: "income" | "range" | "hp" | "damage"; label: s
 ];
 export const investCost = (base: number, level: number) => base * (level + 1);
 
-// A unit sees 3× as far as it can shoot; a base reveals a fixed radius.
-export const VISION_MULT = 3;
-export const BASE_VISION = 16;
-export const visionOf = (u: UnitType) => UNIT_STATS[u].range * VISION_MULT;
+// Units see far beyond their attack range; a base reveals a fixed radius.
+export const VISION_MULT = 9;
+export const VISION_CAP = 42; // so a long-range scout can't reveal the entire map
+export const BASE_VISION = 20;
+export const visionOf = (u: UnitType) => Math.min(VISION_CAP, UNIT_STATS[u].range * VISION_MULT);
 // Units are trained at a camp; buildings are placed on the map (no doctrine).
 export const TRAINABLE: UnitType[] = UNIT_TYPES.filter((t) => !UNIT_STATS[t].building);
 export const BUILDINGS: UnitType[] = UNIT_TYPES.filter((t) => UNIT_STATS[t].building);
