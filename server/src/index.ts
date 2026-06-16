@@ -145,12 +145,18 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   const g = room.game;
   const player = member.player;
 
-  if (msg.type === "setProduction") {
+  if (msg.type === "setBudget") {
+    const camp = g.players[player].camps.find((c) => c.id === msg.camp);
+    if (!camp) return;
+    camp.production.budgetPct = Math.max(0, Math.min(100, Math.round(msg.budgetPct) || 0));
+    sendOwnCamps(ws, g, player);
+    return;
+  }
+  if (msg.type === "setMix") {
     const camp = g.players[player].camps.find((c) => c.id === msg.camp);
     const stats = UNIT_STATS[msg.unit];
     if (!camp || !stats || stats.building) return; // trainable units only
-    camp.production.unit = msg.unit;
-    camp.production.budgetPct = Math.max(0, Math.min(100, Math.round(msg.budgetPct) || 0));
+    camp.production.mix[msg.unit] = Math.max(0, Math.min(100, Math.round(msg.weight) || 0));
     sendOwnCamps(ws, g, player);
     return;
   }

@@ -34,8 +34,9 @@ export interface Camp {
   cooldownUntil: number;
   /** true while a compile is in flight (client shows a spinner, blocks edits). */
   compiling: boolean;
-  /** continuous production: spend this % of income training this unit type. 0 = paused. */
-  production: { unit: UnitType; budgetPct: number };
+  /** continuous production: spend budgetPct% of income, split across unit types by `mix`
+   *  (weights; each camp's spend on a unit = income · budgetPct% · weight/Σweights). */
+  production: { budgetPct: number; mix: Partial<Record<UnitType, number>> };
 }
 
 export interface UnitState {
@@ -115,7 +116,8 @@ export interface FieldGeneralDecision {
 export type ClientMsg =
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
-  | { type: "setProduction"; camp: DoctrineId; unit: UnitType; budgetPct: number } // set a camp's budget share
+  | { type: "setBudget"; camp: DoctrineId; budgetPct: number } // set a camp's share of income
+  | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
   | { type: "fieldOrder"; order: FieldOrder }; // manual time-boxed override (debug/UI)
 

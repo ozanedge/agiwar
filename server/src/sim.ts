@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
@@ -16,12 +16,12 @@ export const INCOME_PER_TICK = Number(process.env.INCOME_PER_TICK ?? 2); // ~20 
 const STARTING_RESOURCES = Number(process.env.STARTING_RESOURCES ?? 250);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 
-// default budget allocation per camp (% of income). Players tune these live.
-// Sum < 100 -> the remainder banks as savings for turrets.
-const DEFAULT_PROD: Record<DoctrineId, { unit: UnitType; budgetPct: number }> = {
-  aggressive: { unit: "gunner", budgetPct: 40 }, // Attack budget
-  recon: { unit: "humvee", budgetPct: 20 }, // Intelligence budget
-  defensive: { unit: "tank", budgetPct: 25 }, // Defense budget
+// default budget allocation per camp (% of income) + unit mix (weights). Players tune live.
+// Sum of budgets < 100 -> the remainder banks as savings for turrets.
+const DEFAULT_PROD: Record<DoctrineId, { budgetPct: number; mix: Partial<Record<UnitType, number>> }> = {
+  aggressive: { budgetPct: 40, mix: { gunner: 100 } }, // Attack budget
+  recon: { budgetPct: 20, mix: { humvee: 100 } }, // Intelligence budget
+  defensive: { budgetPct: 25, mix: { tank: 100 } }, // Defense budget
 };
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
@@ -60,7 +60,7 @@ function hash01(a: number, b: number): number {
 }
 
 function makeCamp(id: DoctrineId, label: string): Camp {
-  return { id, label, prompt: PRESET_PROMPTS[id], spec: { ...PRESET_SPECS[id] }, cooldownUntil: 0, compiling: false, production: { ...DEFAULT_PROD[id] } };
+  return { id, label, prompt: PRESET_PROMPTS[id], spec: { ...PRESET_SPECS[id] }, cooldownUntil: 0, compiling: false, production: { budgetPct: DEFAULT_PROD[id].budgetPct, mix: { ...DEFAULT_PROD[id].mix } } };
 }
 
 function makePlayer(): PlayerState {
@@ -232,14 +232,20 @@ export function step(g: GameState) {
     player.camps.forEach((camp, ci) => {
       const pct = camp.production.budgetPct;
       if (pct <= 0) return;
-      const stats = UNIT_STATS[camp.production.unit];
-      if (!stats || stats.building) return;
-      // spend rate = income * pct% ; ticks to fund one unit = cost / spendPerTick
-      const interval = Math.max(1, Math.round((stats.cost * 100) / (INCOME_PER_TICK * pct)));
-      if ((g.tick + ci * 7) % interval !== 0) return; // stagger camps
-      if (player.resources < stats.cost) return; // bank can't cover it this cycle — skip
-      player.resources -= stats.cost;
-      spawnUnit(g, pi, camp.id, camp.production.unit);
+      const mix = camp.production.mix;
+      const total = TRAINABLE.reduce((a, u) => a + (mix[u] || 0), 0);
+      if (total <= 0) return;
+      TRAINABLE.forEach((u, ui) => {
+        const w = mix[u] || 0;
+        if (w <= 0) return;
+        const stats = UNIT_STATS[u];
+        const spendShare = (pct / 100) * (w / total); // fraction of income on this unit
+        const interval = Math.max(1, Math.round(stats.cost / (INCOME_PER_TICK * spendShare)));
+        if ((g.tick + ci * 7 + ui * 13) % interval !== 0) return; // stagger camp×unit
+        if (player.resources < stats.cost) return; // bank can't cover it — skip
+        player.resources -= stats.cost;
+        spawnUnit(g, pi, camp.id, u);
+      });
     });
   }
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).

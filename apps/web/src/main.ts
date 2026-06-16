@@ -10,7 +10,7 @@ const OWN_COLOR = 0x4aa3ff;
 const ENEMY_COLOR = 0xff6a5a;
 const DOCTRINE_COLOR: Record<DoctrineId, number> = { aggressive: 0xff6b6b, recon: 0x5aa9ff, defensive: 0x5ad17a };
 const DOCTRINE_CLASS: Record<DoctrineId, string> = { aggressive: "agg", recon: "rec", defensive: "def" };
-const BUDGET_NAME: Record<DoctrineId, string> = { aggressive: "Attack", recon: "Intelligence", defensive: "Defense" };
+const BUDGET_NAME: Record<DoctrineId, string> = { aggressive: "Attack", recon: "Intel", defensive: "Defense" };
 const DOCTRINES: DoctrineId[] = ["aggressive", "recon", "defensive"];
 
 const stage = document.getElementById("stage")!;
@@ -276,7 +276,6 @@ function updateReadout() {
 
 // ---- camp panels: doctrine editor only (budget/unit live in the Sankey chart) ----
 let built = false;
-const currentProdUnit = (id: DoctrineId): UnitType => (latestCamps.find((c) => c.id === id)?.production.unit ?? "gunner");
 
 function syncCamps(camps: Camp[]) {
   if (!built) { buildCamps(camps); built = true; }
@@ -289,7 +288,7 @@ function syncCamps(camps: Camp[]) {
     document.getElementById(`spec-${c.id}`)!.textContent =
       `agg ${c.spec.aggression.toFixed(2)} · engage ${c.spec.engageRange} · retreat<${(c.spec.retreatHealthPct * 100) | 0}% · explore ${c.spec.explorationBias.toFixed(2)} · leash ${c.spec.defendRadius ?? "none"}`;
   }
-  if (!dragId) renderSankey();
+  if (!dragId()) renderSankey();
 }
 function buildCamps(camps: Camp[]) {
   campsEl.innerHTML = "";
@@ -312,8 +311,12 @@ setInterval(() => { if (latestCamps.length) syncCamps(latestCamps); }, 250); // 
 const NS = "http://www.w3.org/2000/svg";
 const sankeyEl = document.getElementById("sankey") as unknown as SVGSVGElement;
 const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff6b6b", recon: "#5aa9ff", defensive: "#5ad17a" };
-let dragId: DoctrineId | null = null, dragStartY = 0, dragStartPct = 0, dragPct = 0;
-const SANKEY_W = 344, SANKEY_H = 196, S_TOP = 8, S_BOT = 188, S_HC = S_BOT - S_TOP;
+const S_TOP = 22; // room for the income label
+let S_HC = 600; // usable chart height; recomputed from the panel each render
+// two kinds of drag: a camp's budget share, or a unit's weight within a camp
+let dragBudgetId: DoctrineId | null = null, dragBudgetStartY = 0, dragBudgetStartPct = 0, dragBudgetPct = 0;
+let dragMixId: DoctrineId | null = null, dragMixUnit: UnitType | null = null, dragMixStartY = 0, dragMixStartW = 0, dragMixW = 0;
+const dragId = () => dragBudgetId || dragMixId; // any active drag (suppresses re-render from polling)
 
 function mk(tag: string, attrs: Record<string, string | number>, parent: Element): SVGElement {
   const e = document.createElementNS(NS, tag);
@@ -325,75 +328,89 @@ function ribbon(xL: number, yL0: number, yL1: number, xR: number, yR0: number, y
   const mx = (xL + xR) / 2;
   return `M${xL},${yL0} C${mx},${yL0} ${mx},${yR0} ${xR},${yR0} L${xR},${yR1} C${mx},${yR1} ${mx},${yL1} ${xL},${yL1} Z`;
 }
-function pctOf(c: Camp): number { return dragId === c.id ? dragPct : c.production.budgetPct; }
+const budgetOf = (c: Camp) => (dragBudgetId === c.id ? dragBudgetPct : c.production.budgetPct);
+const mixOf = (c: Camp, u: UnitType) => (dragMixId === c.id && dragMixUnit === u ? dragMixW : c.production.mix[u] || 0);
 
+// 3-layer Sankey: Income → Camp (Attack/Intel/Defense/Savings) → Unit type
 function renderSankey() {
   if (!latestState || latestCamps.length < 3) return;
+  S_HC = Math.max(80, sankeyEl.clientHeight - S_TOP - 10); // fill the panel's full height
   while (sankeyEl.firstChild) sankeyEl.removeChild(sankeyEl.firstChild);
   const camps = DOCTRINES.map((d) => latestCamps.find((c) => c.id === d)!).filter(Boolean);
-  const alloc = camps.reduce((a, c) => a + pctOf(c), 0);
-  const savings = Math.max(0, 100 - alloc);
-  const incomeX = 6, incomeW = 16, budX = 150, budW = 18, outX = 300, outW = 20, GAP = 5;
+  const savings = Math.max(0, 100 - camps.reduce((a, c) => a + budgetOf(c), 0));
+  const incX = 4, incW = 14, campX = 74, campW = 18, unitX = 196, unitW = 18, GAP = 8;
 
-  mk("rect", { x: incomeX, y: S_TOP, width: incomeW, height: S_HC, rx: 2, fill: "#cdd6e0" }, sankeyEl);
-  mk("text", { x: incomeX, y: S_TOP - 1, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`;
+  mk("rect", { x: incX, y: S_TOP, width: incW, height: S_HC, rx: 2, fill: "#cdd6e0" }, sankeyEl);
+  mk("text", { x: incX, y: S_TOP - 1, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`;
 
-  type Band = { id: DoctrineId | "savings"; name: string; col: string; v: number; unit?: UnitType };
-  const bands: Band[] = camps.map((c) => ({ id: c.id, name: BUDGET_NAME[c.id], col: HEXCSS[c.id], v: pctOf(c), unit: c.production.unit }));
-  bands.push({ id: "savings", name: "Savings", col: "#8794a3", v: savings });
+  const MINBAND = 13; // every draggable band keeps this height even at 0%, so you can grab it
+  let yInc = S_TOP, yCamp = S_TOP, yUnit = S_TOP;
+  for (const c of camps) {
+    const bp = budgetOf(c);
+    const h = (bp / 100) * S_HC;
+    const dispH = Math.max(h, MINBAND);
+    const col = HEXCSS[c.id];
+    mk("path", { d: ribbon(incX + incW, yInc, yInc + h, campX, yCamp, yCamp + dispH), fill: col, "fill-opacity": bp > 0 ? 0.26 : 0.08 }, sankeyEl);
+    const node = mk("rect", { x: campX, y: yCamp, width: campW, height: dispH, rx: 2, fill: col, "fill-opacity": bp > 0 ? 0.92 : 0.32, class: "band" }, sankeyEl);
+    node.setAttribute("data-band", c.id);
+    mk("text", { x: 20, y: yCamp + dispH / 2 + 3, "font-size": 10, "fill-opacity": bp > 0 ? 1 : 0.55 }, sankeyEl).textContent = `${BUDGET_NAME[c.id]} ${Math.round(bp)}%`;
 
-  let yInc = S_TOP, yBud = S_TOP;
-  for (const b of bands) {
-    const h = (b.v / 100) * S_HC;
-    const hInc0 = yInc, hInc1 = yInc + h, hBud0 = yBud, hBud1 = yBud + h;
-    // income -> budget ribbon
-    mk("path", { d: ribbon(incomeX + incomeW, hInc0, hInc1, budX, hBud0, hBud1), fill: b.col, "fill-opacity": 0.28 }, sankeyEl);
-    // budget node (draggable)
-    const node = mk("rect", { x: budX, y: hBud0, width: budW, height: Math.max(0, h), rx: 2, fill: b.col, "fill-opacity": 0.9, class: b.id === "savings" ? "" : "band" }, sankeyEl);
-    if (b.id !== "savings") node.setAttribute("data-band", b.id);
-    if (h > 11) mk("text", { x: budX + budW + 4, y: hBud0 + h / 2 + 3, "font-size": 10 }, sankeyEl).textContent = `${b.name} ${Math.round(b.v)}%`;
-    // budget -> output
-    if (b.unit) {
-      mk("path", { d: ribbon(budX + budW, hBud0, hBud1, outX, hBud0, hBud1), fill: b.col, "fill-opacity": 0.22 }, sankeyEl);
-      const out = mk("rect", { x: outX, y: hBud0, width: outW, height: Math.max(0, h), rx: 2, fill: b.col, "fill-opacity": 0.95, class: "out" }, sankeyEl);
-      out.setAttribute("data-out", b.id);
-      if (h > 11) mk("text", { x: outX - 2, y: hBud0 + h / 2 + 3, "font-size": 10, "text-anchor": "end" }, sankeyEl).textContent = UNIT_STATS[b.unit].label.replace(" Infantry", "");
-    } else if (h > 8) {
-      mk("path", { d: ribbon(budX + budW, hBud0, hBud1, outX, hBud0, hBud1), fill: b.col, "fill-opacity": 0.15 }, sankeyEl);
-      mk("text", { x: outX - 2, y: hBud0 + h / 2 + 3, "font-size": 10, "text-anchor": "end" }, sankeyEl).textContent = "→ turrets";
+    // split the (displayed) camp band across unit types (Camp → Unit Type layer)
+    const total = TRAINABLE.reduce((a, u) => a + mixOf(c, u), 0);
+    let ySeg = yCamp;
+    for (const u of TRAINABLE) {
+      const w = mixOf(c, u);
+      const frac = total > 0 ? w / total : 0;
+      const segH = frac * dispH;
+      const nodeH = Math.max(segH, MINBAND); // grabbable even at 0%
+      const on = w > 0;
+      mk("path", { d: ribbon(campX + campW, ySeg, ySeg + segH, unitX, yUnit, yUnit + nodeH), fill: col, "fill-opacity": on ? 0.2 : 0.07 }, sankeyEl);
+      const un = mk("rect", { x: unitX, y: yUnit, width: unitW, height: nodeH, rx: 2, fill: col, "fill-opacity": on ? 0.95 : 0.32, class: "band" }, sankeyEl);
+      un.setAttribute("data-mix", `${c.id}:${u}`);
+      mk("text", { x: unitX + unitW + 5, y: yUnit + nodeH / 2 + 3, "font-size": 10, "fill-opacity": on ? 1 : 0.55 }, sankeyEl).textContent =
+        `${UNIT_STATS[u].label.replace(" Infantry", "")} ${Math.round(frac * 100)}%`;
+      ySeg += segH; yUnit += nodeH + 6;
     }
-    yInc = hInc1; yBud = hBud1 + GAP;
+    yInc += h; yCamp += dispH + GAP;
+  }
+  // savings → turrets
+  if (savings > 0) {
+    const h = (savings / 100) * S_HC;
+    mk("path", { d: ribbon(incX + incW, yInc, yInc + h, campX, yCamp, yCamp + h), fill: "#8794a3", "fill-opacity": 0.22 }, sankeyEl);
+    mk("rect", { x: campX, y: yCamp, width: campW, height: Math.max(0, h), rx: 2, fill: "#8794a3", "fill-opacity": 0.9 }, sankeyEl);
+    if (h > 10) mk("text", { x: 22, y: yCamp + h / 2 + 3, "font-size": 10 }, sankeyEl).textContent = `Savings ${Math.round(savings)}% → turrets`;
   }
 }
 
-// drag a budget band to reallocate (savings absorbs the remainder)
 sankeyEl.addEventListener("pointerdown", (e) => {
-  const t = e.target as Element;
-  const band = t.getAttribute?.("data-band") as DoctrineId | null;
-  if (!band) return;
-  dragId = band; dragStartY = e.clientY; dragStartPct = latestCamps.find((c) => c.id === band)!.production.budgetPct; dragPct = dragStartPct;
-  e.preventDefault();
+  const a = (e.target as Element).getAttribute?.("data-band");
+  const m = (e.target as Element).getAttribute?.("data-mix");
+  if (a) {
+    dragBudgetId = a as DoctrineId; dragBudgetStartY = e.clientY;
+    dragBudgetStartPct = latestCamps.find((c) => c.id === a)!.production.budgetPct; dragBudgetPct = dragBudgetStartPct;
+    e.preventDefault();
+  } else if (m) {
+    const [cid, u] = m.split(":");
+    dragMixId = cid as DoctrineId; dragMixUnit = u as UnitType; dragMixStartY = e.clientY;
+    dragMixStartW = latestCamps.find((c) => c.id === cid)!.production.mix[u as UnitType] || 0; dragMixW = dragMixStartW;
+    e.preventDefault();
+  }
 });
 window.addEventListener("pointermove", (e) => {
-  if (!dragId) return;
-  const others = latestCamps.filter((c) => c.id !== dragId).reduce((a, c) => a + c.production.budgetPct, 0);
-  const raw = dragStartPct + ((dragStartY - e.clientY) / S_HC) * 100;
-  dragPct = Math.max(0, Math.min(100 - others, Math.round(raw / 5) * 5));
-  renderSankey();
+  if (dragBudgetId) {
+    const others = latestCamps.filter((c) => c.id !== dragBudgetId).reduce((a, c) => a + c.production.budgetPct, 0);
+    const raw = dragBudgetStartPct + ((dragBudgetStartY - e.clientY) / S_HC) * 100;
+    dragBudgetPct = Math.max(0, Math.min(100 - others, Math.round(raw / 5) * 5));
+    renderSankey();
+  } else if (dragMixId) {
+    const raw = dragMixStartW + ((dragMixStartY - e.clientY) / S_HC) * 100;
+    dragMixW = Math.max(0, Math.min(100, Math.round(raw / 5) * 5));
+    renderSankey();
+  }
 });
 window.addEventListener("pointerup", () => {
-  if (!dragId) return;
-  sendCmd({ type: "setProduction", camp: dragId, unit: currentProdUnit(dragId), budgetPct: dragPct });
-  dragId = null;
-});
-// click an output to cycle that camp's produced unit type
-sankeyEl.addEventListener("click", (e) => {
-  const id = (e.target as Element).getAttribute?.("data-out") as DoctrineId | null;
-  if (!id || id === ("savings" as any)) return;
-  const cur = currentProdUnit(id);
-  const next = TRAINABLE[(TRAINABLE.indexOf(cur) + 1) % TRAINABLE.length];
-  const pct = latestCamps.find((c) => c.id === id)!.production.budgetPct;
-  sendCmd({ type: "setProduction", camp: id, unit: next, budgetPct: pct });
+  if (dragBudgetId) { sendCmd({ type: "setBudget", camp: dragBudgetId, budgetPct: dragBudgetPct }); dragBudgetId = null; }
+  else if (dragMixId && dragMixUnit) { sendCmd({ type: "setMix", camp: dragMixId, unit: dragMixUnit, weight: dragMixW }); dragMixId = null; dragMixUnit = null; }
 });
 
 // ---- field general doctrine editor ----
