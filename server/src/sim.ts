@@ -40,6 +40,10 @@ const SPEED_MULT = Number(process.env.SPEED_MULT ?? 1);
 // Firing downhill hits harder, uphill softer — clamped so it's an edge, never a one-shot.
 const HIGH_GROUND_GAIN = Number(process.env.HIGH_GROUND_GAIN ?? 1.8);
 const HIGH_GROUND_MIN = 0.6, HIGH_GROUND_MAX = 1.6;
+// Pack cohesion: an advancing unit that has fallen BEHIND its local group steers back to it, so
+// the army travels as a coherent pack instead of a scattered swarm of independent wanderers.
+const PACK_RADIUS = 14 * GRID_SCALE; // friendly combatants within this many cells form one pack
+const PACK_KEEP = 4 * GRID_SCALE; // a straggler farther than this from the pack center rejoins it
 const groundHeight = (g: GameState, x: number, y: number) => terrainAt(x, y, g.seed, GRID_W, GRID_H).height;
 
 /** Everything that belongs to one player: their three camp generals and their field general. */
@@ -287,6 +291,20 @@ function explore(g: GameState, u: UnitState) {
   wander(g, u);
 }
 
+// Local center of mass of nearby friendly COMBATANTS (armed, mobile — no turrets/drones), used
+// for pack cohesion. Returns null if the unit is alone. O(armed²) but armed counts are modest.
+function packCenter(g: GameState, u: UnitState, R: number): { x: number; y: number } | null {
+  let sx = 0, sy = 0, n = 0;
+  for (const f of g.units) {
+    if (f.owner !== u.owner || f.id === u.id) continue;
+    const s = UNIT_STATS[f.unit];
+    if (s.building || s.dmg <= 0) continue; // armed mobile only
+    if (cheb(u.x, u.y, f.x, f.y) > R) continue;
+    sx += f.x; sy += f.y; n++;
+  }
+  return n ? { x: sx / n, y: sy / n } : null;
+}
+
 function decide(g: GameState, u: UnitState) {
   const stats = UNIT_STATS[u.unit];
   const period = (n: number) => Math.max(1, Math.round(n * SPEED_MULT));
@@ -367,7 +385,9 @@ function decide(g: GameState, u: UnitState) {
   //    forwardChance high for attack, ~0 for recon; wanderChance high for recon (roams, incl back);
   //    leftover probability = hold position (conservative). Defensive units are usually leashed above.
   const enemyBase = g.bases.find((b) => b.owner !== u.owner)!;
-  const roll = hash01(u.id, g.tick);
+  // coarse time bucket: the drift decision persists ~8 ticks instead of re-rolling every tick, so
+  // units commit to a behavior rather than flickering advance/hold/wander (the "disoriented" look).
+  const roll = hash01(u.id, g.tick >> 3);
   const wanderChance = spec.explorationBias;
   const forwardChance = spec.aggression * (1 - spec.explorationBias);
   // an active RALLY point (player commitment, #5) redirects advancing units to concentrate there
@@ -377,7 +397,12 @@ function decide(g: GameState, u: UnitState) {
   if (roll < wanderChance) {
     roam(); // recon: head toward the fog, away from already-seen ground
   } else if (roll < wanderChance + forwardChance) {
-    if (rallyActive) mv(rally!.x, rally!.y); // converge on the rally/commitment point
+    if (rallyActive) { mv(rally!.x, rally!.y); return; } // converge on the rally/commitment point
+    // PACK COHESION: if we've fallen behind the local group (farther from the enemy than the pack
+    // center) and drifted loose from it, close back up; otherwise lead the advance with the pack.
+    const pc = packCenter(g, u, PACK_RADIUS);
+    const behind = pc && cheb(u.x, u.y, enemyBase.x, enemyBase.y) > cheb(pc.x, pc.y, enemyBase.x, enemyBase.y);
+    if (pc && behind && cheb(u.x, u.y, pc.x, pc.y) > PACK_KEEP) mv(pc.x, pc.y); // straggler rejoins
     else toBase(enemyBase.owner); // advance on the enemy base (flow-field routed around terrain)
   } // else: hold position
 }
