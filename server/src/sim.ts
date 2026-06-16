@@ -144,13 +144,10 @@ function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
 }
 
 function wander(g: GameState, u: UnitState) {
-  // deterministic outward drift (biased away from base), but only onto passable ground
-  const base = g.bases[u.owner];
-  const away = sign(u.x - base.x) || 1;
-  const r = hash01(u.id, g.tick >> 2);
-  const dx = r < 0.5 ? away : sign(Math.round(r * 4) - 2);
-  const dy = sign(Math.round(hash01(u.id + 7, g.tick >> 2) * 4) - 2);
-  if (!tryStep(g, u, dx, dy)) tryStep(g, u, away, 0); // fall back to pushing outward
+  // meander in ANY direction (incl. back toward base), only onto passable ground
+  const dx = Math.round(hash01(u.id, g.tick >> 1) * 2) - 1; // -1 | 0 | 1
+  const dy = Math.round(hash01(u.id + 7, g.tick >> 1) * 2) - 1;
+  tryStep(g, u, dx, dy);
 }
 
 function decide(g: GameState, u: UnitState) {
@@ -202,13 +199,18 @@ function decide(g: GameState, u: UnitState) {
     return;
   }
 
-  // 4) no fight: explorers roam, aggressors march on the enemy base
-  if (spec.explorationBias > 0.5) {
-    if (canMove) wander(g, u);
-  } else {
-    const enemyBase = g.bases.find((b) => b.owner !== u.owner)!;
-    mv(enemyBase.x, enemyBase.y);
-  }
+  // 4) no engagement: drift by doctrine.
+  //    forwardChance high for attack, ~0 for recon; wanderChance high for recon (roams, incl back);
+  //    leftover probability = hold position (conservative). Defensive units are usually leashed above.
+  const enemyBase = g.bases.find((b) => b.owner !== u.owner)!;
+  const roll = hash01(u.id, g.tick);
+  const wanderChance = spec.explorationBias;
+  const forwardChance = spec.aggression * (1 - spec.explorationBias);
+  if (roll < wanderChance) {
+    if (canMove) wander(g, u); // recon: many directions, including backward
+  } else if (roll < wanderChance + forwardChance) {
+    mv(enemyBase.x, enemyBase.y); // attack: advance on the enemy base
+  } // else: hold position
 }
 
 function attack(g: GameState, u: UnitState, target: { isBase: boolean; ref: UnitState | BaseState }) {
