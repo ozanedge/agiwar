@@ -272,8 +272,9 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     }
     camp.compiling = true;
     sendOwnCamps(ws, g, player); // reflect "compiling…"
-    const { spec, source } = await compilePolicy(camp.prompt); // compile the full memory
+    const { spec, mix, source } = await compilePolicy(camp.prompt); // compile the full memory
     camp.spec = spec;
+    if (mix) camp.production.mix = mix; // the general also chooses what it trains (incl. drones)
     camp.compiling = false;
     camp.cooldownUntil = wallClock() + COOLDOWN_MS;
     sendOwnCamps(ws, g, player);

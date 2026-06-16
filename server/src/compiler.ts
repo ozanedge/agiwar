@@ -3,7 +3,18 @@
 // game is always playable even with no AWS credentials.
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import type { BehaviorSpec } from "../../shared/types.js";
-import { SPEC_SCHEMA_HINT, clampSpec, stubCompile } from "../../shared/spec.js";
+import { SPEC_SCHEMA_HINT, clampSpec, stubCompile, stubMix } from "../../shared/spec.js";
+import { TRAINABLE, UnitType } from "../../shared/units.js";
+
+// pull a clean unit mix (weights over trainable types) out of whatever the LLM returned
+function parseMix(raw: any): Partial<Record<UnitType, number>> | null {
+  const m = raw?.mix;
+  if (!m || typeof m !== "object") return null;
+  const out: Partial<Record<UnitType, number>> = {};
+  let total = 0;
+  for (const u of TRAINABLE) { const w = Math.max(0, Math.round(Number(m[u]) || 0)); if (w > 0) { out[u] = w; total += w; } }
+  return total > 0 ? out : null;
+}
 
 const REGION = process.env.AWS_REGION ?? "us-west-2";
 // Newer Claude models on Bedrock require a cross-region INFERENCE PROFILE id
@@ -23,6 +34,7 @@ spec the game engine can execute. Be faithful to the described intent. ${SPEC_SC
 
 export interface CompileResult {
   spec: BehaviorSpec;
+  mix: Partial<Record<UnitType, number>> | null; // unit composition the general wants trained
   source: "bedrock" | "stub";
 }
 
@@ -30,7 +42,7 @@ export async function compilePolicy(prompt: string): Promise<CompileResult> {
   try {
     const body = {
       anthropic_version: "bedrock-2023-05-31",
-      max_tokens: 300,
+      max_tokens: 320,
       system: SYSTEM,
       messages: [{ role: "user", content: `General's style:\n"""${prompt}"""\n\nReturn only the JSON spec.` }],
     };
@@ -40,10 +52,10 @@ export async function compilePolicy(prompt: string): Promise<CompileResult> {
     const decoded = JSON.parse(new TextDecoder().decode(res.body));
     const text: string = decoded?.content?.[0]?.text ?? "";
     const json = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-    return { spec: clampSpec(json), source: "bedrock" };
+    return { spec: clampSpec(json), mix: parseMix(json), source: "bedrock" };
   } catch (err) {
     // Network/credentials/parse failure -> deterministic fallback, never breaks play.
     console.warn(`[compiler] Bedrock unavailable, using stub: ${(err as Error).message}`);
-    return { spec: stubCompile(prompt), source: "stub" };
+    return { spec: stubCompile(prompt), mix: stubMix(prompt), source: "stub" };
   }
 }

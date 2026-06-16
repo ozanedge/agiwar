@@ -63,6 +63,19 @@ export function stubCompile(prompt: string): BehaviorSpec {
   return clampSpec(spec);
 }
 
+/** Keyword fallback for the unit MIX (what types a camp trains), used when Bedrock is down.
+ *  Returns weights over the trainable types; the dominant keyword wins, default = gunners. */
+export function stubMix(prompt: string): Record<string, number> {
+  const p = prompt.toLowerCase();
+  const has = (...ws: string[]) => ws.some((w) => p.includes(w));
+  const mix: Record<string, number> = {};
+  if (has("drone", "scout", "recon", "eyes", "surveil", "spotter")) mix.drone = 100;
+  if (has("tank", "armor", "heavy", "siege")) mix.tank = (mix.tank || 0) + 100;
+  if (has("humvee", "fast", "raid", "harass", "mobile")) mix.humvee = (mix.humvee || 0) + 100;
+  if (has("gunner", "infantry", "soldier", "rifle", "troops")) mix.gunner = (mix.gunner || 0) + 100;
+  return Object.keys(mix).length ? mix : { gunner: 100 };
+}
+
 /** The JSON contract handed to the LLM. Kept here so server + docs stay in sync. */
 export const SPEC_SCHEMA_HINT = `Return ONLY a JSON object with these fields:
 {
@@ -70,5 +83,6 @@ export const SPEC_SCHEMA_HINT = `Return ONLY a JSON object with these fields:
   "engageRange": integer 1..30,     // cells within which the unit will engage an enemy
   "retreatHealthPct": number 0..1,  // flee to base below this hp fraction; 0 = never flee
   "explorationBias": number 0..1,   // 0 = hug base/push enemy base, 1 = roam seeking the unknown
-  "defendRadius": integer 2..20 or null  // leash to base in cells; null = free to roam
+  "defendRadius": integer 2..20 or null, // leash to base in cells; null = free to roam
+  "mix": { "gunner": number, "tank": number, "humvee": number, "drone": number } // relative weights of which unit types this camp TRAINS (drone = unarmed high-vision scout). Use whatever fits the general's intent; omit types you don't want.
 }`;
