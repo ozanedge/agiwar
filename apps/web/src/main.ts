@@ -345,13 +345,20 @@ function syncInvest(s: StateMsg) {
 
 // ---- rendering ----
 function render(s: StateMsg) {
-  if (terrainKey !== `${s.seed}:${s.gridW}:${s.gridH}`) { resetFog(s.seed, s.gridW, s.gridH); centerOnBase(s); }
+  if (terrainKey !== `${s.seed}:${s.gridW}:${s.gridH}`) {
+    resetFog(s.seed, s.gridW, s.gridH); centerOnBase(s);
+    for (const e of unitViews.values()) e.holder.destroy({ children: true }); // new match → drop stale holders
+    unitViews.clear();
+  }
   renderFog(s); // unexplored = black · explored = dim memory · visible = bright
-  entityLayer.removeChildren();
-  if (s.rally) entityLayer.addChild(makeRally(s.rally, s));
-  for (const a of s.artifacts) entityLayer.addChild(makeArtifact(a, s));
-  for (const b of s.bases) entityLayer.addChild(makeBase(b, s));
-  for (const u of s.units) entityLayer.addChild(makeUnit(u, s));
+  // transient entities (rebuilt each state); units are persistent + interpolated, so don't wipe them
+  for (const c of transientFx) c.destroy({ children: true });
+  transientFx.length = 0;
+  const addT = (g: Container) => { entityLayer.addChild(g); transientFx.push(g); };
+  if (s.rally) addT(makeRally(s.rally, s));
+  for (const a of s.artifacts) addT(makeArtifact(a, s));
+  for (const b of s.bases) addT(makeBase(b, s));
+  reconcileUnits(s); // create/update/remove persistent unit holders; the ticker glides them
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   updateReadout();
   const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0) + latestTurretBudget;
@@ -495,11 +502,10 @@ function drawSilhouette(g: Graphics, type: UnitType, color: number, t: number) {
 }
 const UNIT_HEIGHT: Record<string, number> = { tank: 9, turret: 13, humvee: 8, gunner: 9, drone: 3 };
 
-function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
+// Build a unit's visual art at the ORIGIN (no world position). A persistent per-unit holder carries
+// the position, which the render ticker eases between cells so units glide instead of snapping.
+function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
   const cont = new Container();
-  const elev = elevAt(u.x, u.y, s.seed, s.gridW, s.gridH);
-  cont.x = isoX(u.x, u.y); cont.y = isoY(u.x, u.y) - elev;
-  cont.zIndex = u.x + u.y;
   const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
   const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
@@ -538,13 +544,56 @@ function makeUnit(u: StateMsg["units"][number], s: StateMsg): Container {
   if (u.hp < u.maxHp) top.rect(-rad, -topY - 6, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
   if (u.overrideUntil > s.tick) top.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
   cont.addChild(top);
-
-  cont.eventMode = "static";
-  cont.cursor = "pointer";
-  cont.on("pointerover", () => { hovered = u; updateReadout(); });
-  cont.on("pointerout", () => { if (hovered?.id === u.id) { hovered = null; updateReadout(); } });
   return cont;
 }
+
+// ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
+interface UnitView { holder: Container; art: Container | null; gx: number; gy: number; tgx: number; tgy: number; u: StateMsg["units"][number]; }
+const unitViews = new Map<number, UnitView>();
+const transientFx: Container[] = []; // bases/artifacts/rally — rebuilt each state (no interpolation)
+
+function placeHolder(e: UnitView, s: StateMsg) {
+  e.holder.x = isoX(e.gx, e.gy);
+  e.holder.y = isoY(e.gx, e.gy) - elevAt(e.gx, e.gy, s.seed, s.gridW, s.gridH);
+  e.holder.zIndex = e.gx + e.gy;
+}
+
+function reconcileUnits(s: StateMsg) {
+  const live = new Set<number>();
+  for (const u of s.units) {
+    live.add(u.id);
+    let e = unitViews.get(u.id);
+    if (!e) {
+      const holder = new Container();
+      holder.eventMode = "static"; holder.cursor = "pointer";
+      e = { holder, art: null, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, u };
+      const ev = e;
+      holder.on("pointerover", () => { hovered = ev.u; updateReadout(); });
+      holder.on("pointerout", () => { if (hovered?.id === ev.u.id) { hovered = null; updateReadout(); } });
+      entityLayer.addChild(holder);
+      unitViews.set(u.id, e);
+      placeHolder(e, s); // place new units immediately (no glide from origin)
+    }
+    e.u = u; e.tgx = u.x; e.tgy = u.y; // server position is the glide target
+    if (e.art) e.art.destroy({ children: true });
+    e.art = unitArt(u, s);
+    e.holder.addChild(e.art);
+  }
+  for (const [id, e] of unitViews) if (!live.has(id)) { e.holder.destroy({ children: true }); unitViews.delete(id); }
+}
+
+// glide every holder toward its target cell each frame (frame-rate independent exponential ease)
+const GLIDE_RATE = 9;
+app.ticker.add(() => {
+  if (!latestState || !unitViews.size) return;
+  const s = latestState;
+  const k = 1 - Math.exp(-Math.min(0.05, app.ticker.deltaMS / 1000) * GLIDE_RATE);
+  for (const e of unitViews.values()) {
+    e.gx += (e.tgx - e.gx) * k;
+    e.gy += (e.tgy - e.gy) * k;
+    placeHolder(e, s);
+  }
+});
 
 function updateReadout() {
   if (!hovered || !latestState) { readoutEl.textContent = "hover a unit to inspect it"; return; }
