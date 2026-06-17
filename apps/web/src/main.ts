@@ -1,9 +1,9 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, VISION_MULT, BASE_VISION, INVESTMENTS, investCost, visionOf, GRID_SCALE, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
-import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
+import { terrainAt, elevationAt, heightAt, highGroundBonus, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 const MM_SECONDS = 60; // how long we look for a live opponent before single-player (matches server)
@@ -69,7 +69,7 @@ function tint(hex: number, f: number): number {
 }
 // darker, desaturated/teal-shifted terrain so neon units + cyan HUD pop on top
 const KIND_COLOR: Record<TerrainKind, number> = { water: 0x06303d, sand: 0x5b5638, grass: 0x163a2a, highland: 0x2b3a28, rock: 0x2e3848 };
-const elevAt = (gx: number, gy: number, seed: number, W: number, H: number) => terrainAt(gx, gy, seed, W, H).elev;
+const elevAt = elevationAt; // cheap render-lift lookup (no cliff slope sampling)
 
 let terrainKey = "";
 let terrainTex: import("pixi.js").Texture | null = null;
@@ -85,7 +85,8 @@ function bakeTerrain(seed: number, W: number, H: number) {
     for (let gx = Math.max(0, d - (H - 1)); gx <= Math.min(W - 1, d); gx++) {
       const gy = d - gx;
       const t = terrainAt(gx, gy, seed, W, H);
-      const col = tint(KIND_COLOR[t.kind], t.micro);
+      // cliffs / impassable land render as bare rock so blocked terrain reads as such
+      const col = !t.passable && t.kind !== "water" ? tint(0x2e3848, t.micro) : tint(KIND_COLOR[t.kind], t.micro);
       const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev, groundY = isoY(gx, gy);
       if (t.elev > 1.2) { // side walls on raised ground for a sense of height
         g.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.42));
@@ -120,8 +121,11 @@ function renderFog(s: StateMsg) {
   // current vision (bright layer mask) — rebuilt every tick from your bases + units
   visMask.clear();
   const vm = modsFor(s.armyDoctrine).visionMult; // doctrine vision (Phantom sees farther)
+  // a unit's sight = base range + HIGH-GROUND bonus (matches server), capped, ×doctrine
+  const sight = (u: StateMsg["units"][number]) =>
+    Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT);
   for (const b of s.bases) if (b.owner === s.you) visionMark(visMask, b.x, b.y, BASE_VISION * vm);
-  for (const u of s.units) if (u.owner === s.you) visionMark(visMask, u.x, u.y, visionOf(u.unit) * vm);
+  for (const u of s.units) if (u.owner === s.you) visionMark(visMask, u.x, u.y, sight(u) * vm);
   // explored memory (dim layer mask) — stamp a diamond the first time a viewer enters a coarse
   // cell, so the seen-area grows as you scout without ever redrawing the whole mask.
   const stamp = (gx: number, gy: number, R: number) => {
@@ -131,7 +135,7 @@ function renderFog(s: StateMsg) {
     visionMark(expMask, gx, gy, R);
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
-  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, visionOf(u.unit) * vm);
+  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, sight(u) * vm);
 }
 
 // ---- camera (pan + zoom), centered on your base ----

@@ -4,7 +4,7 @@
 import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
-import { isPassable, terrainAt } from "../../shared/terrain.js";
+import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
 import { modsFor, type ArmyMods } from "../../shared/doctrine.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
@@ -44,7 +44,9 @@ const HIGH_GROUND_MIN = 0.6, HIGH_GROUND_MAX = 1.6;
 // the army travels as a coherent pack instead of a scattered swarm of independent wanderers.
 const PACK_RADIUS = 14 * GRID_SCALE; // friendly combatants within this many cells form one pack
 const PACK_KEEP = 4 * GRID_SCALE; // a straggler farther than this from the pack center rejoins it
-const groundHeight = (g: GameState, x: number, y: number) => terrainAt(x, y, g.seed, GRID_W, GRID_H).height;
+const groundHeight = (g: GameState, x: number, y: number) => heightAt(x, y, g.seed, GRID_W, GRID_H);
+// extra attack range + sight (in fine cells) from standing on high ground — a big positional edge
+const hgBonus = (g: GameState, x: number, y: number) => highGroundBonus(groundHeight(g, x, y));
 
 /** Everything that belongs to one player: their three camp generals and their field general. */
 export interface PlayerState {
@@ -71,6 +73,7 @@ export interface GameState {
   shots: Shot[]; // transient weapon-fire events accumulated since the last broadcast (cosmetic)
   players: PlayerState[]; // index = player/owner
   flow: Int32Array[]; // BFS distance-to-base field per base, for obstacle-routed movement
+  passGrid: Uint8Array; // 1 = passable, 0 = blocked (water/rock/cliff) — precomputed once per match
   nextUnitId: number;
   nextArtifactId: number;
 }
@@ -133,7 +136,11 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: GRID_W >> 1, y: GRID_H - 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W >> 1, y: 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], nextUnitId: 1, nextArtifactId: 1 };
+  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), nextUnitId: 1, nextArtifactId: 1 };
+  // precompute passability ONCE (terrain w/ cliff slope is costly) — movement + flow read this grid
+  const grid = new Uint8Array(GRID_W * GRID_H);
+  for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) grid[y * GRID_W + x] = terrainAt(x, y, g.seed, GRID_W, GRID_H).passable ? 1 : 0;
+  g.passGrid = grid;
   g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
   return g;
 }
@@ -152,7 +159,7 @@ function computeFlow(g: GameState, owner: number): Int32Array {
       const nx = cx + dx, ny = cy + dy;
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       const nk = ny * W + nx;
-      if (dist[nk] <= nd || !isPassable(nx, ny, g.seed, W, H)) continue;
+      if (dist[nk] <= nd || g.passGrid[nk] === 0) continue;
       dist[nk] = nd; q.push(nk);
     }
   }
@@ -188,7 +195,7 @@ function spawnArtifact(g: GameState) {
     const r2 = hash01(g.nextArtifactId * 97 + attempt, g.seed ^ 0xa11);
     const x = Math.round(GRID_W * (0.22 + 0.56 * r)); // mid-map band, away from the bases
     const y = Math.round(GRID_H * (0.12 + 0.76 * r2));
-    if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
+    if (!passable(g, x, y)) continue;
     if (g.artifacts.some((a) => cheb(a.x, a.y, x, y) < 14 * GRID_SCALE)) continue; // spread them out
     const bonus = ARTIFACT_BONUSES[Math.floor(hash01(g.nextArtifactId * 7, g.seed) * ARTIFACT_BONUSES.length)];
     g.artifacts.push({ id: g.nextArtifactId++, x, y, owner: -1, hp: ARTIFACT_HP, maxHp: ARTIFACT_HP, bonus });
@@ -241,7 +248,7 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
   return best;
 }
 
-const passable = (g: GameState, x: number, y: number) => isPassable(x, y, g.seed, GRID_W, GRID_H);
+const passable = (g: GameState, x: number, y: number) => x >= 0 && y >= 0 && x < GRID_W && y < GRID_H && g.passGrid[y * GRID_W + x] === 1;
 
 // Occupancy: each unit has size — no two units share a cell. `occ` holds every unit's cell for the
 // current tick (rebuilt each step), updated incrementally as units move so later movers see it.
@@ -334,7 +341,7 @@ function decide(g: GameState, u: UnitState) {
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
   const bonus = playerBonus(g, u.owner);
-  const range = stats.range + bonus.range; // artifact range bonus
+  const range = stats.range + bonus.range + hgBonus(g, u.x, u.y); // artifact range + HIGH-GROUND reach
   const isScout = stats.dmg <= 0; // drones: never engage, just scout
   const atk = (t: Target) => { if (canAttack) attack(g, u, t); };
 
@@ -428,7 +435,7 @@ function attack(g: GameState, u: UnitState, target: Target) {
   // ACCURACY: base per-type hit chance, falling off with distance (point-blank reliable, the far
   // edge of range chancy). A little high-ground steadiness bonus rewards the heights.
   const dist = cheb(u.x, u.y, target.x, target.y);
-  const range = Math.max(1, stats.range + playerBonus(g, u.owner).range);
+  const range = Math.max(1, stats.range + playerBonus(g, u.owner).range + hgBonus(g, u.x, u.y)); // high-ground reach
   const falloff = 1 - 0.45 * Math.min(1, dist / range); // 1.0 → ~0.55 across the range band
   const highSteady = 1 + 0.12 * (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y));
   const hitChance = Math.max(0.12, Math.min(0.98, stats.accuracy * falloff * highSteady));
@@ -520,7 +527,7 @@ function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } |
         const x = Math.round(anchor.x + Math.cos(ang) * R);
         const y = Math.round(anchor.y + Math.sin(ang) * R);
         if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_H) continue;
-        if (!isPassable(x, y, g.seed, GRID_W, GRID_H)) continue;
+        if (!passable(g, x, y)) continue;
         if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2 * GRID_SCALE)) continue;
         return { x, y };
       }
@@ -539,18 +546,23 @@ function pub(u: UnitState): UnitState {
 
 /** Fog of war: what `player` can see. Own units/base always; enemy units/base only when
  *  within VISION of one of the player's units or base — so scouting (recon doctrine) pays off. */
-/** Is cell (x,y) within `player`'s vision (own base radius or any own unit's wide sight)? */
-export function visibleTo(g: GameState, player: number, x: number, y: number): boolean {
-  const ownBase = g.bases[player];
-  const vm = playerMods(g, player).visionMult;
-  if (ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION * vm) return true;
-  const vr = playerBonus(g, player).range;
-  for (const u of g.units) if (u.owner === player && cheb(u.x, u.y, x, y) <= Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr) * VISION_MULT) * vm) return true;
-  return false;
+/** A player's vision sources for this snapshot: base + each unit, with HIGH-GROUND-boosted radius.
+ *  Computed once and reused (heightAt per own unit, not per candidate cell). */
+function visionSources(g: GameState, player: number): { x: number; y: number; r: number }[] {
+  const vm = playerMods(g, player).visionMult, vr = playerBonus(g, player).range;
+  const out: { x: number; y: number; r: number }[] = [];
+  const b = g.bases[player];
+  if (b) out.push({ x: b.x, y: b.y, r: BASE_VISION * vm });
+  for (const u of g.units) if (u.owner === player) {
+    const r = Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr + hgBonus(g, u.x, u.y)) * VISION_MULT) * vm; // high ground sees far
+    out.push({ x: u.x, y: u.y, r });
+  }
+  return out;
 }
 
 export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[]; artifacts: Artifact[] } {
-  const visible = (x: number, y: number) => visibleTo(g, player, x, y);
+  const src = visionSources(g, player);
+  const visible = (x: number, y: number) => src.some((s) => cheb(s.x, s.y, x, y) <= s.r);
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),
@@ -560,7 +572,9 @@ export function computeVisibleState(g: GameState, player: number): { units: Unit
 
 /** Shots `player` should see this broadcast: their own fire, or fire near their vision. */
 export function visibleShots(g: GameState, player: number): Shot[] {
-  return g.shots.filter((s) => s.owner === player || visibleTo(g, player, s.ax, s.ay) || visibleTo(g, player, s.bx, s.by));
+  const src = visionSources(g, player);
+  const see = (x: number, y: number) => src.some((s) => cheb(s.x, s.y, x, y) <= s.r);
+  return g.shots.filter((s) => s.owner === player || see(s.ax, s.ay) || see(s.bx, s.by));
 }
 
 /** Apply a field-general order as a time-boxed override on the targeted units. */
