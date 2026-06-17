@@ -1,7 +1,7 @@
 // Deterministic, server-authoritative fixed-tick simulation.
 // No Math.random / Date.now inside the tick: all "randomness" is a pure hash of
 // (unitId, tick) so a match is fully reproducible and replayable.
-import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, UnitState } from "../../shared/types.js";
+import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable, terrainAt } from "../../shared/terrain.js";
@@ -68,6 +68,7 @@ export interface GameState {
   units: UnitState[];
   bases: BaseState[];
   artifacts: Artifact[];
+  shots: Shot[]; // transient weapon-fire events accumulated since the last broadcast (cosmetic)
   players: PlayerState[]; // index = player/owner
   flow: Int32Array[]; // BFS distance-to-base field per base, for obstacle-routed movement
   nextUnitId: number;
@@ -132,7 +133,7 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: GRID_W >> 1, y: GRID_H - 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W >> 1, y: 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], players: [makePlayer(), makePlayer()], flow: [], nextUnitId: 1, nextArtifactId: 1 };
+  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], nextUnitId: 1, nextArtifactId: 1 };
   g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
   return g;
 }
@@ -410,15 +411,25 @@ function decide(g: GameState, u: UnitState) {
 }
 
 function attack(g: GameState, u: UnitState, target: Target) {
-  const base = UNIT_STATS[u.unit].dmg;
-  if (base <= 0) return; // unarmed (drones)
+  const stats = UNIT_STATS[u.unit];
+  if (stats.dmg <= 0) return; // unarmed (drones)
   const mods = playerMods(g, u.owner);
-  const dmg = (base + playerBonus(g, u.owner).damage) * (UNIT_STATS[u.unit].building ? mods.turretDmgMult : mods.dmgMult); // artifact/investment + doctrine
-  // high-ground rule: scale by elevation delta (attacker height − target height), clamped.
-  // the Highland doctrine amplifies the swing via highGroundMult.
-  const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
-  const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
-  target.ref.hp -= dmg * mult;
+  // ACCURACY: base per-type hit chance, falling off with distance (point-blank reliable, the far
+  // edge of range chancy). A little high-ground steadiness bonus rewards the heights.
+  const dist = cheb(u.x, u.y, target.x, target.y);
+  const range = Math.max(1, stats.range + playerBonus(g, u.owner).range);
+  const falloff = 1 - 0.45 * Math.min(1, dist / range); // 1.0 → ~0.55 across the range band
+  const highSteady = 1 + 0.12 * (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y));
+  const hitChance = Math.max(0.12, Math.min(0.98, stats.accuracy * falloff * highSteady));
+  const hit = hash01(u.id + 91, g.tick) < hitChance; // decorrelated from movement/engage rolls
+  if (hit) {
+    const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult); // artifact/investment + doctrine
+    // high-ground rule: scale damage by elevation delta, clamped; Highland doctrine amplifies it.
+    const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
+    const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
+    target.ref.hp -= dmg * mult;
+  }
+  if (g.shots.length < 240) g.shots.push({ ax: u.x, ay: u.y, bx: target.x, by: target.y, hit, kind: u.unit, owner: u.owner }); // cosmetic, capped
 }
 
 export function step(g: GameState) {
@@ -512,19 +523,28 @@ function pub(u: UnitState): UnitState {
 
 /** Fog of war: what `player` can see. Own units/base always; enemy units/base only when
  *  within VISION of one of the player's units or base — so scouting (recon doctrine) pays off. */
-export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[]; artifacts: Artifact[] } {
-  const own = g.units.filter((u) => u.owner === player);
+/** Is cell (x,y) within `player`'s vision (own base radius or any own unit's wide sight)? */
+export function visibleTo(g: GameState, player: number, x: number, y: number): boolean {
   const ownBase = g.bases[player];
-  const vr = playerBonus(g, player).range; // artifact range bonus widens vision too
-  const vm = playerMods(g, player).visionMult; // doctrine vision (e.g. Phantom sees farther)
-  const visible = (x: number, y: number) =>
-    (!!ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION * vm) ||
-    own.some((u) => cheb(u.x, u.y, x, y) <= Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr) * VISION_MULT) * vm); // wide vision, capped
+  const vm = playerMods(g, player).visionMult;
+  if (ownBase && cheb(ownBase.x, ownBase.y, x, y) <= BASE_VISION * vm) return true;
+  const vr = playerBonus(g, player).range;
+  for (const u of g.units) if (u.owner === player && cheb(u.x, u.y, x, y) <= Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr) * VISION_MULT) * vm) return true;
+  return false;
+}
+
+export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[]; artifacts: Artifact[] } {
+  const visible = (x: number, y: number) => visibleTo(g, player, x, y);
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),
     artifacts: g.artifacts.filter((a) => a.owner === player || visible(a.x, a.y)), // neutral/enemy artifacts fog-gated
   };
+}
+
+/** Shots `player` should see this broadcast: their own fire, or fire near their vision. */
+export function visibleShots(g: GameState, player: number): Shot[] {
+  return g.shots.filter((s) => s.owner === player || visibleTo(g, player, s.ax, s.ay) || visibleTo(g, player, s.bx, s.by));
 }
 
 /** Apply a field-general order as a time-boxed override on the targeted units. */

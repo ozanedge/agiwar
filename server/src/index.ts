@@ -3,7 +3,7 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, newGame, playerBonus, spawnUnit, step } from "./sim.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, visibleShots, newGame, playerBonus, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
@@ -45,7 +45,7 @@ let roomSeq = 1;
 let waiting: { ws: WebSocket; timer: ReturnType<typeof setTimeout> } | null = null;
 
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
-const sendState = (ws: WebSocket, g: GameState, player: number) => {
+const sendState = (ws: WebSocket, g: GameState, player: number, includeShots = false) => {
   const b = playerBonus(g, player);
   send(ws, {
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
@@ -53,6 +53,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number) => {
     bonuses: b, invest: g.players[player].invest, queuedInvest: g.players[player].queuedInvest,
     armyDoctrine: g.players[player].armyDoctrine,
     rally: g.players[player].rally ? { x: g.players[player].rally!.x, y: g.players[player].rally!.y } : null,
+    shots: includeShots ? visibleShots(g, player) : [],
     ...computeVisibleState(g, player), you: player,
   });
 };
@@ -126,7 +127,10 @@ function tickRoom(room: Room) {
     return;
   }
 
-  if (++room.netTick % NET_EVERY === 0) for (const m of room.members) sendState(m.ws, g, m.player); // egress: NET_HZ, fogged per player
+  if (++room.netTick % NET_EVERY === 0) {
+    for (const m of room.members) sendState(m.ws, g, m.player, true); // egress: NET_HZ, fogged per player (incl. shots)
+    g.shots.length = 0; // shots consumed by this broadcast
+  }
 }
 
 const wss = new WebSocketServer({ port: PORT });

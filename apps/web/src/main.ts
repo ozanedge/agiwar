@@ -43,11 +43,12 @@ const terrainBright = new Sprite(); // baked terrain, full — shown where curre
 terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
+const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
 const expMask = new Graphics(); // union of all explored vision (persists across the match)
 const visMask = new Graphics(); // union of current vision (rebuilt every tick)
 terrainDim.mask = expMask;
 terrainBright.mask = visMask;
-world.addChild(terrainDim, terrainBright, entityLayer, expMask, visMask);
+world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -172,7 +173,7 @@ function connect() {
   ws = new WebSocket(WS_URL);
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
-    if (msg.type === "state") { latestState = msg; render(msg); }
+    if (msg.type === "state") { latestState = msg; render(msg); spawnShots(msg); }
     else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
@@ -184,6 +185,56 @@ function connect() {
 }
 function sendCmd(cmd: unknown) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 connect();
+
+// ---- projectiles: each shot from the server flies as a tracer, with an impact flash (hit) or a
+//      wide whiff (miss). Animated on the render ticker (60fps); purely cosmetic. ----
+interface Proj { ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; color: number; big: boolean; ox: number; oy: number; }
+const projectiles: Proj[] = [];
+function spawnShots(s: StateMsg) {
+  for (const sh of s.shots ?? []) {
+    if (projectiles.length > 400) break;
+    const cells = Math.max(Math.abs(sh.ax - sh.bx), Math.abs(sh.ay - sh.by));
+    const big = sh.kind === "tank" || sh.kind === "turret";
+    // a miss veers wide of the target by a few px in a random direction
+    const a = Math.random() * Math.PI * 2, r = 7 + Math.random() * 8;
+    projectiles.push({
+      ax: sh.ax, ay: sh.ay, bx: sh.bx, by: sh.by, t0: performance.now(),
+      travel: Math.min(360, 90 + cells * 6), hit: sh.hit, big,
+      color: sh.owner === s.you ? OWN_COLOR : ENEMY_COLOR,
+      ox: sh.hit ? 0 : Math.cos(a) * r, oy: sh.hit ? 0 : Math.sin(a) * r * 0.6,
+    });
+  }
+}
+const IMPACT_MS = 120;
+app.ticker.add(() => {
+  if (!projectiles.length || !latestState) { if (!projectiles.length) fxLayer.clear(); return; }
+  const s = latestState, now = performance.now();
+  fxLayer.clear();
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    const el = now - p.t0;
+    if (el >= p.travel + IMPACT_MS) { projectiles.splice(i, 1); continue; }
+    const sx = isoX(p.ax, p.ay), sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - 9;
+    const ex = isoX(p.bx, p.by) + p.ox, ey = isoY(p.bx, p.by) - elevAt(p.bx, p.by, s.seed, s.gridW, s.gridH) - 6 + p.oy;
+    const lift = 8 + (p.big ? 6 : 0); // mid-flight arc
+    if (el < p.travel) {
+      const t = el / p.travel, tt = Math.max(0, t - 0.14);
+      const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * lift;
+      const px = sx + (ex - sx) * tt, py = sy + (ey - sy) * tt - Math.sin(tt * Math.PI) * lift;
+      fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: p.color, width: p.big ? 2.4 : 1.4, alpha: 0.85 }); // tracer streak
+      fxLayer.circle(cx, cy, p.big ? 2.6 : 1.6).fill({ color: 0xffffff, alpha: 0.95 }); // hot core
+      fxLayer.circle(cx, cy, p.big ? 4.2 : 2.8).fill({ color: p.color, alpha: 0.32 }); // glow
+    } else {
+      const k = (el - p.travel) / IMPACT_MS; // 0→1 impact progress
+      if (p.hit) {
+        fxLayer.circle(ex, ey, (p.big ? 5 : 3) + k * (p.big ? 15 : 9)).stroke({ color: p.color, width: p.big ? 2 : 1.3, alpha: 0.85 * (1 - k) });
+        fxLayer.circle(ex, ey, (p.big ? 4 : 2.5) * (1 - k)).fill({ color: 0xffffff, alpha: 0.9 * (1 - k) }); // flash
+      } else {
+        fxLayer.circle(ex, ey, (p.big ? 4 : 3) + k * 5).stroke({ color: 0x9bb0b6, width: 1, alpha: 0.4 * (1 - k) }); // dust puff
+      }
+    }
+  }
+});
 
 function showEndscreen(won: boolean) {
   const el = document.getElementById("endscreen")!;
@@ -501,7 +552,9 @@ function updateReadout() {
   const ground = th >= 0.60
     ? `<span style="color:#ffd76b">⛰ HIGH GROUND</span> · +dmg downhill`
     : th < 0.40 ? `<span style="color:#8aa">↓ low ground</span> · −dmg uphill` : `level ground`;
-  const header = `${UNIT_STATS[u.unit].label} #${u.id} · ${who} · hp ${u.hp}/${u.maxHp}<br><span class="sub">${ground}</span>`;
+  const acc = UNIT_STATS[u.unit].accuracy;
+  const accStr = acc > 0 ? ` · acc ${Math.round(acc * 100)}%` : "";
+  const header = `${UNIT_STATS[u.unit].label} #${u.id} · ${who} · hp ${u.hp}/${u.maxHp}${accStr}<br><span class="sub">${ground}</span>`;
   if (!u.camp) { readoutEl.innerHTML = `${header}<br><b>Building</b> — stationary, no doctrine`; return; } // building
   const overridden = u.overrideUntil > latestState.tick;
   const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;

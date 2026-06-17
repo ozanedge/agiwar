@@ -57,6 +57,16 @@ export interface UnitState {
   overrideLabel: string;
 }
 
+/** A transient weapon-fire event for the client to animate as a flying projectile. Sent in the
+ *  state broadcast (fog-gated), not part of persistent state — purely cosmetic. */
+export interface Shot {
+  ax: number; ay: number; // attacker cell
+  bx: number; by: number; // target cell at fire time
+  hit: boolean; // did it connect (passed the accuracy roll)?
+  kind: UnitType; // shooter type → projectile look
+  owner: number; // shooter's player index → tracer color
+}
+
 export interface BaseState {
   owner: number;
   x: number;
@@ -92,6 +102,7 @@ export interface StateMsg {
   incomePerSec: number; // income rate incl. artifact bonuses
   units: UnitState[];
   bases: BaseState[];
+  shots: Shot[]; // weapon fire since the last broadcast (fog-gated) — client animates projectiles
   artifacts: Artifact[]; // visible artifacts (fog-gated)
   bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's total bonuses (artifacts + investments)
   invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
