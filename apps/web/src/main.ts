@@ -187,9 +187,10 @@ app.canvas.addEventListener("dblclick", (e) => {
 
 // ---- networking ----
 let ws: WebSocket;
+let soloAfterConnect = false; // set when "New game" wants an immediate bot match on reconnect
 function connect() {
   ws = new WebSocket(WS_URL);
-  ws.onopen = () => showMatchmaking();
+  ws.onopen = () => { if (soloAfterConnect) { soloAfterConnect = false; sendCmd({ type: "skipToBot" }); } else showMatchmaking(); };
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state" || msg.type === "camps") hideMatchmaking(); // a room exists → matched
@@ -294,8 +295,21 @@ function hideMatchmaking() {
 
 function showEndscreen(won: boolean) {
   const el = document.getElementById("endscreen")!;
-  el.innerHTML = `<div class="big">${won ? "VICTORY" : "DEFEAT"}</div><div class="end2">${won ? "Enemy base destroyed" : "Your base has fallen"}</div>`;
+  el.innerHTML =
+    `<div class="big">${won ? "VICTORY" : "DEFEAT"}</div>` +
+    `<div class="end2">${won ? "Enemy base destroyed" : "Your base has fallen"}</div>` +
+    `<div class="endbtns"><button id="end-solo">▸ New game</button><button id="end-online">⚔ Find online opponent</button></div>`;
   el.className = "show " + (won ? "win" : "lose"); // re-set class so the entrance animation replays
+  (document.getElementById("end-solo") as HTMLButtonElement).onclick = () => restart(true);
+  (document.getElementById("end-online") as HTMLButtonElement).onclick = () => restart(false);
+}
+// reconnect fresh for a new match: solo=true → immediate bot game, else → online matchmaking
+function restart(solo: boolean) {
+  soloAfterConnect = solo;
+  const el = document.getElementById("endscreen")!;
+  el.className = ""; // hide the endscreen
+  try { ws.onclose = null; ws.close(); } catch {} // drop the dead room without auto-reconnecting twice
+  connect();
 }
 
 // ---- army doctrine picker (once per match, #4): your build identity ----
