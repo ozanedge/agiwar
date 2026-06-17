@@ -719,24 +719,62 @@ const COMMANDERS: { id: string; kind: "advisor" | "camp" | "field"; cls: string 
 let cmdBuilt = false;
 const setText = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t; };
 
-// procedural profile pictures: a role-colored portrait badge (head + shoulders silhouette) with a
-// role emblem glyph. No image assets needed; reads on-theme and is distinct per commander.
-const AVATARS: Record<string, { color: string; glyph: string }> = {
-  advisor: { color: "#00ffd1", glyph: "⛃" }, // economy
-  aggressive: { color: "#ff5d73", glyph: "✺" }, // assault
-  recon: { color: "#5ab0ff", glyph: "◎" }, // optics
-  defensive: { color: "#2fe0bd", glyph: "⛨" }, // shield
-  builder: { color: "#ffb547", glyph: "⚒" }, // engineer
-  field: { color: "#00ffd1", glyph: "★" }, // field general
+// procedural profile pictures: a unique "digital face" per commander, line-drawn in the role color
+// (distinct headgear, eyes, mouth). No image assets needed; reads on-theme.
+const AV_COLOR: Record<string, string> = {
+  advisor: "#00ffd1", aggressive: "#ff5d73", recon: "#5ab0ff", defensive: "#2fe0bd", builder: "#ffb547", field: "#00ffd1",
+};
+// each returns the face's inner SVG (features) drawn in color `c`, within a 44×44 badge
+const FACES: Record<string, (c: string) => string> = {
+  advisor: (c) => // analyst: round glasses, side-parted hair, calm
+    `<path d="M12 16 Q22 9 32 16" fill="none" stroke="${c}" stroke-width="1.4" opacity="0.7"/>` +
+    `<rect x="13" y="14" width="18" height="22" rx="8" fill="${c}" fill-opacity="0.08" stroke="${c}" stroke-width="1.3"/>` +
+    `<circle cx="18" cy="23" r="3.4" fill="none" stroke="${c}" stroke-width="1.2"/><circle cx="26" cy="23" r="3.4" fill="none" stroke="${c}" stroke-width="1.2"/>` +
+    `<line x1="21.4" y1="23" x2="22.6" y2="23" stroke="${c}" stroke-width="1.2"/>` +
+    `<circle cx="18" cy="23" r="1" fill="${c}"/><circle cx="26" cy="23" r="1" fill="${c}"/>` +
+    `<line x1="18" y1="30.5" x2="26" y2="30.5" stroke="${c}" stroke-width="1.2" opacity="0.8"/>`,
+  aggressive: (c) => // fierce: combat helmet, angry brows, slit eyes, grimace, cheek slash
+    `<path d="M11 18 Q22 8 33 18" fill="${c}" fill-opacity="0.18" stroke="${c}" stroke-width="1.4"/>` +
+    `<rect x="13" y="16" width="18" height="20" rx="7" fill="${c}" fill-opacity="0.08" stroke="${c}" stroke-width="1.3"/>` +
+    `<line x1="15.5" y1="22" x2="20" y2="24" stroke="${c}" stroke-width="1.5"/><line x1="28.5" y1="22" x2="24" y2="24" stroke="${c}" stroke-width="1.5"/>` +
+    `<line x1="16" y1="25.6" x2="20" y2="25.6" stroke="${c}" stroke-width="1.6"/><line x1="24" y1="25.6" x2="28" y2="25.6" stroke="${c}" stroke-width="1.6"/>` +
+    `<path d="M17 31 L20 30 L24 31 L27 30" fill="none" stroke="${c}" stroke-width="1.3"/>` +
+    `<line x1="29" y1="27" x2="31" y2="31" stroke="${c}" stroke-width="1" opacity="0.7"/>`,
+  recon: (c) => // optics: antenna + big crosshair scope eye
+    `<rect x="13" y="15" width="18" height="21" rx="8" fill="${c}" fill-opacity="0.08" stroke="${c}" stroke-width="1.3"/>` +
+    `<line x1="22" y1="15" x2="22" y2="9" stroke="${c}" stroke-width="1.2"/><circle cx="22" cy="8.3" r="1.3" fill="${c}"/>` +
+    `<circle cx="22" cy="24" r="5.2" fill="none" stroke="${c}" stroke-width="1.4"/><circle cx="22" cy="24" r="2.1" fill="${c}" fill-opacity="0.85"/>` +
+    `<line x1="22" y1="17.6" x2="22" y2="19" stroke="${c}" stroke-width="1"/><line x1="22" y1="29" x2="22" y2="30.4" stroke="${c}" stroke-width="1"/>` +
+    `<line x1="15.6" y1="24" x2="17" y2="24" stroke="${c}" stroke-width="1"/><line x1="27" y1="24" x2="28.4" y2="24" stroke="${c}" stroke-width="1"/>` +
+    `<line x1="19" y1="32" x2="25" y2="32" stroke="${c}" stroke-width="1.1" opacity="0.7"/>`,
+  defensive: (c) => // heavy helmet dome, square steady eyes, firm mouth
+    `<path d="M10 22 Q10 10 22 10 Q34 10 34 22 Z" fill="${c}" fill-opacity="0.2" stroke="${c}" stroke-width="1.4"/>` +
+    `<line x1="22" y1="10" x2="22" y2="22" stroke="${c}" stroke-width="1" opacity="0.5"/>` +
+    `<path d="M13 22 L31 22 L31 30 Q31 36 22 36 Q13 36 13 30 Z" fill="${c}" fill-opacity="0.08" stroke="${c}" stroke-width="1.3"/>` +
+    `<rect x="16.5" y="24" width="3.4" height="2.6" rx="0.6" fill="${c}"/><rect x="24.1" y="24" width="3.4" height="2.6" rx="0.6" fill="${c}"/>` +
+    `<line x1="18" y1="31.5" x2="26" y2="31.5" stroke="${c}" stroke-width="1.4"/>`,
+  builder: (c) => // hardhat + welding goggles, friendly smile
+    `<path d="M12 17 Q22 9 32 17 Z" fill="${c}" fill-opacity="0.22" stroke="${c}" stroke-width="1.3"/>` +
+    `<rect x="10" y="16.6" width="24" height="2.6" rx="1.3" fill="${c}" fill-opacity="0.5"/>` +
+    `<rect x="13.5" y="19.5" width="17" height="16.5" rx="7" fill="${c}" fill-opacity="0.08" stroke="${c}" stroke-width="1.3"/>` +
+    `<rect x="15.3" y="23" width="5.6" height="4" rx="1.4" fill="${c}" fill-opacity="0.85"/><rect x="23.1" y="23" width="5.6" height="4" rx="1.4" fill="${c}" fill-opacity="0.85"/>` +
+    `<line x1="20.9" y1="25" x2="23.1" y2="25" stroke="${c}" stroke-width="1.2"/>` +
+    `<line x1="16.3" y1="24" x2="17.8" y2="24" stroke="#ffffff" stroke-width="0.8" opacity="0.6"/>` +
+    `<path d="M18 31 Q22 33.5 26 31" fill="none" stroke="${c}" stroke-width="1.2"/>`,
+  field: (c) => // officer's peaked cap with star, steady gaze
+    `<path d="M12 17 L32 17 Q33 10 22 10 Q11 10 12 17 Z" fill="${c}" fill-opacity="0.2" stroke="${c}" stroke-width="1.3"/>` +
+    `<rect x="11.5" y="17" width="21" height="3" fill="${c}" fill-opacity="0.5"/>` +
+    `<path d="M10 20.5 Q22 24.5 34 20.5" fill="none" stroke="${c}" stroke-width="1.6"/>` +
+    `<text x="22" y="16" font-size="6" text-anchor="middle" fill="${c}">★</text>` +
+    `<rect x="14" y="21" width="16" height="15" rx="6.5" fill="${c}" fill-opacity="0.08" stroke="${c}" stroke-width="1.3"/>` +
+    `<circle cx="18.5" cy="26.5" r="1.3" fill="${c}"/><circle cx="25.5" cy="26.5" r="1.3" fill="${c}"/>` +
+    `<line x1="19" y1="32" x2="25" y2="32" stroke="${c}" stroke-width="1.2"/>`,
 };
 function avatarSVG(id: string): string {
-  const a = AVATARS[id] ?? AVATARS.field;
+  const c = AV_COLOR[id] ?? "#00ffd1";
   return `<svg class="av" viewBox="0 0 44 44" aria-hidden="true">` +
-    `<rect x="1.5" y="1.5" width="41" height="41" rx="10" fill="#091018" stroke="${a.color}" stroke-opacity="0.75" stroke-width="1.5"/>` +
-    `<path d="M6 41 C6 30 13 27 22 27 C31 27 38 30 38 41 Z" fill="${a.color}" opacity="0.5"/>` + // shoulders
-    `<circle cx="22" cy="16.5" r="7.5" fill="${a.color}" opacity="0.85"/>` + // head
-    `<circle cx="33.5" cy="10.5" r="6.5" fill="#091018" stroke="${a.color}" stroke-width="1"/>` + // emblem
-    `<text x="33.5" y="13.9" font-size="9" text-anchor="middle" fill="${a.color}" font-family="JetBrains Mono, monospace">${a.glyph}</text>` +
+    `<rect x="1.5" y="1.5" width="41" height="41" rx="10" fill="#091018" stroke="${c}" stroke-opacity="0.8" stroke-width="1.5"/>` +
+    (FACES[id] ?? FACES.field)(c) +
     `</svg>`;
 }
 
