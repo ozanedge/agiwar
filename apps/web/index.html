@@ -96,7 +96,7 @@
       .panel-overlay { position: absolute; background: var(--bg-panel); backdrop-filter: blur(6px); border: 1px solid var(--edge); border-radius: 6px; box-shadow: 0 0 18px rgba(0,255,209,.07); }
       #readout { left: 12px; bottom: 12px; padding: 9px 11px; max-width: 380px; pointer-events: none; }
       /* top-left HUD stack: title → resource chip → notice, each clearly below the last (no overlap) */
-      #title { left: 16px; top: 14px; font-size: 17px; font-weight: 700; letter-spacing: .34em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); pointer-events: none; }
+      #title { flex: 0 0 auto; font-size: 16px; font-weight: 700; letter-spacing: .22em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); line-height: 1; }
       #econ { left: 16px; top: 56px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
       #notice { left: 16px; top: 96px; padding: 7px 11px; color: var(--accent); max-width: 340px; }
       #notice:empty { display: none; } /* no stray empty bordered box when there's nothing to show */
@@ -154,6 +154,7 @@
   <body>
     <div id="app">
       <div id="topbar">
+        <div id="title">AGIWAR<small>autonomous battle command</small></div>
         <span class="tbl">⚑ Morale</span>
         <div class="mbar"><i id="mfill"></i></div>
         <span id="mpct" class="sub"></span>
@@ -170,7 +171,6 @@
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
         <div id="econ" class="panel-overlay">⛃ —</div>
-        <div id="title">AGIWAR<small>autonomous battle command</small></div>
         <div id="readout" class="panel-overlay">hover a unit to inspect it</div>
         <div id="endscreen"></div>
       </div>
