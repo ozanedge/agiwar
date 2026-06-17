@@ -420,6 +420,22 @@ function render(s: StateMsg) {
   const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
   econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
   syncInvest(s);
+  syncMorale(s);
+}
+
+// ---- morale meter + booster ("rally troops") ----
+const mfill = document.getElementById("mfill") as HTMLElement;
+const mpct = document.getElementById("mpct")!;
+const mboost = document.getElementById("mboost") as HTMLButtonElement;
+mboost.onclick = () => sendCmd({ type: "buyBooster" });
+function syncMorale(s: StateMsg) {
+  const m = s.morale ?? 0.7;
+  mfill.style.width = `${Math.round(m * 100)}%`;
+  const col = m > 0.66 ? "#2fe0bd" : m > 0.4 ? "#ffb547" : "#ff3860"; // high / shaky / breaking
+  mfill.style.background = col; mfill.style.color = col;
+  mpct.textContent = `${Math.round(m * 100)}% · ${m > 0.66 ? "steady" : m > 0.4 ? "shaky" : "breaking"}`;
+  mboost.innerHTML = `⚑ Rally troops · ⛃${s.boosterCost ?? "—"}`;
+  mboost.disabled = (s.resources ?? 0) < (s.boosterCost ?? Infinity);
 }
 
 // the player's rally/commitment beacon — a pulsing flag forward units concentrate on

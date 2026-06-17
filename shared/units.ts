@@ -25,6 +25,8 @@ export interface UnitTypeStats {
   stationary?: boolean;
   /** buildings are placed on the map (no training camp / doctrine). */
   building?: boolean;
+  /** flying units (drones) ignore surface obstacles — water, mountains, cliffs. */
+  flying?: boolean;
   blurb: string;
 }
 
@@ -33,7 +35,7 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   gunner: { label: "Gunner Infantry", maxHp: 30, moveEvery: 4, attackEvery: 4, dmg: 2, cost: 50, range: 4, accuracy: 0.72, blurb: "balanced" },
   tank: { label: "Tank", maxHp: 80, moveEvery: 9, attackEvery: 6, dmg: 6, cost: 150, range: 4, accuracy: 0.8, blurb: "strong but slow" },
   humvee: { label: "Humvee", maxHp: 16, moveEvery: 2, attackEvery: 4, dmg: 1, cost: 40, range: 4, accuracy: 0.6, blurb: "fast but weak" },
-  drone: { label: "Drone", maxHp: 10, moveEvery: 2, attackEvery: 99, dmg: 0, cost: 90, range: 44, accuracy: 0, blurb: "unarmed, huge vision" },
+  drone: { label: "Drone", maxHp: 10, moveEvery: 2, attackEvery: 99, dmg: 0, cost: 90, range: 44, accuracy: 0, flying: true, blurb: "unarmed, huge vision, flies over terrain" },
   turret: { label: "Turret", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 28, accuracy: 0.85, stationary: true, building: true, blurb: "placed strongpoint" },
 };
 

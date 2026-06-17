@@ -107,6 +107,8 @@ export interface StateMsg {
   bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's total bonuses (artifacts + investments)
   invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
   queuedInvest: ArtifactBonusKind | null; // an upgrade the player has queued — all other spending pauses to save for it
+  morale: number; // 0..1 team morale — low morale degrades unit speed + accuracy
+  boosterCost: number; // current cost to buy a morale booster (scales with army size)
   armyDoctrine: string; // recipient's chosen build identity (id from shared/doctrine.ts); "balanced" until chosen
   rally: { x: number; y: number } | null; // recipient's active rally/commitment point (units concentrate here)
   you: number; // which player index this client controls
@@ -195,7 +197,8 @@ export type ClientMsg =
   | { type: "chooseArmyDoctrine"; id: string } // pick the once-per-match build identity
   | { type: "decide"; id: number; key: string } // answer a commander's strategic fork
   | { type: "setRally"; x: number; y: number } // set a rally/commitment point (double-click the map)
-  | { type: "skipToBot" }; // stop waiting for a live opponent — start a single-player (bot) match now
+  | { type: "skipToBot" } // stop waiting for a live opponent — start a single-player (bot) match now
+  | { type: "buyBooster" }; // purchase a morale booster (cost scales with army size)
 
 /** A field-general command: a *time-boxed override* of native doctrine.
  *  Units revert to their camp doctrine when `durationTicks` elapses. */

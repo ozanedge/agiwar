@@ -59,10 +59,40 @@ export interface PlayerState {
   armyDoctrine: string; // once-per-match build identity (id from shared/doctrine.ts)
   rally: { x: number; y: number; until: number } | null; // commitment point: forward units concentrate here until `until` tick
   queuedInvest: ArtifactBonusKind | null; // a player-queued upgrade — pauses all other spending to save for it
+  morale: number; // 0..1 team morale (degrades speed + accuracy when low); recomputed each tick
+  recentLosses: number; // decaying tally of recent unit deaths (drags morale down)
+  moraleBoost: number; // temporary morale lift from a purchased booster (decays over time)
 }
 
 /** This player's army-wide modifiers, derived from their chosen doctrine. */
 export const playerMods = (g: GameState, owner: number): ArmyMods => modsFor(g.players[owner]?.armyDoctrine);
+
+// ---- Morale ----------------------------------------------------------------------------------
+// Team morale (0..1). UP with a larger force (strength in numbers); DOWN the further the army is
+// from its nearest supply point (base/owned artifact — overextension) and the more units it has
+// lost recently. Low morale degrades movement speed and accuracy. Boosters lift it temporarily.
+const MORALE_BASE = 0.7;
+export function computeMorale(g: GameState, pi: number): number {
+  const p = g.players[pi];
+  const own = g.units.filter((u) => u.owner === pi && !UNIT_STATS[u.unit].building);
+  const n = own.length;
+  const supply = [g.bases[pi], ...g.artifacts.filter((a) => a.owner === pi)].filter(Boolean);
+  let avgDist = 0;
+  if (n && supply.length) {
+    let s = 0;
+    for (const u of own) { let md = Infinity; for (const sp of supply) md = Math.min(md, cheb(u.x, u.y, sp.x, sp.y)); s += md; }
+    avgDist = s / n;
+  }
+  const sizeTerm = Math.min(0.2, (n / 60) * 0.2); // confidence in numbers
+  const distTerm = Math.min(0.45, (avgDist / (GRID_H * 0.8)) * 0.45); // overextension from supply
+  const lossTerm = Math.min(0.4, p.recentLosses * 0.04); // recent casualties
+  return Math.max(0.05, Math.min(1, MORALE_BASE + sizeTerm - distTerm - lossTerm + p.moraleBoost));
+}
+/** Booster cost scales with the player's standing army (so it's never a spammed crutch). */
+export const boosterCost = (g: GameState, pi: number) =>
+  120 + 6 * g.units.filter((u) => u.owner === pi && !UNIT_STATS[u.unit].building).length;
+const moraleSpeedFactor = (m: number) => 1 + (1 - m) * 0.6; // low morale → bigger movePeriod (slower)
+const moraleAccFactor = (m: number) => 0.6 + 0.4 * m; // low morale → worse accuracy
 
 export interface GameState {
   tick: number;
@@ -123,6 +153,9 @@ function makePlayer(): PlayerState {
     armyDoctrine: "balanced", // neutral until the player chooses
     rally: null,
     queuedInvest: null,
+    morale: 0.7,
+    recentLosses: 0,
+    moraleBoost: 0,
   };
 }
 
@@ -307,11 +340,18 @@ function placeUnit(u: UnitState, nx: number, ny: number) {
   u.x = nx; u.y = ny;
 }
 
+const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < GRID_W && y < GRID_H;
+const flying = (u: UnitState) => !!UNIT_STATS[u.unit].flying;
+// Flying units (drones) ignore terrain AND ground occupancy — they're in the air.
+const canEnter = (g: GameState, u: UnitState, x: number, y: number) =>
+  inBounds(x, y) && (flying(u) || (passable(g, x, y) && !isOccupied(x, y)));
+const moveUnit = (u: UnitState, x: number, y: number) => { if (flying(u)) { u.x = x; u.y = y; } else placeUnit(u, x, y); };
+
 const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
   if (dx === 0 && dy === 0) return false;
   const nx = u.x + dx, ny = u.y + dy;
-  if (!passable(g, nx, ny) || isOccupied(nx, ny)) return false; // blocked by terrain or another unit
-  u.dx = dx; u.dy = dy; placeUnit(u, nx, ny); return true; // record heading + occupancy
+  if (!canEnter(g, u, nx, ny)) return false; // blocked by terrain/unit (ground units only)
+  u.dx = dx; u.dy = dy; moveUnit(u, nx, ny); return true; // record heading + occupancy
 };
 
 // Local stepper for DYNAMIC targets (chasing a unit, sieging an artifact): pick the passable
@@ -322,11 +362,11 @@ function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     if (!dx && !dy) continue;
     const nx = u.x + dx, ny = u.y + dy;
-    if (!passable(g, nx, ny) || isOccupied(nx, ny)) continue;
+    if (!canEnter(g, u, nx, ny)) continue;
     const d = cheb(nx, ny, tx, ty);
     if (d < best) { best = d; bx = nx; by = ny; }
   }
-  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); placeUnit(u, bx, by); return; }
+  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); moveUnit(u, bx, by); return; }
   // local minimum — slide along the obstacle (any passable neighbor that doesn't retreat)
   for (const [cx, cy] of [[sign(tx - u.x), 0], [0, sign(ty - u.y)], [sign(tx - u.x), -sign(ty - u.y) || 1], [-sign(tx - u.x) || 1, sign(ty - u.y)]] as [number, number][])
     if (cheb(u.x + cx, u.y + cy, tx, ty) <= cur && tryStep(g, u, cx, cy)) return;
@@ -391,7 +431,7 @@ function decide(g: GameState, u: UnitState) {
   // cadence would drop below 1 tick, take `stepBoost` fine steps per action instead. Attack
   // cadence is time-based, so it is NOT touched by the grid change.
   const mods = playerMods(g, u.owner);
-  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT * mods.speedMult)); // doctrine speed
+  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale))); // doctrine + morale speed
   const stepBoost = Math.max(1, Math.round(GRID_SCALE / stats.moveEvery));
   const canMove = (g.tick + u.id) % movePeriod === 0; // per-type speed
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
@@ -412,9 +452,11 @@ function decide(g: GameState, u: UnitState) {
   const spec = effectiveSpec(g, u);
   const myBase = g.bases[u.owner];
   // each move action advances `stepBoost` fine cells (see above) so fast units keep their speed.
-  // mv() uses global flow-field pathing (routes around cliffs/obstacles), not greedy local steering.
-  const mv = (tx: number, ty: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) navigate(g, u, tx, ty); };
-  const toBase = (owner: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) stepToBase(g, u, owner); }; // flow-field routed
+  // ground units use global flow-field pathing (routes around cliffs); flying units (drones) ignore
+  // terrain entirely and steer straight to the target.
+  const fly = !!stats.flying;
+  const mv = (tx: number, ty: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) (fly ? moveToward(g, u, tx, ty) : navigate(g, u, tx, ty)); };
+  const toBase = (owner: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) (fly ? moveToward(g, u, g.bases[owner].x, g.bases[owner].y) : stepToBase(g, u, owner)); };
   const roam = () => { if (canMove) for (let i = 0; i < stepBoost; i++) explore(g, u); };
 
   // Builder doctrine: roam to the nearest neutral artifact and claim it (engineers, not fighters)
@@ -496,7 +538,7 @@ function attack(g: GameState, u: UnitState, target: Target) {
   const range = Math.max(1, stats.range + playerBonus(g, u.owner).range + hgBonus(g, u.x, u.y)); // high-ground reach
   const falloff = 1 - 0.45 * Math.min(1, dist / range); // 1.0 → ~0.55 across the range band
   const highSteady = 1 + 0.12 * (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y));
-  const hitChance = Math.max(0.12, Math.min(0.98, stats.accuracy * falloff * highSteady));
+  const hitChance = Math.max(0.1, Math.min(0.98, stats.accuracy * falloff * highSteady * moraleAccFactor(g.players[u.owner].morale)));
   const hit = hash01(u.id + 91, g.tick) < hitChance; // decorrelated from movement/engage rolls
   if (hit) {
     const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult); // artifact/investment + doctrine
@@ -565,11 +607,19 @@ export function step(g: GameState) {
   // occupancy: units have size — mark every unit's cell, then movement avoids occupied cells so no
   // two units stack. Updated incrementally as each unit moves, so the order is consistent.
   occ = new Set<number>();
-  for (const u of g.units) occ.add(cellKey(u.x, u.y));
+  for (const u of g.units) if (!flying(u)) occ.add(cellKey(u.x, u.y)); // flying units don't occupy the ground
   flowComputes = 0; // per-tick budget for new dynamic flow fields
+  // morale: decay recent losses + booster, then recompute (used by decide() this tick)
+  for (const p of g.players) {
+    p.recentLosses *= 0.995; // ~14s half-life so a bad fight stings then fades
+    p.moraleBoost = Math.max(0, p.moraleBoost - 0.35 / (30 * TICK_HZ)); // a booster lasts ~30s
+  }
+  g.players.forEach((p, i) => (p.morale = computeMorale(g, i)));
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   occ = null;
+  // tally casualties this tick → recent losses (drags morale)
+  for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
   g.units = g.units.filter((u) => u.hp > 0);
   // a sieged artifact reverts to neutral (recapturable) rather than being destroyed
   for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; }

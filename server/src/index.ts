@@ -3,7 +3,7 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, visibleShots, newGame, playerBonus, spawnUnit, step } from "./sim.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
@@ -51,6 +51,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number, includeShots = f
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
     resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ + b.income,
     bonuses: b, invest: g.players[player].invest, queuedInvest: g.players[player].queuedInvest,
+    morale: g.players[player].morale, boosterCost: boosterCost(g, player),
     armyDoctrine: g.players[player].armyDoctrine,
     rally: g.players[player].rally ? { x: g.players[player].rally!.x, y: g.players[player].rally!.y } : null,
     shots: includeShots ? visibleShots(g, player) : [],
@@ -248,6 +249,19 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     const cost = investCost(inv.base, p.invest[inv.kind]);
     sendState(ws, g, player);
     send(ws, { type: "notice", level: "info", text: `Queued ${inv.label} Lv${p.invest[inv.kind] + 1} (${cost}) — pausing other spending to save up.` });
+    return;
+  }
+
+  if (msg.type === "buyBooster") {
+    const p = g.players[player];
+    const cost = boosterCost(g, player);
+    if (p.resources < cost) {
+      send(ws, { type: "notice", level: "error", text: `Not enough resources to rally the troops — need ${cost}, have ${Math.floor(p.resources)}.` });
+      return;
+    }
+    p.resources -= cost;
+    p.moraleBoost = Math.min(0.45, p.moraleBoost + 0.35); // temporary lift (decays over ~30s)
+    send(ws, { type: "notice", level: "info", text: "Morale booster deployed — the troops rally!" });
     return;
   }
 
