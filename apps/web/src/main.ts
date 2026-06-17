@@ -424,14 +424,33 @@ function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {
   const elev = elevAt(a.x, a.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(a.x, a.y), cy = isoY(a.x, a.y) - elev;
   const neutral = a.owner < 0;
-  const col = a.owner === s.you ? OWN_COLOR : a.owner >= 0 ? ENEMY_COLOR : 0xffd76b; // neutral = gold
+  const accent = a.owner === s.you ? OWN_COLOR : a.owner >= 0 ? ENEMY_COLOR : 0xffd76b; // neutral = gold
+  const body = neutral ? 0x615b48 : tint(accent, -0.5); // muted structure; accent = trim/lights/beacon
   const pulse = 0.5 + 0.5 * Math.sin(s.tick / 6);
-  g.ellipse(cx, cy + 3, 15, 8).fill({ color: col, alpha: 0.16 }); // glow pad
-  g.poly([cx, cy - 20, cx + 9, cy - 4, cx, cy + 6, cx - 9, cy - 4]).fill({ color: col, alpha: 0.38 }).stroke({ color: col, width: 2, alpha: 0.6 + 0.4 * pulse }); // crystal
-  g.poly([cx, cy - 13, cx + 4.5, cy - 4, cx, cy + 1, cx - 4.5, cy - 4]).fill({ color: tint(col, 0.45), alpha: 0.95 }); // core
-  if (a.owner >= 0 && a.hp < a.maxHp) g.rect(cx - 11, cy - 26, (a.hp / a.maxHp) * 22, 2.5).fill(col); // hp
-  const t = new Text({ text: neutral ? `${a.bonus.label}  ▸ claim` : a.bonus.label, style: { fill: col, fontFamily: "JetBrains Mono, monospace", fontSize: 10 } });
-  t.anchor.set(0.5, 1); t.x = cx; t.y = cy - 22; g.addChild(t);
+  const gy = cy + 4; // building footing on the tile
+
+  // shadow + capture-glow pad (stronger pulse while neutral, to read as "claimable")
+  g.ellipse(cx, gy + 2, 18, 9).fill({ color: 0x000000, alpha: 0.32 });
+  g.ellipse(cx, gy + 1, 15 + 4 * pulse, 7 + 2 * pulse).fill({ color: accent, alpha: neutral ? 0.1 + 0.14 * pulse : 0.12 });
+
+  // a small iso depot: stone platform → main blockhouse → upper tier → rooftop beacon
+  isoBox(g, cx, gy, 14, 7, 4, 0x39414e); // platform
+  const mainY = gy - 3, mainH = 15;
+  isoBox(g, cx, mainY, 9, 4.8, mainH, body); // main blockhouse
+  // lit windows on the two visible faces (accent glow)
+  const win = { color: accent, alpha: 0.85 };
+  for (const dx of [3, 6]) { g.rect(cx + dx, mainY - 10, 1.6, 3).fill(win); g.rect(cx - dx - 1.6, mainY - 10, 1.6, 3).fill(win); }
+  const topY = mainY - mainH;
+  isoBox(g, cx, topY, 4.6, 2.5, 6, tint(body, 0.12)); // upper tier
+  // rooftop beacon
+  const beaconY = topY - 6 - 2.5;
+  g.rect(cx - 0.6, beaconY, 1.2, 4).fill(tint(body, 0.2)); // mast
+  g.circle(cx, beaconY, 2 + pulse * 1.2).fill({ color: accent, alpha: 0.95 });
+  g.circle(cx, beaconY, 5 + pulse * 3).fill({ color: accent, alpha: 0.16 });
+
+  if (a.owner >= 0 && a.hp < a.maxHp) g.rect(cx - 12, beaconY - 12, (a.hp / a.maxHp) * 24, 2.5).fill(accent); // hp
+  const t = new Text({ text: neutral ? `${a.bonus.label}  ▸ claim` : a.bonus.label, style: { fill: accent, fontFamily: "JetBrains Mono, monospace", fontSize: 10 } });
+  t.anchor.set(0.5, 1); t.x = cx; t.y = beaconY - (a.owner >= 0 && a.hp < a.maxHp ? 16 : 8); g.addChild(t);
   g.zIndex = a.x + a.y; // sits with terrain depth
   if (neutral) { // click to invest/claim
     g.eventMode = "static"; g.cursor = "pointer";
