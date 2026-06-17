@@ -68,7 +68,7 @@ function tint(hex: number, f: number): number {
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 }
 // darker, desaturated/teal-shifted terrain so neon units + cyan HUD pop on top
-const KIND_COLOR: Record<TerrainKind, number> = { water: 0x06303d, sand: 0x5b5638, grass: 0x163a2a, highland: 0x2b3a28, rock: 0x2e3848 };
+const KIND_COLOR: Record<TerrainKind, number> = { water: 0x06303d, sand: 0x5b5638, grass: 0x163a2a, highland: 0x2b3a28, rock: 0x5c564d }; // rock = warm stone-grey (was bluish)
 const elevAt = elevationAt; // cheap render-lift lookup (no cliff slope sampling)
 
 let terrainKey = "";
@@ -86,7 +86,7 @@ function bakeTerrain(seed: number, W: number, H: number) {
       const gy = d - gx;
       const t = terrainAt(gx, gy, seed, W, H);
       // cliffs / impassable land render as bare rock so blocked terrain reads as such
-      const col = !t.passable && t.kind !== "water" ? tint(0x2e3848, t.micro) : tint(KIND_COLOR[t.kind], t.micro);
+      const col = !t.passable && t.kind !== "water" ? tint(KIND_COLOR.rock, t.micro) : tint(KIND_COLOR[t.kind], t.micro);
       const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev, groundY = isoY(gx, gy);
       if (t.elev > 1.2) { // side walls on raised ground for a sense of height
         g.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.42));
