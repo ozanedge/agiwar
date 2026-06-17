@@ -28,16 +28,22 @@
       body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 51; mix-blend-mode: screen;
         background: repeating-linear-gradient(to bottom, rgba(0,255,209,.022) 0, rgba(0,255,209,.022) 1px, transparent 1px, transparent 3px); }
 
-      #app { display: grid; grid-template-columns: 332px 1fr 320px; grid-template-rows: 1fr 248px; height: 100vh; }
-      #left { grid-column: 1; grid-row: 1; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #app { display: grid; grid-template-columns: 332px 1fr 320px; grid-template-rows: 40px 1fr 248px; height: 100vh; }
+      /* full-width morale bar across the very top */
+      #topbar { grid-column: 1 / 4; grid-row: 1; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--edge); background: var(--bg-panel); backdrop-filter: blur(6px); box-shadow: inset 0 0 30px rgba(0,255,209,.05); }
+      #topbar .tbl { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 7px rgba(0,255,209,.5); white-space: nowrap; }
+      #topbar .mbar { flex: 1; height: 12px; }
+      #topbar #mpct { white-space: nowrap; min-width: 96px; text-align: right; }
+      #topbar #mboost { white-space: nowrap; }
+      #left { grid-column: 1; grid-row: 2; border-right: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #left h4 { margin: 0; }
-      #stage { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
+      #stage { position: relative; grid-column: 2; grid-row: 2; overflow: hidden; min-height: 0; box-shadow: inset 0 0 80px rgba(0,255,209,.05); }
       /* cinematic lighting: soft top light + edge vignette over the battlefield */
       #stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 30;
         background: radial-gradient(130% 80% at 50% 8%, rgba(120,200,255,.07), transparent 42%),
                     radial-gradient(150% 130% at 50% 55%, transparent 52%, rgba(1,4,8,.6)); }
       /* full-width bottom strip; 6 equal flex cards fill it */
-      #controls { grid-column: 1 / 4; grid-row: 2; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      #controls { grid-column: 1 / 4; grid-row: 3; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
       .cmd { box-sizing: border-box; flex: 1 1 0; min-width: 0; border: 1px solid var(--edge); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
       .cmd h4 { font-size: 11px; }
       .cmd .mem { flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; font-size: 10px; line-height: 1.35; color: #9db8b2; border-left: 2px solid var(--accent-dim); padding: 3px 6px; background: rgba(0,255,209,.03); }
@@ -46,7 +52,7 @@
       .cmd input { flex: 1; min-width: 0; background: #04090e; color: var(--text); border: 1px solid rgba(0,255,209,.18); border-radius: 4px; padding: 4px 6px; font: inherit; }
       .cmd input:focus { outline: none; border-color: var(--accent); }
       .cmd .send { padding: 4px 8px; }
-      #right { grid-column: 3; grid-row: 1; border-left: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
+      #right { grid-column: 3; grid-row: 2; border-left: 1px solid var(--edge); padding: 12px; background: var(--bg-panel); backdrop-filter: blur(6px); display: flex; flex-direction: column; gap: 8px; min-height: 0; box-shadow: inset 0 0 40px rgba(0,255,209,.04); }
       #invest { display: flex; flex-direction: column; gap: 5px; }
       #invest button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
       #fglog { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
@@ -147,6 +153,12 @@
   </head>
   <body>
     <div id="app">
+      <div id="topbar">
+        <span class="tbl">⚑ Morale</span>
+        <div class="mbar"><i id="mfill"></i></div>
+        <span id="mpct" class="sub"></span>
+        <button id="mboost">⚑ Rally troops</button>
+      </div>
       <div id="left">
         <h4>Budget flow</h4>
         <svg id="sankey"></svg>
@@ -154,10 +166,6 @@
         <h4 style="margin-top: 10px">Upgrades</h4>
         <div class="sub">click to queue — other spending pauses while you save</div>
         <div id="invest"></div>
-        <h4 style="margin-top: 10px">Morale <span id="mpct" class="sub" style="text-transform:none;letter-spacing:0"></span></h4>
-        <div class="sub">low morale slows units &amp; spoils their aim</div>
-        <div class="mbar"><i id="mfill"></i></div>
-        <button id="mboost" style="margin-top:7px;width:100%;justify-content:center;">⚑ Rally troops</button>
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
