@@ -719,13 +719,34 @@ const COMMANDERS: { id: string; kind: "advisor" | "camp" | "field"; cls: string 
 let cmdBuilt = false;
 const setText = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t; };
 
+// procedural profile pictures: a role-colored portrait badge (head + shoulders silhouette) with a
+// role emblem glyph. No image assets needed; reads on-theme and is distinct per commander.
+const AVATARS: Record<string, { color: string; glyph: string }> = {
+  advisor: { color: "#00ffd1", glyph: "⛃" }, // economy
+  aggressive: { color: "#ff5d73", glyph: "✺" }, // assault
+  recon: { color: "#5ab0ff", glyph: "◎" }, // optics
+  defensive: { color: "#2fe0bd", glyph: "⛨" }, // shield
+  builder: { color: "#ffb547", glyph: "⚒" }, // engineer
+  field: { color: "#00ffd1", glyph: "★" }, // field general
+};
+function avatarSVG(id: string): string {
+  const a = AVATARS[id] ?? AVATARS.field;
+  return `<svg class="av" viewBox="0 0 44 44" aria-hidden="true">` +
+    `<rect x="1.5" y="1.5" width="41" height="41" rx="10" fill="#091018" stroke="${a.color}" stroke-opacity="0.75" stroke-width="1.5"/>` +
+    `<path d="M6 41 C6 30 13 27 22 27 C31 27 38 30 38 41 Z" fill="${a.color}" opacity="0.5"/>` + // shoulders
+    `<circle cx="22" cy="16.5" r="7.5" fill="${a.color}" opacity="0.85"/>` + // head
+    `<circle cx="33.5" cy="10.5" r="6.5" fill="#091018" stroke="${a.color}" stroke-width="1"/>` + // emblem
+    `<text x="33.5" y="13.9" font-size="9" text-anchor="middle" fill="${a.color}" font-family="JetBrains Mono, monospace">${a.glyph}</text>` +
+    `</svg>`;
+}
+
 function buildCommanders() {
   controlsEl.innerHTML = "";
   for (const c of COMMANDERS) {
     const div = document.createElement("div");
     div.className = "cmd";
     div.innerHTML =
-      `<h4 class="${c.cls}" id="lbl-${c.id}">…</h4>` +
+      `<div class="cmdhd">${avatarSVG(c.id)}<h4 class="${c.cls}" id="lbl-${c.id}">…</h4></div>` +
       `<div class="mem" id="mem-${c.id}"></div>` +
       (c.kind === "camp" ? `<div class="spec" id="spec-${c.id}"></div><span class="cool" id="cool-${c.id}"></span>` : "") +
       `<div class="cmdrow"><input id="in-${c.id}" placeholder="message…"/><button class="send" id="send-${c.id}">Send</button></div>`;

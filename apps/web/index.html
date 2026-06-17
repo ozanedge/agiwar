@@ -48,6 +48,9 @@
       /* full-width bottom strip; 6 equal flex cards fill it */
       #controls { grid-column: 1 / 4; grid-row: 3; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
       .cmd { box-sizing: border-box; flex: 1 1 0; min-width: 0; border: 1px solid var(--edge); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
+      .cmd .cmdhd { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .cmd .cmdhd .av { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 9px; filter: drop-shadow(0 0 5px rgba(0,255,209,.18)); }
+      .cmd .cmdhd h4 { flex: 1; min-width: 0; }
       .cmd h4 { font-size: 11px; }
       .cmd .mem { flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; font-size: 10px; line-height: 1.35; color: #9db8b2; border-left: 2px solid var(--accent-dim); padding: 3px 6px; background: rgba(0,255,209,.03); }
       .cmd h4 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
