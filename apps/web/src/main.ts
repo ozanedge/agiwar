@@ -359,7 +359,7 @@ function addLog(text: string, tick: number) {
 
 // ---- upgrades panel (player-driven: click to QUEUE; all other spending pauses to save up) ----
 const investEl = document.getElementById("invest")!;
-const UP_ICON: Record<string, string> = { damage: "◆", hp: "✚", range: "◎", income: "⛃" };
+const UP_ICON: Record<string, string> = { damage: "◆", hp: "✚", armor: "⛨", range: "◎", speed: "»", income: "⛃" };
 const UP_PIPS = 6;
 let upgradesBuilt = false;
 function syncInvest(s: StateMsg) {
@@ -417,7 +417,7 @@ function render(s: StateMsg) {
   const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0) + latestTurretBudget;
   const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
   const b = s.bonuses;
-  const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`].filter(Boolean).join(" ");
+  const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`, b.armor && `−${b.armor}dmg⛨`, b.speed && `+${b.speed * 10}%spd`].filter(Boolean).join(" ");
   econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
   syncInvest(s);
   syncMorale(s);

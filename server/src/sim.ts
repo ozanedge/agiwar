@@ -10,7 +10,7 @@ import { modsFor, type ArmyMods } from "../../shared/doctrine.js";
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
 const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 150); // ticks between spawns (~15s)
 const ARTIFACT_HP = 120;
-export type Bonus = { income: number; range: number; hp: number; damage: number };
+export type Bonus = { income: number; range: number; hp: number; damage: number; armor: number; speed: number };
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
 // 16× cell density (4× per axis). The march now runs SW→NE along the gy (H) axis, so H is the
@@ -111,7 +111,7 @@ export interface GameState {
 
 /** Sum of bonuses from artifacts a player currently controls. */
 export function playerBonus(g: GameState, player: number): Bonus {
-  const b: Bonus = { income: 0, range: 0, hp: 0, damage: 0 };
+  const b: Bonus = { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 };
   for (const a of g.artifacts) if (a.owner === player) b[a.bonus.kind] += a.bonus.amount;
   const inv = g.players[player].invest; // permanent investments stack with artifacts
   for (const i of INVESTMENTS) b[i.kind] += inv[i.kind] * i.amount;
@@ -147,7 +147,7 @@ function makePlayer(): PlayerState {
     ],
     fieldGeneral: { label: "Field Gen. Mercer", prompt: DEFAULT_FIELD_GENERAL_PROMPT },
     resources: STARTING_RESOURCES,
-    invest: { income: 0, range: 0, hp: 0, damage: 0 },
+    invest: { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 },
     turretBudget: DEFAULT_TURRET_BUDGET,
     advisor: { label: "Advisor Holt", prompt: DEFAULT_ADVISOR_PROMPT },
     armyDoctrine: "balanced", // neutral until the player chooses
@@ -314,17 +314,17 @@ function effectiveSpec(g: GameState, u: UnitState): BehaviorSpec {
   return camp ? camp.spec : PRESET_SPECS[u.camp];
 }
 
-type Target = { x: number; y: number; ref: { hp: number } };
+type Target = { x: number; y: number; owner: number; ref: { hp: number } };
 function nearestEnemy(g: GameState, u: UnitState): Target | null {
   let best: Target | null = null;
   let bestD = Infinity;
-  const consider = (x: number, y: number, ref: { hp: number }) => {
+  const consider = (x: number, y: number, owner: number, ref: { hp: number }) => {
     const d = cheb(u.x, u.y, x, y);
-    if (d < bestD) { bestD = d; best = { x, y, ref }; }
+    if (d < bestD) { bestD = d; best = { x, y, owner, ref }; }
   };
-  for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e);
-  for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b);
-  for (const a of g.artifacts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a); // siege enemy artifacts
+  for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e.owner, e);
+  for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b.owner, b);
+  for (const a of g.artifacts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy artifacts
   return best;
 }
 
@@ -431,13 +431,14 @@ function decide(g: GameState, u: UnitState) {
   // cadence would drop below 1 tick, take `stepBoost` fine steps per action instead. Attack
   // cadence is time-based, so it is NOT touched by the grid change.
   const mods = playerMods(g, u.owner);
-  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale))); // doctrine + morale speed
+  const bonus = playerBonus(g, u.owner);
+  const speedInv = 1 / (1 + bonus.speed * 0.1); // Engines upgrade: each level ~10% faster (smaller period)
+  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale) * speedInv)); // doctrine + morale + upgrade speed
   const stepBoost = Math.max(1, Math.round(GRID_SCALE / stats.moveEvery));
   const canMove = (g.tick + u.id) % movePeriod === 0; // per-type speed
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
-  const bonus = playerBonus(g, u.owner);
   const range = stats.range + bonus.range + hgBonus(g, u.x, u.y); // artifact range + HIGH-GROUND reach
   const isScout = stats.dmg <= 0; // drones: never engage, just scout
   const atk = (t: Target) => { if (canAttack) attack(g, u, t); };
@@ -545,7 +546,8 @@ function attack(g: GameState, u: UnitState, target: Target) {
     // high-ground rule: scale damage by elevation delta, clamped; Highland doctrine amplifies it.
     const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
     const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
-    target.ref.hp -= dmg * mult;
+    const armor = target.owner >= 0 ? playerBonus(g, target.owner).armor : 0; // defender's Armor upgrade
+    target.ref.hp -= Math.max(1, dmg * mult - armor); // armor reduces damage taken, never below 1
   }
   if (g.shots.length < 240) g.shots.push({ ax: u.x, ay: u.y, bx: target.x, by: target.y, hit, kind: u.unit, owner: u.owner }); // cosmetic, capped
 }

@@ -75,7 +75,7 @@ export interface BaseState {
   maxHp: number;
 }
 
-export type ArtifactBonusKind = "income" | "range" | "hp" | "damage";
+export type ArtifactBonusKind = "income" | "range" | "hp" | "damage" | "armor" | "speed";
 
 /** A capturable map resource. Neutral (owner -1) until a player invests to claim it;
  *  then it grants a passive bonus + acts as a turret-build anchor, and can be attacked. */
@@ -104,7 +104,7 @@ export interface StateMsg {
   bases: BaseState[];
   shots: Shot[]; // weapon fire since the last broadcast (fog-gated) — client animates projectiles
   artifacts: Artifact[]; // visible artifacts (fog-gated)
-  bonuses: { income: number; range: number; hp: number; damage: number }; // recipient's total bonuses (artifacts + investments)
+  bonuses: { income: number; range: number; hp: number; damage: number; armor: number; speed: number }; // recipient's total bonuses (artifacts + investments)
   invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
   queuedInvest: ArtifactBonusKind | null; // an upgrade the player has queued — all other spending pauses to save for it
   morale: number; // 0..1 team morale — low morale degrades unit speed + accuracy
