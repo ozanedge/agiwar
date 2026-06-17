@@ -74,6 +74,7 @@ export interface GameState {
   players: PlayerState[]; // index = player/owner
   flow: Int32Array[]; // BFS distance-to-base field per base, for obstacle-routed movement
   passGrid: Uint8Array; // 1 = passable, 0 = blocked (water/rock/cliff) — precomputed once per match
+  dynFlow: Map<number, { tick: number; dist: Int32Array }>; // cached flow fields toward dynamic goals
   nextUnitId: number;
   nextArtifactId: number;
 }
@@ -136,7 +137,7 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: GRID_W >> 1, y: GRID_H - 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W >> 1, y: 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), nextUnitId: 1, nextArtifactId: 1 };
+  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextArtifactId: 1 };
   // precompute passability ONCE (terrain w/ cliff slope is costly) — movement + flow read this grid
   const grid = new Uint8Array(GRID_W * GRID_H);
   for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) grid[y * GRID_W + x] = terrainAt(x, y, g.seed, GRID_W, GRID_H).passable ? 1 : 0;
@@ -145,13 +146,14 @@ export function newGame(seed = 1): GameState {
   return g;
 }
 
-/** BFS distance (in 8-dir steps) from base[owner] to every passable cell. Unreachable = INF. */
-function computeFlow(g: GameState, owner: number): Int32Array {
+/** BFS distance (in 8-dir steps) from cell (sx,sy) to every passable cell. Unreachable = INF.
+ *  This is the single pathfinding primitive: globally routes around terrain/cliffs. */
+function bfsFrom(g: GameState, sx: number, sy: number): Int32Array {
   const W = GRID_W, H = GRID_H, INF = 1e9;
   const dist = new Int32Array(W * H).fill(INF);
-  const b = g.bases[owner];
-  const q: number[] = [b.y * W + b.x];
-  dist[b.y * W + b.x] = 0;
+  sx = Math.max(0, Math.min(W - 1, sx)); sy = Math.max(0, Math.min(H - 1, sy));
+  const q: number[] = [sy * W + sx];
+  dist[sy * W + sx] = 0;
   for (let head = 0; head < q.length; head++) {
     const k = q[head], cx = k % W, cy = (k / W) | 0, nd = dist[k] + 1;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
@@ -164,6 +166,51 @@ function computeFlow(g: GameState, owner: number): Int32Array {
     }
   }
   return dist;
+}
+const computeFlow = (g: GameState, owner: number): Int32Array => bfsFrom(g, g.bases[owner].x, g.bases[owner].y);
+
+// On-demand flow fields toward DYNAMIC goals (rally, chased enemy, artifacts). Quantized + TTL'd +
+// budget-capped per tick + LRU-evicted so global pathing for moving targets stays cheap.
+const FLOW_Q = 6, FLOW_TTL = 30, FLOW_CACHE_MAX = 16, FLOW_PER_TICK = 3;
+let flowComputes = 0; // reset each step before the decide loop
+function flowTo(g: GameState, tx: number, ty: number): Int32Array | null {
+  const qx = Math.max(0, Math.min(GRID_W - 1, Math.round(tx / FLOW_Q) * FLOW_Q));
+  const qy = Math.max(0, Math.min(GRID_H - 1, Math.round(ty / FLOW_Q) * FLOW_Q));
+  const key = qy * GRID_W + qx;
+  const c = g.dynFlow.get(key);
+  if (c && g.tick - c.tick < FLOW_TTL) return c.dist;
+  if (c) return c.dist; // stale but usable when over the per-tick compute budget
+  if (flowComputes >= FLOW_PER_TICK) return null; // defer; caller falls back to local steering
+  flowComputes++;
+  const dist = bfsFrom(g, qx, qy);
+  g.dynFlow.set(key, { tick: g.tick, dist });
+  if (g.dynFlow.size > FLOW_CACHE_MAX) { // evict the least-recently-computed field
+    let ok = -1, ot = Infinity;
+    for (const [k, v] of g.dynFlow) if (v.tick < ot) { ot = v.tick; ok = k; }
+    if (ok >= 0) g.dynFlow.delete(ok);
+  }
+  return dist;
+}
+// re-stamp a cached field's tick when reused so the LRU keeps hot goals
+function touchFlow(g: GameState, tx: number, ty: number) {
+  const qx = Math.max(0, Math.min(GRID_W - 1, Math.round(tx / FLOW_Q) * FLOW_Q));
+  const qy = Math.max(0, Math.min(GRID_H - 1, Math.round(ty / FLOW_Q) * FLOW_Q));
+  const c = g.dynFlow.get(qy * GRID_W + qx); if (c) c.tick = g.tick;
+}
+
+/** Step one cell down an arbitrary distance field, skipping occupied cells. Returns whether it moved. */
+function stepDownField(g: GameState, u: UnitState, dist: Int32Array): boolean {
+  const W = GRID_W;
+  let bx = u.x, by = u.y, best = dist[u.y * W + u.x];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    if (!dx && !dy) continue;
+    const nx = u.x + dx, ny = u.y + dy;
+    if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H || isOccupied(nx, ny)) continue;
+    const d = dist[ny * W + nx];
+    if (d < best) { best = d; bx = nx; by = ny; }
+  }
+  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); placeUnit(u, bx, by); return true; }
+  return false;
 }
 
 /** Step one cell down the flow field toward base[owner] — globally routed around terrain. */
@@ -285,6 +332,16 @@ function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
     if (cheb(u.x + cx, u.y + cy, tx, ty) <= cur && tryStep(g, u, cx, cy)) return;
 }
 
+// Sophisticated path to a DYNAMIC target: a global flow field (BFS from the goal) routes around
+// terrain/cliffs at range, with the local greedy stepper handling the final approach + occupancy.
+function navigate(g: GameState, u: UnitState, tx: number, ty: number) {
+  if (cheb(u.x, u.y, tx, ty) > 2 * GRID_SCALE) {
+    const field = flowTo(g, tx, ty);
+    if (field && field[u.y * GRID_W + u.x] < 1e9) { touchFlow(g, tx, ty); if (stepDownField(g, u, field)) return; }
+  }
+  moveToward(g, u, tx, ty); // close range, off-field, or field stalled → local steering
+}
+
 function wander(g: GameState, u: UnitState) {
   // meander in ANY direction (incl. back toward base), only onto passable ground
   const dx = Math.round(hash01(u.id, g.tick >> 1) * 2) - 1; // -1 | 0 | 1
@@ -354,8 +411,9 @@ function decide(g: GameState, u: UnitState) {
 
   const spec = effectiveSpec(g, u);
   const myBase = g.bases[u.owner];
-  // each move action advances `stepBoost` fine cells (see above) so fast units keep their speed
-  const mv = (tx: number, ty: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) moveToward(g, u, tx, ty); };
+  // each move action advances `stepBoost` fine cells (see above) so fast units keep their speed.
+  // mv() uses global flow-field pathing (routes around cliffs/obstacles), not greedy local steering.
+  const mv = (tx: number, ty: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) navigate(g, u, tx, ty); };
   const toBase = (owner: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) stepToBase(g, u, owner); }; // flow-field routed
   const roam = () => { if (canMove) for (let i = 0; i < stepBoost; i++) explore(g, u); };
 
@@ -508,6 +566,7 @@ export function step(g: GameState) {
   // two units stack. Updated incrementally as each unit moves, so the order is consistent.
   occ = new Set<number>();
   for (const u of g.units) occ.add(cellKey(u.x, u.y));
+  flowComputes = 0; // per-tick budget for new dynamic flow fields
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   occ = null;
