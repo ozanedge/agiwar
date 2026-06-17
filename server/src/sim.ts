@@ -167,11 +167,11 @@ function stepToBase(g: GameState, u: UnitState, owner: number) {
     if (!dx && !dy) continue;
     const nx = u.x + dx, ny = u.y + dy;
     if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
+    if (isOccupied(nx, ny)) continue; // another unit is there — pick the next-best free step (queue up)
     const d = dist[ny * W + nx];
     if (d < best) { best = d; bx = nx; by = ny; }
   }
-  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); } // heading
-  u.x = bx; u.y = by;
+  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); placeUnit(u, bx, by); } // heading + move (else wait)
 }
 
 const ARTIFACT_BONUSES: { kind: ArtifactBonusKind; amount: number; label: string }[] = [
@@ -242,11 +242,22 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
 }
 
 const passable = (g: GameState, x: number, y: number) => isPassable(x, y, g.seed, GRID_W, GRID_H);
+
+// Occupancy: each unit has size — no two units share a cell. `occ` holds every unit's cell for the
+// current tick (rebuilt each step), updated incrementally as units move so later movers see it.
+const cellKey = (x: number, y: number) => y * GRID_W + x;
+let occ: Set<number> | null = null;
+const isOccupied = (x: number, y: number) => occ !== null && occ.has(cellKey(x, y));
+function placeUnit(u: UnitState, nx: number, ny: number) {
+  if (occ) { occ.delete(cellKey(u.x, u.y)); occ.add(cellKey(nx, ny)); }
+  u.x = nx; u.y = ny;
+}
+
 const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
   if (dx === 0 && dy === 0) return false;
   const nx = u.x + dx, ny = u.y + dy;
-  if (!passable(g, nx, ny)) return false;
-  u.x = nx; u.y = ny; u.dx = dx; u.dy = dy; return true; // record heading
+  if (!passable(g, nx, ny) || isOccupied(nx, ny)) return false; // blocked by terrain or another unit
+  u.dx = dx; u.dy = dy; placeUnit(u, nx, ny); return true; // record heading + occupancy
 };
 
 // Local stepper for DYNAMIC targets (chasing a unit, sieging an artifact): pick the passable
@@ -257,11 +268,11 @@ function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     if (!dx && !dy) continue;
     const nx = u.x + dx, ny = u.y + dy;
-    if (!passable(g, nx, ny)) continue;
+    if (!passable(g, nx, ny) || isOccupied(nx, ny)) continue;
     const d = cheb(nx, ny, tx, ty);
     if (d < best) { best = d; bx = nx; by = ny; }
   }
-  if (bx !== u.x || by !== u.y) { u.x = bx; u.y = by; return; }
+  if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); placeUnit(u, bx, by); return; }
   // local minimum — slide along the obstacle (any passable neighbor that doesn't retreat)
   for (const [cx, cy] of [[sign(tx - u.x), 0], [0, sign(ty - u.y)], [sign(tx - u.x), -sign(ty - u.y) || 1], [-sign(tx - u.x) || 1, sign(ty - u.y)]] as [number, number][])
     if (cheb(u.x + cx, u.y + cy, tx, ty) <= cur && tryStep(g, u, cx, cy)) return;
@@ -486,8 +497,13 @@ export function step(g: GameState) {
       }
     }
   }
+  // occupancy: units have size — mark every unit's cell, then movement avoids occupied cells so no
+  // two units stack. Updated incrementally as each unit moves, so the order is consistent.
+  occ = new Set<number>();
+  for (const u of g.units) occ.add(cellKey(u.x, u.y));
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
+  occ = null;
   g.units = g.units.filter((u) => u.hp > 0);
   // a sieged artifact reverts to neutral (recapturable) rather than being destroyed
   for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; }
