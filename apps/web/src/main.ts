@@ -206,6 +206,8 @@ function spawnShots(s: StateMsg) {
   }
 }
 const IMPACT_MS = 120;
+// red-orange ember gradient: red glow → orange streak → hot yellow-white core
+const TRACER_GLOW = 0xff2d00, TRACER_MID = 0xff7a1a, TRACER_CORE = 0xffe39a;
 app.ticker.add(() => {
   if (!projectiles.length || !latestState) { if (!projectiles.length) fxLayer.clear(); return; }
   const s = latestState, now = performance.now();
@@ -216,21 +218,22 @@ app.ticker.add(() => {
     if (el >= p.travel + IMPACT_MS) { projectiles.splice(i, 1); continue; }
     const sx = isoX(p.ax, p.ay), sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - 9;
     const ex = isoX(p.bx, p.by) + p.ox, ey = isoY(p.bx, p.by) - elevAt(p.bx, p.by, s.seed, s.gridW, s.gridH) - 6 + p.oy;
-    const lift = 8 + (p.big ? 6 : 0); // mid-flight arc
+    const lift = 2.5 + (p.big ? 1.5 : 0); // gentle, near-flat trajectory
     if (el < p.travel) {
-      const t = el / p.travel, tt = Math.max(0, t - 0.14);
+      const t = el / p.travel, tt = Math.max(0, t - 0.16);
       const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * lift;
       const px = sx + (ex - sx) * tt, py = sy + (ey - sy) * tt - Math.sin(tt * Math.PI) * lift;
-      fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: p.color, width: p.big ? 2.4 : 1.4, alpha: 0.85 }); // tracer streak
-      fxLayer.circle(cx, cy, p.big ? 2.6 : 1.6).fill({ color: 0xffffff, alpha: 0.95 }); // hot core
-      fxLayer.circle(cx, cy, p.big ? 4.2 : 2.8).fill({ color: p.color, alpha: 0.32 }); // glow
+      fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: TRACER_GLOW, width: p.big ? 4 : 2.6, alpha: 0.35 }); // red glow trail
+      fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: TRACER_MID, width: p.big ? 2.2 : 1.3, alpha: 0.9 }); // orange streak
+      fxLayer.circle(cx, cy, p.big ? 2.4 : 1.5).fill({ color: TRACER_CORE, alpha: 0.95 }); // hot core
+      fxLayer.circle(cx, cy, p.big ? 4.2 : 2.8).fill({ color: TRACER_GLOW, alpha: 0.28 }); // bloom
     } else {
       const k = (el - p.travel) / IMPACT_MS; // 0→1 impact progress
       if (p.hit) {
-        fxLayer.circle(ex, ey, (p.big ? 5 : 3) + k * (p.big ? 15 : 9)).stroke({ color: p.color, width: p.big ? 2 : 1.3, alpha: 0.85 * (1 - k) });
-        fxLayer.circle(ex, ey, (p.big ? 4 : 2.5) * (1 - k)).fill({ color: 0xffffff, alpha: 0.9 * (1 - k) }); // flash
+        fxLayer.circle(ex, ey, (p.big ? 5 : 3) + k * (p.big ? 15 : 9)).stroke({ color: TRACER_GLOW, width: p.big ? 2 : 1.3, alpha: 0.85 * (1 - k) });
+        fxLayer.circle(ex, ey, (p.big ? 4 : 2.5) * (1 - k)).fill({ color: TRACER_CORE, alpha: 0.9 * (1 - k) }); // flash
       } else {
-        fxLayer.circle(ex, ey, (p.big ? 4 : 3) + k * 5).stroke({ color: 0x9bb0b6, width: 1, alpha: 0.4 * (1 - k) }); // dust puff
+        fxLayer.circle(ex, ey, (p.big ? 4 : 3) + k * 5).stroke({ color: TRACER_MID, width: 1, alpha: 0.35 * (1 - k) }); // faint puff
       }
     }
   }
