@@ -17,7 +17,7 @@ const TICK_HZ = Number(process.env.TICK_HZ ?? 10);
 const NET_HZ = Number(process.env.NET_HZ ?? 5); // broadcast rate (<= TICK_HZ) — caps egress
 const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
-const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 6000); // wait this long for a human, then give a bot
+const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 60_000); // wait this long for a human, then fall back to a bot
 const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32 * GRID_SCALE); // buildings must be placed within this many tiles of your base
 const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // invest to claim a neutral artifact
 
@@ -166,6 +166,11 @@ function handleClose(ws: WebSocket) {
 }
 
 async function handle(ws: WebSocket, msg: ClientMsg) {
+  // skip the matchmaking wait → start a single-player bot match immediately
+  if (msg.type === "skipToBot") {
+    if (waiting?.ws === ws) { clearTimeout(waiting.timer); waiting = null; createRoom([ws], true); }
+    return;
+  }
   const room = roomOf.get(ws);
   if (!room || room.over) return;
   const member = room.members.find((m) => m.ws === ws);

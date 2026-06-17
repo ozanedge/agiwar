@@ -6,6 +6,7 @@ import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
 import { terrainAt, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
+const MM_SECONDS = 60; // how long we look for a live opponent before single-player (matches server)
 // Skynetops mission-control palette. Primary color = SIDE (yours cyan, enemy danger-red);
 // doctrine is shown as an accent outline.
 const OWN_COLOR = 0x00ffd1;
@@ -171,8 +172,10 @@ app.canvas.addEventListener("dblclick", (e) => {
 let ws: WebSocket;
 function connect() {
   ws = new WebSocket(WS_URL);
+  ws.onopen = () => showMatchmaking();
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
+    if (msg.type === "state" || msg.type === "camps") hideMatchmaking(); // a room exists → matched
     if (msg.type === "state") { latestState = msg; render(msg); spawnShots(msg); }
     else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
@@ -238,6 +241,39 @@ app.ticker.add(() => {
     }
   }
 });
+
+// ---- matchmaking: look for a live opponent with a countdown; skip to single-player anytime ----
+let mmTimer: number | undefined;
+function showMatchmaking() {
+  if (document.getElementById("matchmaking")) return; // already searching
+  const el = document.createElement("div");
+  el.id = "matchmaking";
+  el.innerHTML =
+    `<div class="mmpanel"><div class="mmspin"></div>` +
+    `<h3>Searching for a live opponent…</h3>` +
+    `<div class="mmtimer" id="mmtimer">${MM_SECONDS}</div>` +
+    `<div class="mmsub">We'll pair you with another commander, or start a single-player skirmish.</div>` +
+    `<button class="mmskip" id="mmskip">Skip to single player ▸</button></div>`;
+  stage.appendChild(el);
+  let left = MM_SECONDS;
+  const tick = () => {
+    const t = document.getElementById("mmtimer");
+    if (t) t.textContent = String(Math.max(0, left));
+    if (left <= 0) { clearInterval(mmTimer); sendCmd({ type: "skipToBot" }); return; } // time's up → single player
+    left -= 1;
+  };
+  tick();
+  mmTimer = window.setInterval(tick, 1000);
+  document.getElementById("mmskip")!.onclick = () => {
+    sendCmd({ type: "skipToBot" });
+    const b = document.getElementById("mmskip") as HTMLButtonElement | null;
+    if (b) { b.textContent = "Starting skirmish…"; b.disabled = true; }
+  };
+}
+function hideMatchmaking() {
+  clearInterval(mmTimer);
+  document.getElementById("matchmaking")?.remove();
+}
 
 function showEndscreen(won: boolean) {
   const el = document.getElementById("endscreen")!;

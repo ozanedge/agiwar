@@ -194,7 +194,8 @@ export type ClientMsg =
   | { type: "fieldOrder"; order: FieldOrder } // manual time-boxed override (debug/UI)
   | { type: "chooseArmyDoctrine"; id: string } // pick the once-per-match build identity
   | { type: "decide"; id: number; key: string } // answer a commander's strategic fork
-  | { type: "setRally"; x: number; y: number }; // set a rally/commitment point (double-click the map)
+  | { type: "setRally"; x: number; y: number } // set a rally/commitment point (double-click the map)
+  | { type: "skipToBot" }; // stop waiting for a live opponent — start a single-player (bot) match now
 
 /** A field-general command: a *time-boxed override* of native doctrine.
  *  Units revert to their camp doctrine when `durationTicks` elapses. */
