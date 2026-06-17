@@ -3,7 +3,7 @@ import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
-import { terrainAt, elevationAt, heightAt, highGroundBonus, type TerrainKind } from "../../../shared/terrain.js";
+import { heightAt, elevationAt, elevFromHeight, kindOf, highGroundBonus, CLIFF_SLOPE, type TerrainKind } from "../../../shared/terrain.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 const MM_SECONDS = 60; // how long we look for a live opponent before single-player (matches server)
@@ -81,18 +81,31 @@ const exploredCoarse = new Set<number>(); // coarse cells whose vision is alread
 // sprites then just sample this texture (cheap), masked by vision — no per-tick tile redraw.
 function bakeTerrain(seed: number, W: number, H: number) {
   const g = new Graphics();
+  // precompute height + smooth elevation once; the draw loop reads neighbors from these arrays
+  const N = W * H, Hh = new Float32Array(N), E = new Float32Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const h = heightAt(x, y, seed, W, H); const i = y * W + x; Hh[i] = h; E[i] = elevFromHeight(h); }
+  const half = TILE_W / 2, hh = TILE_H / 2, D = GRID_SCALE;
+  const ix = (x: number, y: number) => (x < 0 ? 0 : x >= W ? W - 1 : x) + (y < 0 ? 0 : y >= H ? H - 1 : y) * W;
+  const eAt = (x: number, y: number) => E[ix(x, y)];
+  const hgt = (x: number, y: number) => Hh[ix(x, y)];
   for (let d = 0; d <= W - 1 + (H - 1); d++) {
     for (let gx = Math.max(0, d - (H - 1)); gx <= Math.min(W - 1, d); gx++) {
-      const gy = d - gx;
-      const t = terrainAt(gx, gy, seed, W, H);
-      // cliffs / impassable land render as bare rock so blocked terrain reads as such
-      const col = !t.passable && t.kind !== "water" ? tint(KIND_COLOR.rock, t.micro) : tint(KIND_COLOR[t.kind], t.micro);
-      const cx = isoX(gx, gy), cy = isoY(gx, gy) - t.elev, groundY = isoY(gx, gy);
-      if (t.elev > 1.2) { // side walls on raised ground for a sense of height
-        g.poly([cx - TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx - TILE_W / 2, groundY]).fill(tint(col, -0.42));
-        g.poly([cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx, groundY + TILE_H / 2, cx + TILE_W / 2, groundY]).fill(tint(col, -0.24));
-      }
-      g.poly([cx, cy - TILE_H / 2, cx + TILE_W / 2, cy, cx, cy + TILE_H / 2, cx - TILE_W / 2, cy]).fill(col);
+      const gy = d - gx, i = gy * W + gx, h = Hh[i], e = E[i];
+      const kind = kindOf(h);
+      // steep land = impassable cliff → render as bare rock
+      const slope = Math.max(Math.abs(hgt(gx + D, gy) - hgt(gx - D, gy)), Math.abs(hgt(gx, gy + D) - hgt(gx, gy - D))) / (2 * D);
+      const blocked = kind === "rock" || (kind !== "water" && slope > CLIFF_SLOPE); // never true for water
+      const baseCol = blocked ? KIND_COLOR.rock : KIND_COLOR[kind];
+      // smooth hill-shade: surface descending toward the camera catches light, up-slopes shade (gentle)
+      const shade = Math.max(-0.16, Math.min(0.16, ((eAt(gx - 1, gy) + eAt(gx, gy - 1)) / 2 - e) * 0.13));
+      const col = tint(baseCol, shade);
+      const cx = isoX(gx, gy), cy = isoY(gx, gy) - e, baseY = isoY(gx, gy);
+      // side faces fill ONLY the drop to the downhill front neighbors — seamless on gentle slopes,
+      // tall on steep ground (no stair-step columns to a flat baseline).
+      const eFL = eAt(gx, gy + 1), eFR = eAt(gx + 1, gy);
+      if (e - eFL > 0.4) g.poly([cx - half, cy, cx, cy + hh, cx, baseY + hh - eFL, cx - half, baseY - eFL]).fill(tint(col, -0.28));
+      if (e - eFR > 0.4) g.poly([cx + half, cy, cx, cy + hh, cx, baseY + hh - eFR, cx + half, baseY - eFR]).fill(tint(col, -0.15));
+      g.poly([cx, cy - hh, cx + half, cy, cx, cy + hh, cx - half, cy]).fill(col); // top
     }
   }
   const b = g.getLocalBounds();
@@ -659,7 +672,7 @@ function updateReadout() {
   const u = hovered;
   const who = u.owner === latestState.you ? "yours" : "enemy";
   // terrain elevation under the unit → high-ground combat edge (matches sim attack scaling)
-  const th = terrainAt(u.x, u.y, latestState.seed, latestState.gridW, latestState.gridH).height;
+  const th = heightAt(u.x, u.y, latestState.seed, latestState.gridW, latestState.gridH);
   const ground = th >= 0.60
     ? `<span style="color:#ffd76b">⛰ HIGH GROUND</span> · +dmg downhill`
     : th < 0.40 ? `<span style="color:#8aa">↓ low ground</span> · −dmg uphill` : `level ground`;

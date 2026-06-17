@@ -13,8 +13,7 @@ export interface Tile {
 }
 
 const NOISE_SCALE = 22 * GRID_SCALE; // larger = bigger, smoother landmasses (scaled for the finer grid)
-const STEP = 0.06; // elevation terracing — flat plateaus with sharp faces between them
-const CLIFF_SLOPE = 0.011; // land steeper than this (height change per cell) is an impassable cliff
+export const CLIFF_SLOPE = 0.011; // land steeper than this (height change per cell) is an impassable cliff
 const cheb = (ax: number, ay: number, bx: number, by: number) => Math.max(Math.abs(ax - bx), Math.abs(ay - by));
 
 function h2(x: number, y: number, seed: number): number {
@@ -76,7 +75,7 @@ export function heightAt(gx: number, gy: number, seed: number, W: number, H: num
   return h;
 }
 
-function kindOf(h: number): TerrainKind {
+export function kindOf(h: number): TerrainKind {
   if (h < 0.34) return "water";
   if (h < 0.40) return "sand";
   if (h < 0.56) return "grass";
@@ -84,12 +83,11 @@ function kindOf(h: number): TerrainKind {
   return "rock";
 }
 
-// Terraced render lift: quantize height into plateaus, near-flat low down and rising steeply up high,
-// so the faces between terraces read as cliffs/escarpments. Divided by GRID_SCALE for the fine grid.
-function elevPx(h: number): number {
+// SMOOTH render lift (no terracing): near-flat on plains, rising continuously and steeply up high so
+// hills are smooth uphills, not stair steps. Divided by GRID_SCALE for the fine grid.
+export function elevFromHeight(h: number): number {
   if (h < 0.34) return 0; // water
-  const ht = Math.floor(h / STEP) * STEP;
-  return (1 + Math.min(260, Math.pow(Math.max(0, ht - 0.38), 1.45) * 320)) / GRID_SCALE;
+  return (1 + Math.min(280, Math.pow(Math.max(0, h - 0.38), 1.5) * 360)) / GRID_SCALE;
 }
 
 export function terrainAt(gx: number, gy: number, seed: number, W: number, H: number): Tile {
@@ -105,11 +103,11 @@ export function terrainAt(gx: number, gy: number, seed: number, W: number, H: nu
     const sy = Math.abs(heightAt(gx, gy + D, seed, W, H) - heightAt(gx, gy - D, seed, W, H));
     if (Math.max(sx, sy) / (2 * D) > CLIFF_SLOPE) { cliff = true; passable = false; }
   }
-  return { kind, height: h, elev: elevPx(h), passable, cliff, micro };
+  return { kind, height: h, elev: elevFromHeight(h), passable, cliff, micro };
 }
 
 /** Cheap elevation lookup (no cliff sampling) — for rendering unit lift, etc. */
-export const elevationAt = (gx: number, gy: number, seed: number, W: number, H: number) => elevPx(heightAt(gx, gy, seed, W, H));
+export const elevationAt = (gx: number, gy: number, seed: number, W: number, H: number) => elevFromHeight(heightAt(gx, gy, seed, W, H));
 
 export const isPassable = (gx: number, gy: number, seed: number, W: number, H: number) =>
   gx >= 0 && gy >= 0 && gx < W && gy < H && terrainAt(gx, gy, seed, W, H).passable;
