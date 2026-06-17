@@ -762,7 +762,7 @@ setInterval(() => { if (latestCamps.length) syncCommanders(); }, 250); // live c
 const NS = "http://www.w3.org/2000/svg";
 const sankeyEl = document.getElementById("sankey") as unknown as SVGSVGElement;
 const HEXCSS: Record<DoctrineId, string> = { aggressive: "#ff5d73", recon: "#5ab0ff", defensive: "#2fe0bd", builder: "#ffb547" };
-const S_TOP = 22; // room for the income label
+const S_TOP = 38; // room for the income label + a gap before the bars
 let S_HC = 600; // usable chart height; recomputed from the panel each render
 let sankeyPxPerPct = 3; // px of band height per 1% of budget (for drag mapping)
 // two kinds of drag: a camp's budget share, or a unit's weight within a camp
@@ -795,7 +795,7 @@ function renderSankey() {
   const incX = 4, incW = 14, campX = 74, campW = 18, unitX = 196, unitW = 18, GAP = 7;
 
   mk("rect", { x: incX, y: S_TOP, width: incW, height: S_HC, rx: 2, fill: "#cdd6e0" }, sankeyEl);
-  mk("text", { x: incX, y: S_TOP - 1, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`;
+  mk("text", { x: incX, y: 13, "font-size": 10 }, sankeyEl).textContent = `Income +${latestState.incomePerSec}/s`; // pinned near the top, clear of the bars
 
   // Fit-based layout: 5 stacked bands (3 camps + turrets + savings) sum to `usable`, so the
   // chart never overflows. Each band = a floor + a share of the remainder by %.
