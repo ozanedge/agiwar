@@ -65,12 +65,14 @@ export function heightAt(gx: number, gy: number, seed: number, W: number, H: num
   h += Math.min(0.95, belt * spine); // prominent, towering ranges
   // medium-frequency roughness everywhere → hills, dips, knolls (variability)
   h += (fbm(gx / (NOISE_SCALE * 0.42), gy / (NOISE_SCALE * 0.42), seed + 71) - 0.5) * 0.34;
-  // base region: flat home plateau, blended out to natural terrain so there's no cliff ring at the seam
-  const innerR = 11 * GRID_SCALE, outerR = 22 * GRID_SCALE;
+  // base region: a flat home plateau on HIGH GROUND (commanding position), blended out over a wide
+  // apron to natural terrain so the descent never steepens into a cliff ring that would trap the base.
+  const PLATEAU = 0.78; // highland (passable, well above the high-ground bonus threshold)
+  const innerR = 11 * GRID_SCALE, outerR = 32 * GRID_SCALE;
   for (const b of baseSpots(W, H)) {
     const d = cheb(gx, gy, b.x, b.y);
-    if (d < innerR) return 0.5; // flat, passable home
-    if (d < outerR) { const t = (d - innerR) / (outerR - innerR); return h * t + 0.5 * (1 - t); }
+    if (d < innerR) return PLATEAU; // flat, passable, elevated home
+    if (d < outerR) { const t = (d - innerR) / (outerR - innerR); return h * t + PLATEAU * (1 - t); }
   }
   return h;
 }
