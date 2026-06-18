@@ -18,6 +18,7 @@ const NET_HZ = Number(process.env.NET_HZ ?? 5); // broadcast rate (<= TICK_HZ) �
 const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
 const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 60_000); // wait this long for a human, then fall back to a bot
+const DOCTRINE_WAIT_MS = Number(process.env.DOCTRINE_WAIT_MS ?? 20_000); // backstop: auto-start if a human hasn't picked a doctrine (client picker is 15s)
 const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32 * GRID_SCALE); // buildings must be placed within this many tiles of your base
 
 // Date.now() is banned inside the sim, but cooldowns are wall-clock UX, not sim state.
@@ -35,6 +36,9 @@ interface Room {
   bot: boolean;
   netTick: number;
   over: boolean;
+  started: boolean; // the sim is PAUSED until every human has picked an army doctrine (or the backstop fires)
+  chosen: boolean[]; // per player: has an army doctrine been selected? (bots are pre-chosen)
+  startTimer: ReturnType<typeof setTimeout> | null; // server backstop: auto-start if a human stalls on the picker
   interval: ReturnType<typeof setInterval>;
 }
 
@@ -104,23 +108,40 @@ function createRoom(humans: WebSocket[], bot: boolean) {
   const advisors: (AdvisorRunner | null)[] = [createAdvisor(0), bot ? null : createAdvisor(1)];
   const decisions: (DecisionRunner | null)[] = [createDecisionRunner(0), bot ? null : createDecisionRunner(1)];
 
+  // the sim stays PAUSED until every HUMAN picks a doctrine; non-human (bot) slots are pre-chosen.
+  const isHuman = [false, false];
+  for (const m of members) isHuman[m.player] = true;
+  const chosen = [0, 1].map((i) => !isHuman[i]);
+
   const room: Room = {
     id: roomSeq++, game, members, runners, advisors, decisions, bot, netTick: 0, over: false,
+    started: false, chosen, startTimer: null,
     interval: setInterval(() => tickRoom(room), 1000 / TICK_HZ),
   };
+  // backstop: if a human never picks, force-start shortly after the client's 15s picker would auto-pick
+  room.startTimer = setTimeout(() => startMatch(room), DOCTRINE_WAIT_MS);
   rooms.add(room);
   for (const m of members) {
     roomOf.set(m.ws, room);
-    send(m.ws, { type: "notice", level: "info", text: `Matched — you are Player ${m.player + 1} (vs ${bot ? "bot" : "human"}).` });
+    send(m.ws, { type: "notice", level: "info", text: `Matched — you are Player ${m.player + 1} (vs ${bot ? "bot" : "human"}). Pick your doctrine to begin.` });
     sendOwnCamps(m.ws, game, m.player);
     sendState(m.ws, game, m.player);
-    send(m.ws, { type: "doctrineOffer", current: game.players[m.player].armyDoctrine }); // pick a build identity
+    send(m.ws, { type: "doctrineOffer", current: game.players[m.player].armyDoctrine }); // pick a build identity (sim is paused until chosen)
   }
-  console.log(`[room ${room.id}] started · ${bot ? "vs bot" : "PvP"} · ${rooms.size} active`);
+  console.log(`[room ${room.id}] created · ${bot ? "vs bot" : "PvP"} · awaiting doctrine pick · ${rooms.size} active`);
+}
+
+// Begin the match once doctrines are locked in — unpauses the sim loop. Idempotent.
+function startMatch(room: Room) {
+  if (room.started || room.over) return;
+  room.started = true;
+  if (room.startTimer) { clearTimeout(room.startTimer); room.startTimer = null; }
+  for (const m of room.members) send(m.ws, { type: "notice", level: "info", text: "▸ Doctrine locked — battle begins." });
+  console.log(`[room ${room.id}] battle begins`);
 }
 
 function tickRoom(room: Room) {
-  if (room.over) return;
+  if (room.over || !room.started) return; // PAUSED until doctrines are picked — sim does not advance
   const g = room.game;
   step(g);
 
@@ -182,7 +203,7 @@ function handleClose(ws: WebSocket) {
   roomOf.delete(ws);
   room.members = room.members.filter((m) => m.ws !== ws);
   for (const m of room.members) send(m.ws, { type: "notice", level: "info", text: "Opponent left the match." });
-  if (room.members.length === 0) { clearInterval(room.interval); rooms.delete(room); console.log(`[room ${room.id}] closed · ${rooms.size} active`); }
+  if (room.members.length === 0) { clearInterval(room.interval); if (room.startTimer) clearTimeout(room.startTimer); rooms.delete(room); console.log(`[room ${room.id}] closed · ${rooms.size} active`); }
 }
 
 async function handle(ws: WebSocket, msg: ClientMsg) {
@@ -330,6 +351,10 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     g.players[player].armyDoctrine = d.id;
     sendState(ws, g, player);
     send(ws, { type: "notice", level: "info", text: `Army doctrine: ${d.label} — ${d.hint}.` });
+    // gate: the match only begins once EVERY human has locked a doctrine (solo → just this player;
+    // PvP → both). Until then the sim stays paused in tickRoom.
+    room.chosen[player] = true;
+    if (!room.started && room.chosen.every(Boolean)) startMatch(room);
     return;
   }
 

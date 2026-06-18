@@ -271,7 +271,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state" || msg.type === "camps") hideMatchmaking(); // a room exists → matched
-    if (msg.type === "state") { latestState = msg; render(msg); spawnShots(msg); }
+    if (msg.type === "state") { if (awaitingStart) { awaitingStart = false; document.getElementById("standby")?.remove(); } latestState = msg; render(msg); spawnShots(msg); }
     else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
@@ -392,10 +392,20 @@ function restart(solo: boolean) {
 // ---- army doctrine picker (once per match, #4): your build identity ----
 const DOCTRINE_SECONDS = 15;
 let doctrineTimer: number | undefined;
+let awaitingStart = false; // picked a doctrine, waiting for the (paused) sim to begin — dismissed on the first live state
 function pickDoctrine(id: string) {
   clearInterval(doctrineTimer);
   sendCmd({ type: "chooseArmyDoctrine", id });
   document.getElementById("doctrine")?.remove();
+  // the sim is paused server-side until everyone has picked — show a standby cue until it starts
+  awaitingStart = true;
+  if (!document.getElementById("standby")) {
+    const s = document.createElement("div");
+    s.id = "standby";
+    s.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:40;background:rgba(2,6,10,.55);backdrop-filter:blur(2px)";
+    s.innerHTML = `<div style="padding:18px 26px;border:1px solid var(--accent);border-radius:10px;background:var(--bg-panel);color:#eafffb;font-weight:600;letter-spacing:.04em;box-shadow:0 0 26px rgba(0,255,209,.2)">▸ Standing by — waiting for the battle to begin…</div>`;
+    stage.appendChild(s);
+  }
 }
 function showDoctrinePicker(current: string) {
   clearInterval(doctrineTimer);
