@@ -87,6 +87,8 @@ export interface Artifact {
   hp: number;
   maxHp: number;
   bonus: { kind: ArtifactBonusKind; amount: number; label: string };
+  capProgress: number; // 0..1 capture channel progress while neutral (client shows a spindown)
+  capOwner: number; // player currently channeling the capture (-1 = none)
 }
 
 /** Lightweight world state, broadcast at the (lower) network rate. Deliberately

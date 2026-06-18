@@ -31,7 +31,8 @@ const DEFAULT_PROD: Record<DoctrineId, { budgetPct: number; mix: Partial<Record<
   builder: { budgetPct: 10, mix: { humvee: 100 } }, // Builder budget — units hunt artifacts
 };
 const DEFAULT_TURRET_BUDGET = 10; // 30+10+15+10 camps + 10 turret = 75 → 25% savings
-const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // builder auto-claim draws this from the bank
+const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // drawn from the bank when a capture completes
+const CAPTURE_TICKS = Number(process.env.CAPTURE_TICKS ?? 60); // ~6s of channeling to claim a neutral artifact
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
@@ -278,7 +279,7 @@ function spawnArtifact(g: GameState) {
     if (!passable(g, x, y)) continue;
     if (g.artifacts.some((a) => cheb(a.x, a.y, x, y) < 14 * GRID_SCALE)) continue; // spread them out
     const bonus = ARTIFACT_BONUSES[Math.floor(hash01(g.nextArtifactId * 7, g.seed) * ARTIFACT_BONUSES.length)];
-    g.artifacts.push({ id: g.nextArtifactId++, x, y, owner: -1, hp: ARTIFACT_HP, maxHp: ARTIFACT_HP, bonus });
+    g.artifacts.push({ id: g.nextArtifactId++, x, y, owner: -1, hp: ARTIFACT_HP, maxHp: ARTIFACT_HP, bonus, capProgress: 0, capOwner: -1 });
     return;
   }
 }
@@ -465,11 +466,7 @@ function decide(g: GameState, u: UnitState) {
     let target: Artifact | null = null, td = Infinity;
     for (const a of g.artifacts) if (a.owner < 0) { const d = cheb(u.x, u.y, a.x, a.y); if (d < td) { td = d; target = a; } }
     if (!target) { roam(); return; } // none known → scout for more
-    if (td <= 2 * GRID_SCALE) {
-      const p = g.players[u.owner];
-      if (p.resources >= CAPTURE_COST) { p.resources -= CAPTURE_COST; target.owner = u.owner; target.hp = target.maxHp; } // claim
-      // else: wait on it until the bank can afford the claim
-    } else mv(target.x, target.y);
+    if (td > 2 * GRID_SCALE) mv(target.x, target.y); // else: hold and channel — the capture pass in step() advances progress
     return;
   }
 
@@ -624,7 +621,25 @@ export function step(g: GameState) {
   for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
   g.units = g.units.filter((u) => u.hp > 0);
   // a sieged artifact reverts to neutral (recapturable) rather than being destroyed
-  for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; }
+  for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; a.capProgress = 0; a.capOwner = -1; }
+  // TIMED CAPTURE: a neutral artifact is claimed over CAPTURE_TICKS while exactly one player's
+  // builder channels on it (and can afford the cost); progress decays when unattended/contested.
+  for (const a of g.artifacts) {
+    if (a.owner >= 0) continue;
+    let chan = -1; // -1 none, -2 contested
+    for (let pi = 0; pi < g.players.length && chan !== -2; pi++) {
+      if (g.players[pi].resources < CAPTURE_COST) continue;
+      if (g.units.some((u) => u.owner === pi && u.camp === "builder" && cheb(u.x, u.y, a.x, a.y) <= 2 * GRID_SCALE)) chan = chan === -1 ? pi : -2;
+    }
+    if (chan >= 0) {
+      a.capOwner = chan;
+      a.capProgress = Math.min(1, a.capProgress + 1 / CAPTURE_TICKS);
+      if (a.capProgress >= 1) { g.players[chan].resources -= CAPTURE_COST; a.owner = chan; a.hp = a.maxHp; a.capProgress = 0; a.capOwner = -1; }
+    } else {
+      a.capProgress = Math.max(0, a.capProgress - 1.5 / CAPTURE_TICKS); // decay faster than it builds
+      if (a.capProgress === 0) a.capOwner = -1;
+    }
+  }
 }
 
 /** Next open turret-ring slot around any of a player's anchors (base + owned artifacts). */

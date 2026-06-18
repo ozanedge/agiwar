@@ -27,6 +27,8 @@ let latestTurretBudget = 0;
 let latestField: FieldGeneral | null = null;
 let latestAdvisor: FieldGeneral | null = null;
 let hovered: UnitState | null = null;
+let pinned: UnitState | null = null; // click-to-inspect: persists until you click elsewhere
+let unitTapped = false; // set when a unit was just clicked, so the map click-handler doesn't unpin
 
 const app = new Application();
 await app.init({ background: 0x02060a, resizeTo: stage, antialias: true, resolution: window.devicePixelRatio || 1, autoDensity: true });
@@ -160,13 +162,17 @@ function centerOnBase(s: StateMsg) {
   world.x = app.screen.width / 2 - isoX(mine.x, mine.y);
   world.y = app.screen.height / 2 - isoY(mine.x, mine.y);
 }
-let dragging = false, lastX = 0, lastY = 0;
-app.canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0;
+app.canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = downX = e.clientX; lastY = downY = e.clientY; unitTapped = false; });
 window.addEventListener("pointermove", (e) => {
   if (!dragging) return;
   world.x += e.clientX - lastX; world.y += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY;
 });
-window.addEventListener("pointerup", () => { dragging = false; });
+window.addEventListener("pointerup", (e) => {
+  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (dragging && moved < 5 && !unitTapped && pinned) { pinned = null; updateReadout(); } // click on empty map → release pin
+  unitTapped = false; dragging = false;
+});
 app.canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const ns = Math.max(0.4, Math.min(5, cam.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
@@ -454,6 +460,7 @@ function render(s: StateMsg) {
   for (const b of s.bases) addT(makeBase(b, s));
   reconcileUnits(s); // create/update/remove persistent unit holders; the ticker glides them
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
+  if (pinned) pinned = s.units.find((u) => u.id === pinned!.id) ?? null; // drop the pin if the unit died
   updateReadout();
   const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0) + latestTurretBudget;
   const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
@@ -523,10 +530,21 @@ function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {
   g.circle(cx, beaconY, 5 + pulse * 3).fill({ color: accent, alpha: 0.16 });
 
   if (a.owner >= 0 && a.hp < a.maxHp) g.rect(cx - 12, beaconY - 12, (a.hp / a.maxHp) * 24, 2.5).fill(accent); // hp
-  const t = new Text({ text: neutral ? `${a.bonus.label}  ▸ claim` : a.bonus.label, style: { fill: accent, fontFamily: "JetBrains Mono, monospace", fontSize: 10 } });
-  t.anchor.set(0.5, 1); t.x = cx; t.y = beaconY - (a.owner >= 0 && a.hp < a.maxHp ? 16 : 8); g.addChild(t);
+
+  // capture SPINDOWN: a circular progress ring while a builder is channeling the claim
+  const capping = neutral && a.capProgress > 0;
+  const ringY = beaconY - 16;
+  if (capping) {
+    const cc = a.capOwner === s.you ? OWN_COLOR : a.capOwner >= 0 ? ENEMY_COLOR : 0xffd76b;
+    g.circle(cx, ringY, 9).stroke({ color: 0x05080b, width: 3.2, alpha: 0.55 }); // track
+    g.arc(cx, ringY, 9, -Math.PI / 2, -Math.PI / 2 + a.capProgress * Math.PI * 2).stroke({ color: cc, width: 3.2, alpha: 0.95 }); // progress
+    g.circle(cx, ringY, 9).stroke({ color: cc, width: 1, alpha: 0.25 }); // faint full ring
+  }
+  const label = neutral ? (capping ? `${a.bonus.label}  ⟳ ${Math.round(a.capProgress * 100)}%` : `${a.bonus.label}  ▸ send a builder`) : a.bonus.label;
+  const t = new Text({ text: label, style: { fill: accent, fontFamily: "JetBrains Mono, monospace", fontSize: 10 } });
+  t.anchor.set(0.5, 1); t.x = cx; t.y = (capping ? ringY - 12 : beaconY) - (a.owner >= 0 && a.hp < a.maxHp ? 16 : 8); g.addChild(t);
   g.zIndex = a.x + a.y; // sits with terrain depth
-  if (neutral) { // click to invest/claim
+  if (neutral) { // click to direct forces to capture it
     g.eventMode = "static"; g.cursor = "pointer";
     g.on("pointertap", () => sendCmd({ type: "captureArtifact", id: a.id }));
   }
@@ -780,6 +798,7 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
   base.ellipse(0, 1, rad + 11, (rad + 11) * 0.5).fill({ color: side, alpha: 0.12 });
   base.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.14 });
   if (u.unit === "turret") base.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(ln);
+  if (pinned && pinned.id === u.id) base.ellipse(0, 1, rad + 9, (rad + 9) * 0.5).stroke({ color: 0xffffff, width: 1.5, alpha: 0.85 }); // selection ring
   cont.addChild(base);
 
   // Volume via z-stacking: the iso-projected footprint is drawn many times, each ~1px higher
@@ -833,6 +852,7 @@ function reconcileUnits(s: StateMsg) {
       const ev = e;
       holder.on("pointerover", () => { hovered = ev.u; updateReadout(); });
       holder.on("pointerout", () => { if (hovered?.id === ev.u.id) { hovered = null; updateReadout(); } });
+      holder.on("pointertap", () => { pinned = ev.u; hovered = ev.u; unitTapped = true; updateReadout(); }); // click to pin inspect
       entityLayer.addChild(holder);
       unitViews.set(u.id, e);
       placeHolder(e, s); // place new units immediately (no glide from origin)
@@ -859,25 +879,26 @@ app.ticker.add(() => {
 });
 
 function updateReadout() {
-  if (!hovered || !latestState) { readoutEl.textContent = "hover a unit to inspect it"; return; }
-  const u = hovered;
-  const who = u.owner === latestState.you ? "yours" : "enemy";
-  // terrain elevation under the unit → high-ground combat edge (matches sim attack scaling)
-  const th = heightAt(u.x, u.y, latestState.seed, latestState.gridW, latestState.gridH);
-  const ground = th >= 0.60
-    ? `<span style="color:#ffd76b">⛰ HIGH GROUND</span> · +dmg downhill`
-    : th < 0.40 ? `<span style="color:#8aa">↓ low ground</span> · −dmg uphill` : `level ground`;
-  const acc = UNIT_STATS[u.unit].accuracy;
-  const accStr = acc > 0 ? ` · acc ${Math.round(acc * 100)}%` : "";
-  const header = `${UNIT_STATS[u.unit].label} #${u.id} · ${who} · hp ${u.hp}/${u.maxHp}${accStr}<br><span class="sub">${ground}</span>`;
-  if (!u.camp) { readoutEl.innerHTML = `${header}<br><b>Building</b> — stationary, no doctrine`; return; } // building
-  const overridden = u.overrideUntil > latestState.tick;
-  const secs = overridden ? Math.ceil((u.overrideUntil - latestState.tick) / 10) : 0;
-  const cls = DOCTRINE_CLASS[u.camp];
-  readoutEl.innerHTML =
-    `${header}<br>` +
-    `<b>Native:</b> <span class="${cls}">${u.camp}</span><br>` +
-    `<b>Current:</b> ${overridden ? `<span style="color:#ffd76b">OVERRIDE — ${u.overrideLabel} (${secs}s, then reverts)</span>` : `<span class="${cls}">${u.camp} (native)</span>`}`;
+  const u = pinned ?? hovered; // pinned (clicked) takes precedence and persists
+  if (!u || !latestState) { readoutEl.innerHTML = `<span class="sub">hover a unit to inspect · click to pin</span>`; return; }
+  const s = latestState, st = UNIT_STATS[u.unit];
+  const mine = u.owner === s.you;
+  const h = heightAt(u.x, u.y, s.seed, s.gridW, s.gridH);
+  const hg = highGroundBonus(h); // high-ground range/sight bonus on this tile
+  const ground = h >= 0.60 ? `<span style="color:#ffd76b">⛰ high ground</span> (+${hg} rng/sight)` : h < 0.40 ? `<span style="color:#8aa">↓ low ground</span>` : `level ground`;
+  const vision = Math.min(VISION_CAP, (st.range + hg) * VISION_MULT);
+  const rows: string[] = [];
+  rows.push(`<b>${st.label}</b> #${u.id} · <span style="color:${mine ? "#00ffd1" : "#ff6b80"}">${mine ? "yours" : "enemy"}</span>${pinned ? ` · 📌 <span class="sub">pinned</span>` : ""}`);
+  rows.push(`HP <b>${u.hp}/${u.maxHp}</b>`);
+  if (u.camp) {
+    const cls = DOCTRINE_CLASS[u.camp], overridden = u.overrideUntil > s.tick;
+    rows.push(`Doctrine <span class="${cls}">${u.camp}</span>${overridden ? ` · <span style="color:#ffd76b">OVERRIDE ${u.overrideLabel} (${Math.ceil((u.overrideUntil - s.tick) / 10)}s → reverts)</span>` : ` <span class="sub">(native)</span>`}`);
+  } else rows.push(`<b>Building</b> <span class="sub">— stationary, no doctrine</span>`);
+  rows.push(`Damage <b>${st.dmg}</b> · Range <b>${st.range}</b>${hg ? `<span style="color:#ffd76b"> +${hg}</span>` : ""} · Accuracy <b>${st.accuracy > 0 ? Math.round(st.accuracy * 100) + "%" : "—"}</b>`);
+  rows.push(`Moves every <b>${st.moveEvery}t</b> · Fires every <b>${st.attackEvery}t</b>${st.flying ? ` · <span style="color:#5ab0ff">✈ flying</span>` : ""}${st.stationary ? ` · <span class="sub">stationary</span>` : ""}`);
+  rows.push(`Vision <b>${vision}</b> · Cost <b>${st.cost}</b> · Heading ${u.dx},${u.dy}`);
+  rows.push(`<span class="sub">${ground} · h ${h.toFixed(2)} · @ ${u.x},${u.y}</span>`);
+  readoutEl.innerHTML = rows.join("<br>");
 }
 
 // ---- the 6 commanders: one cohesive bottom strip. Each shows its accumulated MEMORY above

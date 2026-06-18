@@ -19,7 +19,6 @@ const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
 const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 60_000); // wait this long for a human, then fall back to a bot
 const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32 * GRID_SCALE); // buildings must be placed within this many tiles of your base
-const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // invest to claim a neutral artifact
 
 // Date.now() is banned inside the sim, but cooldowns are wall-clock UX, not sim state.
 const epoch0 = Date.now() - Number(process.hrtime.bigint() / 1_000_000n);
@@ -274,15 +273,9 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
 
   if (msg.type === "captureArtifact") {
     const a = g.artifacts.find((a) => a.id === msg.id);
-    if (!a || a.owner !== -1) return; // claim neutral only
-    const p = g.players[player];
-    if (p.resources < CAPTURE_COST) {
-      send(ws, { type: "notice", level: "error", text: `Not enough resources to claim artifact — need ${CAPTURE_COST}, have ${Math.floor(p.resources)}.` });
-      return;
-    }
-    p.resources -= CAPTURE_COST;
-    a.owner = player; a.hp = a.maxHp;
-    send(ws, { type: "notice", level: "info", text: `Artifact claimed — ${a.bonus.label}. Turrets will ring it; defend it!` });
+    if (!a || a.owner !== -1) return; // neutral only
+    g.players[player].rally = { x: a.x, y: a.y, until: g.tick + 40 * TICK_HZ }; // send forces to channel the capture
+    send(ws, { type: "notice", level: "info", text: `Capturing ${a.bonus.label} — a builder must channel on it for a few seconds.` });
     return;
   }
 
