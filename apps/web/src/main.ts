@@ -538,115 +538,155 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
   const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
-  // natural materials; team color only for accents (lit windows / lights / trim / flag / field)
-  const concrete = 0x646973, conc2 = 0x70757f, steel = 0x474d57, steelDk = 0x2b3038, deckC = 0x3a3f48, pad = 0x1c2026, mark = 0xd2d8de;
-  const lit = tint(team, 0.45);
+  // natural materials; team color only for accents (lit windows / lights / neon edges / flag / field)
+  const concrete = 0x646973, conc2 = 0x70757f, steel = 0x474d57, steelDk = 0x2b3038, deckC = 0x3a3f48, deck2 = 0x434956, pad = 0x171b21, mark = 0xd2d8de;
+  const lit = tint(team, 0.5), white = 0xeafffb;
   const pulse = 0.5 + 0.5 * Math.sin(s.tick / 6);
-  const BW = TILE_W * GRID_SCALE, BH = TILE_H * GRID_SCALE;
+  const BW = TILE_W * GRID_SCALE * 1.35, BH = TILE_H * GRID_SCALE * 1.35; // big landmark
 
-  // lit windows following a building's face slant (u across width, v down height)
+  // rim-lit iso cuboid: a shaded box + a glowing team-colored neon outline on its top + near edge
+  const box = (x: number, yBase: number, hw: number, hh: number, h: number, color: number) => {
+    isoBox(g, x, yBase, hw, hh, h, color);
+    const t = yBase - h;
+    g.poly([x, t - hh, x + hw, t, x, t + hh, x - hw, t]).stroke({ color: team, width: 1, alpha: 0.32 }); // top edge neon
+    g.moveTo(x, t + hh).lineTo(x, yBase + hh).stroke({ color: team, width: 1, alpha: 0.2 }); // near vertical edge
+  };
+  // lit windows following a building's face slant — varied (lit / bright / dark)
   const windows = (x: number, t: number, hw: number, hh: number, h: number, rows: number, cols: number, ww = 3, wh = 3.6) => {
     for (let r = 0; r < rows; r++) for (let c = 1; c <= cols; c++) {
-      const u = c / (cols + 1), v = (r + 0.6) / rows, wy = t + hh * (1 - u) + v * h - wh / 2;
-      g.rect(x + u * hw - ww / 2, wy, ww, wh).fill({ color: lit, alpha: 0.5 + 0.4 * ((r + c) & 1) }); // right face
-      g.rect(x - u * hw - ww / 2, wy, ww, wh).fill({ color: lit, alpha: 0.3 + 0.25 * ((r + c) & 1) }); // left face (shaded)
+      const u = c / (cols + 1), v = (r + 0.6) / rows, wy = t + hh * (1 - u) + v * h - wh / 2, m = (r * 5 + c * 3) % 7;
+      const col = m === 0 ? white : lit, aR = m >= 5 ? 0.12 : 0.55 + 0.4 * ((r + c) & 1), aL = m >= 5 ? 0.08 : 0.32 + 0.25 * ((r + c) & 1);
+      g.rect(x + u * hw - ww / 2, wy, ww, wh).fill({ color: col, alpha: aR });
+      g.rect(x - u * hw - ww / 2, wy, ww, wh).fill({ color: col, alpha: aL });
     }
   };
   const building = (x: number, y: number, hw: number, hh: number, h: number, rows: number, cols: number, col = concrete) => {
-    isoBox(g, x, y, hw, hh, h, col);
+    box(x, y, hw, hh, h, col);
     windows(x, y - h, hw, hh, h, rows, cols);
   };
-  // hemisphere dome via stacked ellipses (lit toward the top), accent base ring + apex light
+  // hemisphere dome via stacked ellipses (lit top), neon base ring + meridian + perimeter lights
   const dome = (x: number, y: number, r: number) => {
     g.ellipse(x, y + 1.5, r * 1.05, r * 0.55).fill({ color: 0x000000, alpha: 0.22 });
-    const N = 8;
-    for (let i = 0; i < N; i++) { const t0 = i / N; g.ellipse(x, y - t0 * r * 0.9, r * Math.cos(t0 * Math.PI / 2), r * Math.cos(t0 * Math.PI / 2) * 0.5).fill(tint(concrete, -0.06 + t0 * 0.24)); }
-    g.ellipse(x, y, r, r * 0.5).stroke({ color: team, width: 1, alpha: 0.4 });
-    g.circle(x, y - r * 0.86, 1.6).fill({ color: team, alpha: 0.5 + 0.5 * pulse });
+    for (let i = 0; i < 9; i++) { const t0 = i / 9, rr = r * Math.cos(t0 * Math.PI / 2); g.ellipse(x, y - t0 * r * 0.92, rr, rr * 0.5).fill(tint(concrete, -0.07 + t0 * 0.26)); }
+    g.rect(x - 0.7, y - r * 0.92, 1.4, r * 0.92).fill({ color: team, alpha: 0.3 }); // meridian glow
+    g.ellipse(x, y, r, r * 0.5).stroke({ color: team, width: 1.2, alpha: 0.5 });
+    for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; g.circle(x + Math.cos(a) * r, y + Math.sin(a) * r * 0.5, 0.9).fill({ color: team, alpha: 0.6 }); }
+    g.circle(x, y - r * 0.88, 1.8).fill({ color: team, alpha: 0.5 + 0.5 * pulse });
   };
-  // guard tower: body + flush overhanging steel cap + beacon + slit windows
-  const tower = (x: number, y: number, h: number) => {
-    isoBox(g, x, y, BW * 0.4, BH * 0.4, h, concrete);
+  // tall chunky corner bastion: body + flush cap + beacon + windows
+  const bastion = (x: number, y: number, h: number) => {
+    box(x, y, BW * 0.5, BH * 0.5, h, concrete);
     const t = y - h;
-    isoBox(g, x, t + BH * 0.4, BW * 0.52, BH * 0.52, BH * 0.62, steel); // observation cap (sits on body top)
-    windows(x, t, BW * 0.4, BH * 0.4, h, 2, 1, 2.2, 3);
-    g.circle(x, t - BH * 0.45, 1.6).fill({ color: team, alpha: 0.5 + 0.5 * pulse }); // beacon
+    box(x, t + BH * 0.5, BW * 0.62, BH * 0.62, BH * 0.7, steel); // overhanging battlement cap
+    windows(x, t, BW * 0.5, BH * 0.5, h, 3, 2, 2.4, 3);
+    g.circle(x, t - BH * 0.55, 1.8).fill({ color: team, alpha: 0.5 + 0.5 * pulse });
   };
-  // satellite dish: pedestal → arm → parabolic face → feed horn
-  const dish = (x: number, y: number) => {
-    isoBox(g, x, y, BW * 0.3, BH * 0.3, BH * 0.9, steel);
-    const my = y - BH * 0.9;
-    g.rect(x - 1.6, my - 8, 3.2, 10).fill(steel);
-    g.ellipse(x + 7, my - 12, 12, 8).fill(conc2).stroke({ color: team, width: 1.4, alpha: 0.6 });
-    g.ellipse(x + 7, my - 12, 8, 5.2).fill(tint(concrete, -0.22));
-    g.ellipse(x + 7, my - 12, 3.4, 2.2).fill(steelDk);
-    g.moveTo(x + 7, my - 12).lineTo(x + 15, my - 18).stroke({ color: steel, width: 1.6 });
-    g.circle(x + 15, my - 18, 2).fill({ color: team, alpha: 0.55 + 0.45 * pulse });
+  const dish = (x: number, y: number, sz = 1) => { // satellite dish on a pedestal
+    box(x, y, BW * 0.32, BH * 0.32, BH * 0.95, steel);
+    const my = y - BH * 0.95;
+    g.rect(x - 1.8 * sz, my - 9 * sz, 3.6 * sz, 12 * sz).fill(steel);
+    g.ellipse(x + 8 * sz, my - 13 * sz, 14 * sz, 9 * sz).fill(conc2).stroke({ color: team, width: 1.5, alpha: 0.6 });
+    g.ellipse(x + 8 * sz, my - 13 * sz, 9.5 * sz, 6 * sz).fill(tint(concrete, -0.22));
+    g.ellipse(x + 8 * sz, my - 13 * sz, 4 * sz, 2.6 * sz).fill(steelDk);
+    g.moveTo(x + 8 * sz, my - 13 * sz).lineTo(x + 17 * sz, my - 20 * sz).stroke({ color: steel, width: 1.8 });
+    g.circle(x + 17 * sz, my - 20 * sz, 2.2).fill({ color: team, alpha: 0.55 + 0.45 * pulse });
   };
-  // cylindrical storage / fuel tank with a hazard band (accent)
-  const tank = (x: number, y: number, r: number, h: number) => {
+  const tank = (x: number, y: number, r: number, h: number) => { // cylindrical storage w/ hazard band
     g.ellipse(x, y, r, r * 0.5).fill({ color: 0x000000, alpha: 0.22 });
     g.rect(x - r, y - h, r * 2, h).fill(conc2);
-    g.rect(x - r, y - h, r * 0.55, h).fill(tint(conc2, 0.1)); g.rect(x + r * 0.45, y - h, r * 0.55, h).fill(tint(conc2, -0.2)); // lit/shaded edges
-    g.rect(x - r, y - h * 0.55, r * 2, 1.8).fill({ color: team, alpha: 0.32 }); // hazard band
-    g.ellipse(x, y - h, r, r * 0.5).fill(tint(conc2, 0.18)).stroke({ color: team, width: 1, alpha: 0.4 }); // lit top
+    g.rect(x - r, y - h, r * 0.55, h).fill(tint(conc2, 0.12)); g.rect(x + r * 0.45, y - h, r * 0.55, h).fill(tint(conc2, -0.22));
+    g.rect(x - r, y - h * 0.55, r * 2, 1.8).fill({ color: team, alpha: 0.32 });
+    g.ellipse(x, y - h, r, r * 0.5).fill(tint(conc2, 0.2)).stroke({ color: team, width: 1, alpha: 0.45 });
+  };
+  const cooling = (x: number, y: number, r: number, h: number) => { // tapered cooling tower w/ glowing vent
+    g.ellipse(x, y, r, r * 0.5).fill({ color: 0x000000, alpha: 0.22 });
+    g.poly([x - r, y, x - r * 0.62, y - h, x + r * 0.62, y - h, x + r, y]).fill(conc2); // tapered body
+    g.poly([x - r, y, x - r * 0.62, y - h, x - r * 0.22, y - h, x - r * 0.4, y]).fill(tint(conc2, 0.12)); // lit edge
+    g.ellipse(x, y - h, r * 0.62, r * 0.31).fill(steelDk).stroke({ color: team, width: 1.2, alpha: 0.6 }); // glowing vent
+    g.ellipse(x, y - h - 3, r * 0.5, r * 0.25).fill({ color: team, alpha: 0.12 + 0.08 * pulse }); // steam glow
+  };
+  const radarArray = (x: number, y: number) => { // 3 small dishes on a low frame
+    box(x, y, BW * 0.7, BH * 0.7, BH * 0.5, steel);
+    const ry = y - BH * 0.5;
+    for (const ox of [-BW * 0.42, 0, BW * 0.42]) { g.rect(x + ox - 0.8, ry - 7, 1.6, 7).fill(steel); g.ellipse(x + ox + 2, ry - 8, 5, 3.2).fill(conc2).stroke({ color: team, width: 1, alpha: 0.6 }); g.ellipse(x + ox + 2, ry - 8, 2, 1.3).fill(steelDk); }
   };
   const antenna = (x: number, y: number, h: number) => {
-    g.moveTo(x, y - h).lineTo(x - 8, y).stroke({ color: steel, width: 0.7, alpha: 0.5 });
-    g.moveTo(x, y - h).lineTo(x + 8, y).stroke({ color: steel, width: 0.7, alpha: 0.5 });
-    g.rect(x - 0.9, y - h, 1.8, h).fill(steel);
-    g.circle(x, y - h, 1.8).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
+    g.moveTo(x, y - h).lineTo(x - 9, y).stroke({ color: steel, width: 0.8, alpha: 0.5 });
+    g.moveTo(x, y - h).lineTo(x + 9, y).stroke({ color: steel, width: 0.8, alpha: 0.5 });
+    g.rect(x - 1, y - h, 2, h).fill(steel);
+    for (let i = 1; i <= 3; i++) g.moveTo(x - 3, y - h * i / 3.5).lineTo(x + 3, y - h * i / 3.5).stroke({ color: steel, width: 1, alpha: 0.6 }); // crossbars
+    g.circle(x, y - h, 2).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
   };
-  const helipad = (x: number, y: number, rw: number, rh: number) => { // a rooftop landing pad
-    const sc = rw / (BW * 1.0); // scale the markings to the pad size
+  const chopper = (x: number, y: number) => { // parked helicopter silhouette
+    g.ellipse(x, y - 2, 11, 4).fill({ color: team, alpha: 0.12 + 0.06 * pulse }); // rotor wash disc
+    g.ellipse(x, y - 3, 5.5, 3).fill(steel); // body
+    g.rect(x + 3, y - 4, 9, 1.6).fill(steel); // tail boom
+    g.rect(x + 11, y - 6, 1.4, 4).fill(steel); // tail fin
+    g.rect(x - 8, y - 3.6, 16, 1).fill({ color: mark, alpha: 0.5 }); // rotor blades
+    g.circle(x, y - 3.6, 1).fill(team); // hub
+  };
+  const helipad = (x: number, y: number, rw: number, rh: number) => {
+    const sc = rw / (BW * 1.0);
     g.ellipse(x, y, rw, rh).fill(pad);
-    g.ellipse(x, y, rw, rh).stroke({ color: team, width: 1.5, alpha: 0.55 });
+    g.ellipse(x, y, rw, rh).stroke({ color: team, width: 1.6, alpha: 0.6 });
     g.ellipse(x, y, rw * 0.78, rh * 0.78).stroke({ color: mark, width: 1, alpha: 0.4 });
     g.rect(x - 5.5 * sc, y - 6 * sc, 2 * sc, 12 * sc).fill(mark); g.rect(x + 3.5 * sc, y - 6 * sc, 2 * sc, 12 * sc).fill(mark); g.rect(x - 5.5 * sc, y - 1 * sc, 9 * sc, 2 * sc).fill(mark); // "H"
-    for (const [hx, hy] of [[-rw * 0.85, 0], [rw * 0.85, 0], [0, -rh * 0.85], [0, rh * 0.85]] as [number, number][]) g.circle(x + hx, y + hy, 1.3).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
+    for (const [hx, hy] of [[-rw * 0.85, 0], [rw * 0.85, 0], [0, -rh * 0.85], [0, rh * 0.85]] as [number, number][]) g.circle(x + hx, y + hy, 1.4).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
   };
 
-  // ---- shadow + energy field (accent glow) ----
-  g.ellipse(cx, cy + BH * 1.7, BW * 4.0, BH * 2.7).fill({ color: 0x000000, alpha: 0.34 });
-  g.ellipse(cx, cy + BH * 1.5, BW * 4.6, BH * 3.2).fill({ color: team, alpha: 0.10 });
+  // ---- shadow + energy field (layered glow + a pulsing scan ring) ----
+  g.ellipse(cx, cy + BH * 1.9, BW * 4.4, BH * 3.0).fill({ color: 0x000000, alpha: 0.34 });
+  g.ellipse(cx, cy + BH * 1.7, BW * 4.8, BH * 3.4).fill({ color: team, alpha: 0.07 });
+  g.ellipse(cx, cy + BH * 1.7, BW * 4.0, BH * 2.8).fill({ color: team, alpha: 0.07 });
+  g.ellipse(cx, cy + BH * 1.7, BW * (3.6 + 0.6 * pulse), BH * (2.5 + 0.42 * pulse)).stroke({ color: team, width: 1.5, alpha: 0.22 * (1 - pulse) + 0.05 });
 
-  // ---- stepped concrete deck (base slab + raised inner platform w/ accent rim) ----
-  isoBox(g, cx, cy + BH * 1.85, BW * 3.2, BH * 3.2, BH * 0.55, steelDk);
-  isoBox(g, cx, cy + BH * 1.6, BW * 2.85, BH * 2.85, BH * 0.5, deckC);
-  const dT = (cy + BH * 1.6) - BH * 0.5;
-  g.poly([cx, dT - BH * 2.85, cx + BW * 2.85, dT, cx, dT + BH * 2.85, cx - BW * 2.85, dT]).stroke({ color: team, width: 1, alpha: 0.22 });
+  // ---- stepped concrete deck (3 tiers) with neon rim + runway lights ----
+  isoBox(g, cx, cy + BH * 2.05, BW * 3.5, BH * 3.5, BH * 0.5, steelDk);
+  isoBox(g, cx, cy + BH * 1.8, BW * 3.15, BH * 3.15, BH * 0.5, deckC);
+  isoBox(g, cx, cy + BH * 1.55, BW * 2.8, BH * 2.8, BH * 0.45, deck2);
+  const dT = (cy + BH * 1.55) - BH * 0.45, PW = BW * 2.8, PH = BH * 2.8;
+  g.poly([cx, dT - PH, cx + PW, dT, cx, dT + PH, cx - PW, dT]).stroke({ color: team, width: 1.2, alpha: 0.3 }); // deck neon rim
+  for (let i = 1; i < 9; i++) { const t = i / 9; // runway lights along the two front edges
+    g.circle(cx + PW * (1 - t), dT + PH * t, 1).fill({ color: team, alpha: 0.5 });
+    g.circle(cx - PW * (1 - t), dT + PH * t, 1).fill({ color: team, alpha: 0.5 });
+  }
 
-  // ===== structures, back (up-screen) → front =====
-  dish(cx - BW * 1.0, cy - BH * 0.6);
-  dome(cx + BW * 1.1, cy - BH * 0.55, BW * 0.8); // radar dome
-  antenna(cx + BW * 1.25, cy + BH * 0.1, BH * 4.6);
-  tower(cx - BW * 2.4, cy - BH * 0.05, BH * 3.4);
-  tower(cx + BW * 2.4, cy - BH * 0.05, BH * 3.4);
-  building(cx - BW * 1.85, cy + BH * 0.7, BW * 1.05, BH * 1.05, BH * 2.0, 2, 3); // left air-control building (wide flat roof)
-  helipad(cx - BW * 1.85, (cy + BH * 0.7) - BH * 2.0, BW * 0.92, BH * 0.92); // helipad ON the roof
-  building(cx + BW * 1.8, cy + BH * 0.55, BW * 0.8, BH * 0.8, BH * 2.4, 3, 2); // right lab block
-  dome(cx + BW * 1.8, cy + BH * 0.55 - BH * 2.4, BW * 0.55); // dome atop the lab
+  // ===== structures: back (up-screen) → front =====
+  radarArray(cx - BW * 1.1, cy - BH * 0.7);
+  cooling(cx + BW * 0.7, cy - BH * 0.7, BW * 0.4, BH * 1.7);
+  cooling(cx + BW * 1.35, cy - BH * 0.5, BW * 0.36, BH * 1.5);
+  dome(cx + BW * 1.95, cy - BH * 0.2, BW * 0.7); // reactor dome
+  antenna(cx - BW * 0.2, cy - BH * 0.9, BH * 5.4);
+  bastion(cx - BW * 2.55, cy - BH * 0.1, BH * 4.0);
+  bastion(cx + BW * 2.55, cy - BH * 0.1, BH * 4.0);
+  building(cx - BW * 1.9, cy + BH * 0.7, BW * 1.05, BH * 1.05, BH * 2.1, 2, 3); // air-control building
+  helipad(cx - BW * 1.9, (cy + BH * 0.7) - BH * 2.1, BW * 0.92, BH * 0.92);
+  chopper(cx - BW * 1.9, (cy + BH * 0.7) - BH * 2.1 - 1);
+  building(cx + BW * 1.85, cy + BH * 0.6, BW * 0.82, BH * 0.82, BH * 2.5, 3, 2); // lab block
+  dome(cx + BW * 1.85, cy + BH * 0.6 - BH * 2.5, BW * 0.55);
 
-  // central tiered HQ (3 stepped tiers)
-  const hqY = cy + BH * 0.9;
-  isoBox(g, cx, hqY, BW * 1.25, BH * 1.25, BH * 2.4, concrete); windows(cx, hqY - BH * 2.4, BW * 1.25, BH * 1.25, BH * 2.4, 3, 3);
-  const y2 = hqY - BH * 2.4; isoBox(g, cx, y2, BW * 0.92, BH * 0.92, BH * 2.0, conc2); windows(cx, y2 - BH * 2.0, BW * 0.92, BH * 0.92, BH * 2.0, 3, 2);
-  const y3 = y2 - BH * 2.0; isoBox(g, cx, y3, BW * 0.58, BH * 0.58, BH * 1.3, tint(conc2, 0.06)); windows(cx, y3 - BH * 1.3, BW * 0.58, BH * 0.58, BH * 1.3, 2, 1);
-  const top = y3 - BH * 1.3;
-  g.rect(cx - 1.2, top - 24, 2.4, 24).fill(0xcfd8e3); // flag pole
-  g.poly([cx + 1.2, top - 24, cx + 18, top - 18, cx + 1.2, top - 12]).fill(tint(team, 0.4)); // banner
-  g.circle(cx, top, 2.4).fill({ color: team, alpha: 0.6 + 0.4 * pulse }); // rooftop beacon
+  // central tiered HQ spire (4 stepped tiers + flag)
+  const hqY = cy + BH * 1.0;
+  box(cx, hqY, BW * 1.35, BH * 1.35, BH * 2.5, concrete); windows(cx, hqY - BH * 2.5, BW * 1.35, BH * 1.35, BH * 2.5, 4, 3);
+  const y2 = hqY - BH * 2.5; box(cx, y2, BW * 1.02, BH * 1.02, BH * 2.2, conc2); windows(cx, y2 - BH * 2.2, BW * 1.02, BH * 1.02, BH * 2.2, 3, 3);
+  const y3 = y2 - BH * 2.2; box(cx, y3, BW * 0.7, BH * 0.7, BH * 1.8, tint(conc2, 0.05)); windows(cx, y3 - BH * 1.8, BW * 0.7, BH * 0.7, BH * 1.8, 3, 2);
+  const y4 = y3 - BH * 1.8; box(cx, y4, BW * 0.42, BH * 0.42, BH * 1.2, tint(conc2, 0.1)); windows(cx, y4 - BH * 1.2, BW * 0.42, BH * 0.42, BH * 1.2, 2, 1);
+  const top = y4 - BH * 1.2;
+  g.rect(cx - 1.4, top - 28, 2.8, 28).fill(0xcfd8e3); // flag pole
+  g.poly([cx + 1.4, top - 28, cx + 22, top - 21, cx + 1.4, top - 14]).fill(tint(team, 0.4)); // banner
+  g.circle(cx, top, 2.6).fill({ color: team, alpha: 0.6 + 0.4 * pulse }); g.circle(cx, top, 6).fill({ color: team, alpha: 0.12 }); // beacon + glow
 
   // ---- front row (drawn last so it overlaps) ----
-  tank(cx + BW * 1.55, cy + BH * 1.95, BW * 0.42, BH * 1.5);
-  tank(cx + BW * 2.15, cy + BH * 1.75, BW * 0.34, BH * 1.15);
-  tank(cx - BW * 1.5, cy + BH * 2.0, BW * 0.38, BH * 1.3); // moved fuel storage onto the freed ground spot
-  tower(cx - BW * 2.3, cy + BH * 1.55, BH * 3.0);
-  tower(cx + BW * 2.3, cy + BH * 1.55, BH * 3.0);
+  dish(cx - BW * 0.6, cy + BH * 1.7, 0.85);
+  tank(cx + BW * 1.5, cy + BH * 2.05, BW * 0.44, BH * 1.6);
+  tank(cx + BW * 2.1, cy + BH * 1.85, BW * 0.36, BH * 1.25);
+  tank(cx + BW * 1.95, cy + BH * 2.3, BW * 0.32, BH * 1.05);
+  bastion(cx - BW * 2.5, cy + BH * 1.75, BH * 3.4);
+  bastion(cx + BW * 2.5, cy + BH * 1.75, BH * 3.4);
 
-  // ---- hp bar above the HQ ----
-  g.rect(cx - BW, top - 36, BW * 2, 4).fill({ color: 0x000000, alpha: 0.4 });
-  g.rect(cx - BW, top - 36, (b.hp / b.maxHp) * BW * 2, 4).fill(team);
+  // ---- hp bar above the spire ----
+  g.rect(cx - BW, top - 40, BW * 2, 4).fill({ color: 0x000000, alpha: 0.4 });
+  g.rect(cx - BW, top - 40, (b.hp / b.maxHp) * BW * 2, 4).fill(team);
   g.zIndex = b.x + b.y;
   return g;
 }
