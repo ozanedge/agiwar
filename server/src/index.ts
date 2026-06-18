@@ -70,7 +70,7 @@ const appendMemory = (cur: string, msg: string): string => {
 // (re)compile one camp general from its full memory → native doctrine spec + unit mix. Cooldown-gated
 // by the caller; this just runs the compile and pushes the result. Used by both the single-camp edit
 // and the broadcast "command" (which recompiles every off-cooldown camp).
-async function recompileCamp(ws: WebSocket, g: GameState, player: number, camp: Camp) {
+async function recompileCamp(ws: WebSocket, g: GameState, player: number, camp: Camp, cooldownMs = COOLDOWN_MS) {
   camp.compiling = true;
   sendOwnCamps(ws, g, player); // reflect "compiling…"
   try {
@@ -82,7 +82,7 @@ async function recompileCamp(ws: WebSocket, g: GameState, player: number, camp: 
     send(ws, { type: "notice", level: "error", text: `${camp.label} retrain failed (${(err as Error).message}).` });
   } finally {
     camp.compiling = false;
-    camp.cooldownUntil = wallClock() + COOLDOWN_MS;
+    camp.cooldownUntil = wallClock() + cooldownMs;
     sendOwnCamps(ws, g, player);
   }
 }
@@ -369,15 +369,14 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     const text = String(msg.text ?? "").trim();
     if (!text) return;
     const p = g.players[player];
-    p.advisor.prompt = appendMemory(p.advisor.prompt, text); room.advisors[player]?.resetGate();
-    p.fieldGeneral.prompt = appendMemory(p.fieldGeneral.prompt, text); room.runners[player]?.resetGate();
+    p.advisor.prompt = appendMemory(p.advisor.prompt, text); room.advisors[player]?.resetGate(); // economy + production mix re-decide next tick
+    p.fieldGeneral.prompt = appendMemory(p.fieldGeneral.prompt, text); room.runners[player]?.resetGate(); // field tactics re-decide next tick
     for (const camp of p.camps) camp.prompt = appendMemory(camp.prompt, text);
     sendOwnCamps(ws, g, player); // memory now visible on every commander card
-    send(ws, { type: "notice", level: "info", text: `Order relayed to all commanders: "${text.length > 70 ? text.slice(0, 70) + "…" : text}"` });
-    const now = wallClock();
-    const deferred = p.camps.filter((c) => now < c.cooldownUntil).length;
-    for (const camp of p.camps) if (now >= camp.cooldownUntil) void recompileCamp(ws, g, player, camp); // off-cooldown camps recompile now (concurrently)
-    if (deferred) send(ws, { type: "notice", level: "info", text: `${deferred} camp${deferred > 1 ? "s" : ""} on cooldown — will apply the order when it lifts.` });
+    send(ws, { type: "notice", level: "info", text: `▸ EXECUTIVE ORDER to all commanders: "${text.length > 70 ? text.slice(0, 70) + "…" : text}"` });
+    // EXECUTIVE ORDER = instant. Every camp general recompiles its doctrine + unit mix RIGHT NOW
+    // (bypassing the cooldown), so production, ratios, and field tactics all shift at once.
+    for (const camp of p.camps) void recompileCamp(ws, g, player, camp, 0);
     return;
   }
 }

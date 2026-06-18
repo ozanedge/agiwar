@@ -129,7 +129,7 @@ export function createFieldGeneral(player: number): FieldGeneralRunner {
   let inFlight = false;
 
   return {
-    resetGate() { lastSig = null; },
+    resetGate() { lastSig = null; lastCallMs = 0; }, // a new order applies NOW: drop the signature gate AND the 30s floor
     maybe(g, apply, notify) {
       if (!ENABLED || inFlight) return;
       const sum = summarize(g, player);

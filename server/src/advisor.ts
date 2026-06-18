@@ -98,7 +98,7 @@ export interface AdvisorRunner {
 export function createAdvisor(player: number): AdvisorRunner {
   let lastSig: string | null = null, lastCallMs = 0, inFlight = false;
   return {
-    resetGate() { lastSig = null; },
+    resetGate() { lastSig = null; lastCallMs = 0; }, // a new order applies NOW: drop the signature gate AND the min-interval floor
     maybe(g, notify, onChange) {
       if (!ENABLED || inFlight) return;
       const sum = summarize(g, player);
