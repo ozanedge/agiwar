@@ -46,7 +46,7 @@ export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "drone", "tur
 // (kind matches the artifact bonus pool, so they stack.) Cost escalates per level.
 export const INVESTMENTS: { kind: ArtifactBonusKind; label: string; amount: number; base: number; effect: string }[] = [
   { kind: "damage", label: "Munitions", amount: 1, base: 120, effect: "+1 dmg" },
-  { kind: "hp", label: "Plating", amount: 5, base: 120, effect: "+5 hp" },
+  { kind: "hp", label: "Health", amount: 5, base: 120, effect: "+5 hp" },
   { kind: "armor", label: "Armor", amount: 1, base: 150, effect: "−1 dmg taken" },
   { kind: "range", label: "Optics", amount: GRID_SCALE, base: 170, effect: "+1 range" },
   { kind: "speed", label: "Engines", amount: 1, base: 160, effect: "+10% speed" },
