@@ -57,12 +57,14 @@ const SOFT_PX = 128;
 const softTex = (() => {
   const c = document.createElement("canvas"); c.width = c.height = SOFT_PX;
   const ctx = c.getContext("2d")!;
-  const grad = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.1, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
-  grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(0.6, "rgba(255,255,255,0.95)"); grad.addColorStop(1, "rgba(255,255,255,0)");
+  const grad = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.06, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
+  // gradual ramp that starts much closer to the center (small solid core, then a long even fade out)
+  grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(0.15, "rgba(255,255,255,0.97)");
+  grad.addColorStop(0.55, "rgba(255,255,255,0.55)"); grad.addColorStop(1, "rgba(255,255,255,0)");
   ctx.fillStyle = grad; ctx.fillRect(0, 0, SOFT_PX, SOFT_PX);
   return Texture.from(c);
 })();
-const FADE = 1.3; // oversize each blob so full sight reaches ~R, then feathers beyond
+const FADE = 1.55; // oversize each blob so sight still reaches ~R despite the long inward fade
 const visScene = new Container(), expScene = new Container(); // off-screen blob scenes (rendered to RTs)
 visScene.scale.set(1 / FOG_RES); expScene.scale.set(1 / FOG_RES);
 const visMaskSprite = new Sprite(), expMaskSprite = new Sprite(); // single-Sprite alpha masks
