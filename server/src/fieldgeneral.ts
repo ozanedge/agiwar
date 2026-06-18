@@ -13,6 +13,7 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import type { DoctrineId, FieldGeneralDecision } from "../../shared/types.js";
 import { visionOf } from "../../shared/units.js";
+import { latestOrder } from "./compiler.js";
 import type { GameState } from "./sim.js";
 
 const ENABLED = (process.env.FIELD_GENERAL ?? "on") !== "off";
@@ -99,7 +100,7 @@ async function decide(summaryText: string, commandStyle: string): Promise<FieldG
     messages: [
       {
         role: "user",
-        content: `Your standing command doctrine:\n"""${commandStyle}"""\n\nBattlefield report:\n${summaryText}\n\nYour order (JSON only):`,
+        content: `Your standing command doctrine (chronological):\n"""${commandStyle}"""\n\nThe commander's MOST RECENT order — weight it heavily; it overrides earlier guidance on conflict:\n"${latestOrder(commandStyle)}"\n\nBattlefield report:\n${summaryText}\n\nYour order (JSON only):`,
       },
     ],
   };

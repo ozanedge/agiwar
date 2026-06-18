@@ -4,6 +4,7 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { INVESTMENTS } from "../../shared/units.js";
 import { GameState, INCOME_PER_TICK, playerBonus } from "./sim.js";
+import { latestOrder } from "./compiler.js";
 
 const ENABLED = (process.env.ADVISOR ?? "on") !== "off";
 const MIN_INTERVAL_MS = Number(process.env.ADVISOR_MIN_INTERVAL_MS ?? 20_000);
@@ -54,7 +55,7 @@ async function decide(summaryText: string, doctrine: string) {
     anthropic_version: "bedrock-2023-05-31",
     max_tokens: 200,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: `Economic doctrine:\n"""${doctrine}"""\n\nEconomic report:\n${summaryText}\n\nYour allocation (JSON only):` }],
+    messages: [{ role: "user", content: `Economic doctrine (chronological):\n"""${doctrine}"""\n\nThe player's MOST RECENT directive — weight it heavily; it overrides earlier notes on conflict:\n"${latestOrder(doctrine)}"\n\nEconomic report:\n${summaryText}\n\nYour allocation (JSON only):` }],
   };
   const res = await bedrock().send(
     new InvokeModelCommand({ modelId: MODEL_ID, contentType: "application/json", accept: "application/json", body: JSON.stringify(body) })

@@ -486,16 +486,16 @@ function syncMorale(s: StateMsg) {
   mboost.disabled = (s.resources ?? 0) < (s.boosterCost ?? Infinity);
 }
 
-// the player's rally/commitment beacon — a pulsing flag forward units concentrate on
+// the player's rally/commitment marker — a flat GROUND reticle (expanding rings + target ticks),
+// no vertical pole, so it never looks like a beam over the spot.
 function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(p.x, p.y, s.seed, s.gridW, s.gridH);
-  const cx = isoX(p.x, p.y), cy = isoY(p.x, p.y) - elev;
-  const pulse = 0.5 + 0.5 * Math.sin(s.tick / 5);
-  g.ellipse(cx, cy + 3, 15 + 6 * pulse, 7.5 + 3 * pulse).stroke({ color: OWN_COLOR, width: 1.6, alpha: 0.3 + 0.45 * pulse });
-  g.rect(cx - 1, cy - 28, 2, 28).fill(OWN_COLOR); // pole
-  g.poly([cx + 1, cy - 28, cx + 15, cy - 22.5, cx + 1, cy - 17]).fill({ color: OWN_COLOR, alpha: 0.92 }); // banner
-  g.circle(cx, cy + 2, 2).fill(OWN_COLOR);
+  const cx = isoX(p.x, p.y), cy = isoY(p.x, p.y) - elev + 2;
+  for (let i = 0; i < 2; i++) { const t = (((s.tick % 30) / 30) + i * 0.5) % 1; const r = 7 + t * 18; g.ellipse(cx, cy, r, r * 0.5).stroke({ color: OWN_COLOR, width: 1.6, alpha: 0.5 * (1 - t) }); } // sonar pulse
+  g.ellipse(cx, cy, 11, 5.5).stroke({ color: OWN_COLOR, width: 1.5, alpha: 0.7 }); // target ring
+  for (const [ox, oy] of [[15, 0], [-15, 0], [0, 7.5], [0, -7.5]] as [number, number][]) g.moveTo(cx + ox, cy + oy).lineTo(cx + ox * 0.55, cy + oy * 0.55).stroke({ color: OWN_COLOR, width: 1.5, alpha: 0.65 }); // reticle ticks
+  g.circle(cx, cy, 2.2).fill({ color: OWN_COLOR, alpha: 0.95 });
   g.zIndex = p.x + p.y;
   return g;
 }
