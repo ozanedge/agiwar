@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
+import { Application, Container, Graphics, RenderTexture, Sprite, Text, Texture } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -47,38 +47,42 @@ const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
 const terrainBright = new Sprite(); // full-bright terrain, revealed (+ feathered) where currently seen
-// SOFT FOG: vision is an ALPHA mask built from radial-gradient sprites (opaque core → transparent
-// edge), so terrain fades elegantly toward the limit of sight instead of a hard cut. The current-
-// vision mask GLIDES: it's rebuilt every frame from the units' EASED positions/radii (pooled sprites,
-// no GC churn) — beautiful soft fade AND smooth motion together.
+// Soft fog: a true ALPHA mask. Radial-gradient blobs (opaque core → transparent edge) are rendered
+// into a RenderTexture, and a SINGLE Sprite of it is used as the terrain mask — a single-Sprite mask
+// is alpha-based in Pixi v8 (a Graphics/Container mask is a hard stencil → rectangles), so terrain
+// fades out smoothly toward the sight limit. The current-vision RT is re-rendered EVERY FRAME from
+// the units' EASED (glide) positions, so the soft shroud glides smoothly instead of snapping at 5Hz.
+const FOG_RES = 3; // fog mask rendered at 1/FOG_RES resolution (smooth blobs don't need full res)
 const SOFT_PX = 128;
 const softTex = (() => {
   const c = document.createElement("canvas"); c.width = c.height = SOFT_PX;
   const ctx = c.getContext("2d")!;
-  const g = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.12, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
-  g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.62, "rgba(255,255,255,0.96)"); g.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, SOFT_PX, SOFT_PX);
+  const grad = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.1, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
+  grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(0.6, "rgba(255,255,255,0.95)"); grad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, SOFT_PX, SOFT_PX);
   return Texture.from(c);
 })();
-const FADE = 1.32; // oversize the soft sprite so full vision reaches ~R, then fades beyond
-const expMask = new Container(); // union of all explored vision (persists; soft sprites)
-const visMask = new Container(); // union of current vision (rebuilt every FRAME from eased positions)
-terrainDim.mask = expMask;
-terrainBright.mask = visMask;
-world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
-function softScale(sp: Sprite, gx: number, gy: number, R: number) {
-  sp.position.set(isoX(gx, gy), isoY(gx, gy));
+const FADE = 1.3; // oversize each blob so full sight reaches ~R, then feathers beyond
+const visScene = new Container(), expScene = new Container(); // off-screen blob scenes (rendered to RTs)
+visScene.scale.set(1 / FOG_RES); expScene.scale.set(1 / FOG_RES);
+const visMaskSprite = new Sprite(), expMaskSprite = new Sprite(); // single-Sprite alpha masks
+let visRT: RenderTexture | null = null, expRT: RenderTexture | null = null, fogOX = 0, fogOY = 0;
+terrainDim.mask = expMaskSprite;
+terrainBright.mask = visMaskSprite;
+world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, visMaskSprite, expMaskSprite);
+function blobScale(sp: Sprite, gx: number, gy: number, R: number) {
+  sp.position.set(isoX(gx, gy) - fogOX, isoY(gx, gy) - fogOY); // world px relative to terrain origin
   sp.scale.set((R * TILE_W * 2 * FADE) / SOFT_PX, (R * TILE_H * 2 * FADE) / SOFT_PX); // iso-squashed disc
 }
-function softVision(gx: number, gy: number, R: number): Sprite {
-  const sp = new Sprite(softTex); sp.anchor.set(0.5); softScale(sp, gx, gy, R); return sp;
+function softBlob(scene: Container, gx: number, gy: number, R: number) {
+  const sp = new Sprite(softTex); sp.anchor.set(0.5); blobScale(sp, gx, gy, R); scene.addChild(sp);
 }
-// reusable pool for the per-frame current-vision mask (gliding) — avoids allocating sprites at 60fps
+// reusable pool for the per-frame current-vision blobs (gliding) — avoids allocating sprites at 60fps
 const visPool: Sprite[] = [];
-function setVisSprite(i: number, gx: number, gy: number, R: number) {
+function setVisBlob(i: number, gx: number, gy: number, R: number) {
   let sp = visPool[i];
-  if (!sp) { sp = new Sprite(softTex); sp.anchor.set(0.5); visPool[i] = sp; visMask.addChild(sp); }
-  sp.visible = true; softScale(sp, gx, gy, R);
+  if (!sp) { sp = new Sprite(softTex); sp.anchor.set(0.5); visPool[i] = sp; visScene.addChild(sp); }
+  sp.visible = true; blobScale(sp, gx, gy, R);
 }
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
@@ -152,13 +156,22 @@ function bakeTerrain(seed: number, W: number, H: number) {
   terrainTex = app.renderer.generateTexture({ target: g, resolution: 1 });
   for (const sp of [terrainDim, terrainBright]) { sp.texture = terrainTex; sp.position.set(b.minX, b.minY); }
   g.destroy();
+  // (re)create the fog-mask RenderTextures sized to the terrain bounds (downscaled by FOG_RES)
+  fogOX = b.minX; fogOY = b.minY;
+  const fw = Math.max(1, Math.ceil(b.width / FOG_RES)), fh = Math.max(1, Math.ceil(b.height / FOG_RES));
+  if (visRT) visRT.destroy(true);
+  if (expRT) expRT.destroy(true);
+  visRT = RenderTexture.create({ width: fw, height: fh });
+  expRT = RenderTexture.create({ width: fw, height: fh });
+  visMaskSprite.texture = visRT; expMaskSprite.texture = expRT;
+  for (const ms of [visMaskSprite, expMaskSprite]) { ms.position.set(b.minX, b.minY); ms.scale.set(FOG_RES); }
 }
 
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
-  for (const c of expMask.removeChildren()) c.destroy();
+  for (const c of expScene.removeChildren()) c.destroy();
   for (const sp of visPool) sp.visible = false;
-  bakeTerrain(seed, W, H);
+  bakeTerrain(seed, W, H); // (re)creates the fog RenderTextures
   terrainKey = `${seed}:${W}:${H}`;
 }
 
@@ -168,29 +181,33 @@ function unitSight(u: StateMsg["units"][number], s: StateMsg): number {
 }
 
 // Current-vision soft mask — rebuilt EVERY FRAME from the units' EASED (glide) positions + eased
-// radii (pooled radial-gradient sprites), so the soft shroud glides smoothly with the units instead
-// of snapping at the 5Hz server rate.
+// radii (pooled radial-gradient blobs), then re-rendered into visRT so the soft shroud GLIDES
+// smoothly with the units instead of snapping at the 5Hz server rate.
 function rebuildVisionMask() {
-  if (!latestState) return;
+  if (!latestState || !visRT) return;
   const s = latestState;
   const vm = modsFor(s.armyDoctrine).visionMult;
   let i = 0;
-  for (const b of s.bases) if (b.owner === s.you) { setVisSprite(i, b.x, b.y, BASE_VISION * vm); i++; }
-  for (const e of unitViews.values()) if (e.u.owner === s.you) { setVisSprite(i, e.gx, e.gy, e.vr); i++; }
+  for (const b of s.bases) if (b.owner === s.you) { setVisBlob(i, b.x, b.y, BASE_VISION * vm); i++; }
+  for (const e of unitViews.values()) if (e.u.owner === s.you) { setVisBlob(i, e.gx, e.gy, e.vr); i++; }
   for (let j = i; j < visPool.length; j++) visPool[j].visible = false;
+  app.renderer.render({ container: visScene, target: visRT, clear: true });
 }
 
-// Explored "memory" mask — grows discretely as you scout (a coarse stamp per new cell).
+// Explored "memory" mask — grows discretely as you scout (a soft blob per new coarse cell, persisted
+// in expRT; only re-rendered when it actually grows).
 function renderFog(s: StateMsg) {
+  if (!expRT) return;
   const vm = modsFor(s.armyDoctrine).visionMult;
+  let grew = false;
   const stamp = (gx: number, gy: number, R: number) => {
     const key = (gx >> 5) * 100003 + (gy >> 5);
     if (exploredCoarse.has(key)) return;
-    exploredCoarse.add(key);
-    expMask.addChild(softVision(gx, gy, R));
+    exploredCoarse.add(key); softBlob(expScene, gx, gy, R); grew = true;
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
   for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, unitSight(u, s));
+  if (grew) app.renderer.render({ container: expScene, target: expRT, clear: true });
 }
 
 // ---- camera (pan + zoom), centered on your base ----
