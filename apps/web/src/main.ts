@@ -538,78 +538,113 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
   const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
-  // natural materials for the structures; team color only for accents (lights/trim/beacons/flag/field)
-  const concrete = 0x5b5f67, steel = 0x444a54, steelDk = 0x2e333b, pad = 0x20252d, mark = 0xccd3da;
-  const lit = tint(team, 0.4); // glowing windows / lights (accent)
+  // natural materials; team color only for accents (lit windows / lights / trim / flag / field)
+  const concrete = 0x646973, conc2 = 0x70757f, steel = 0x474d57, steelDk = 0x2b3038, deckC = 0x3a3f48, pad = 0x1c2026, mark = 0xd2d8de;
+  const lit = tint(team, 0.45);
   const pulse = 0.5 + 0.5 * Math.sin(s.tick / 6);
-  const BW = TILE_W * GRID_SCALE, BH = TILE_H * GRID_SCALE; // ~old tile size (base art kept big)
+  const BW = TILE_W * GRID_SCALE, BH = TILE_H * GRID_SCALE;
 
-  // ---- structure drawers (screen-space, drawn back→front) — grey bodies, team-colored accents ----
-  const tower = (x: number, y: number, h: number) => { // guard tower w/ accent trim + blinker
-    isoBox(g, x, y, BW * 0.42, BH * 0.42, h, concrete);
+  // lit windows following a building's face slant (u across width, v down height)
+  const windows = (x: number, t: number, hw: number, hh: number, h: number, rows: number, cols: number, ww = 3, wh = 3.6) => {
+    for (let r = 0; r < rows; r++) for (let c = 1; c <= cols; c++) {
+      const u = c / (cols + 1), v = (r + 0.6) / rows, wy = t + hh * (1 - u) + v * h - wh / 2;
+      g.rect(x + u * hw - ww / 2, wy, ww, wh).fill({ color: lit, alpha: 0.5 + 0.4 * ((r + c) & 1) }); // right face
+      g.rect(x - u * hw - ww / 2, wy, ww, wh).fill({ color: lit, alpha: 0.3 + 0.25 * ((r + c) & 1) }); // left face (shaded)
+    }
+  };
+  const building = (x: number, y: number, hw: number, hh: number, h: number, rows: number, cols: number, col = concrete) => {
+    isoBox(g, x, y, hw, hh, h, col);
+    windows(x, y - h, hw, hh, h, rows, cols);
+  };
+  // hemisphere dome via stacked ellipses (lit toward the top), accent base ring + apex light
+  const dome = (x: number, y: number, r: number) => {
+    g.ellipse(x, y + 1.5, r * 1.05, r * 0.55).fill({ color: 0x000000, alpha: 0.22 });
+    const N = 8;
+    for (let i = 0; i < N; i++) { const t0 = i / N; g.ellipse(x, y - t0 * r * 0.9, r * Math.cos(t0 * Math.PI / 2), r * Math.cos(t0 * Math.PI / 2) * 0.5).fill(tint(concrete, -0.06 + t0 * 0.24)); }
+    g.ellipse(x, y, r, r * 0.5).stroke({ color: team, width: 1, alpha: 0.4 });
+    g.circle(x, y - r * 0.86, 1.6).fill({ color: team, alpha: 0.5 + 0.5 * pulse });
+  };
+  // guard tower: body + flush overhanging steel cap + beacon + slit windows
+  const tower = (x: number, y: number, h: number) => {
+    isoBox(g, x, y, BW * 0.4, BH * 0.4, h, concrete);
     const t = y - h;
-    g.poly([x, t - BH * 0.6, x + BW * 0.5, t - BH * 0.18, x, t + BH * 0.24, x - BW * 0.5, t - BH * 0.18]).fill(steel).stroke({ color: team, width: 1, alpha: 0.7 }); // steel crown, accent trim
-    g.circle(x, t - BH * 0.3, 1.6).fill({ color: team, alpha: 0.5 + 0.5 * pulse }); // beacon
+    isoBox(g, x, t + BH * 0.4, BW * 0.52, BH * 0.52, BH * 0.62, steel); // observation cap (sits on body top)
+    windows(x, t, BW * 0.4, BH * 0.4, h, 2, 1, 2.2, 3);
+    g.circle(x, t - BH * 0.45, 1.6).fill({ color: team, alpha: 0.5 + 0.5 * pulse }); // beacon
   };
-  const dome = (x: number, y: number, r: number) => { // radar / lab dome (grey, accent band + light)
-    g.ellipse(x, y, r, r * 0.5).fill(steelDk);
-    g.circle(x, y - r * 0.12, r * 0.92).fill(concrete).stroke({ color: team, width: 1, alpha: 0.55 });
-    g.circle(x - r * 0.32, y - r * 0.42, r * 0.3).fill({ color: 0xffffff, alpha: 0.12 });
-    g.circle(x, y - r * 0.12, 1.6).fill({ color: team, alpha: 0.5 + 0.5 * pulse });
+  // satellite dish: pedestal → arm → parabolic face → feed horn
+  const dish = (x: number, y: number) => {
+    isoBox(g, x, y, BW * 0.3, BH * 0.3, BH * 0.9, steel);
+    const my = y - BH * 0.9;
+    g.rect(x - 1.6, my - 8, 3.2, 10).fill(steel);
+    g.ellipse(x + 7, my - 12, 12, 8).fill(conc2).stroke({ color: team, width: 1.4, alpha: 0.6 });
+    g.ellipse(x + 7, my - 12, 8, 5.2).fill(tint(concrete, -0.22));
+    g.ellipse(x + 7, my - 12, 3.4, 2.2).fill(steelDk);
+    g.moveTo(x + 7, my - 12).lineTo(x + 15, my - 18).stroke({ color: steel, width: 1.6 });
+    g.circle(x + 15, my - 18, 2).fill({ color: team, alpha: 0.55 + 0.45 * pulse });
   };
-  const dish = (x: number, y: number) => { // satellite dish on a mast (grey, accent signal)
-    g.rect(x - 1.3, y - 13, 2.6, 13).fill(steel);
-    g.ellipse(x + 4, y - 15, 8.5, 5.4).fill(concrete).stroke({ color: team, width: 1.2, alpha: 0.6 });
-    g.ellipse(x + 4, y - 15, 4.6, 2.9).fill(steelDk);
-    g.moveTo(x + 4, y - 15).lineTo(x + 9, y - 19).stroke({ color: steel, width: 1 });
-    g.circle(x + 9, y - 19, 1.5).fill({ color: team, alpha: 0.55 + 0.45 * pulse });
+  // cylindrical storage / fuel tank with a hazard band (accent)
+  const tank = (x: number, y: number, r: number, h: number) => {
+    g.ellipse(x, y, r, r * 0.5).fill({ color: 0x000000, alpha: 0.22 });
+    g.rect(x - r, y - h, r * 2, h).fill(conc2);
+    g.rect(x - r, y - h, r * 0.55, h).fill(tint(conc2, 0.1)); g.rect(x + r * 0.45, y - h, r * 0.55, h).fill(tint(conc2, -0.2)); // lit/shaded edges
+    g.rect(x - r, y - h * 0.55, r * 2, 1.8).fill({ color: team, alpha: 0.32 }); // hazard band
+    g.ellipse(x, y - h, r, r * 0.5).fill(tint(conc2, 0.18)).stroke({ color: team, width: 1, alpha: 0.4 }); // lit top
   };
-  const antenna = (x: number, y: number, h: number) => { // comm mast w/ guy wires + beacon
+  const antenna = (x: number, y: number, h: number) => {
     g.moveTo(x, y - h).lineTo(x - 8, y).stroke({ color: steel, width: 0.7, alpha: 0.5 });
     g.moveTo(x, y - h).lineTo(x + 8, y).stroke({ color: steel, width: 0.7, alpha: 0.5 });
     g.rect(x - 0.9, y - h, 1.8, h).fill(steel);
     g.circle(x, y - h, 1.8).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
   };
   const helipad = (x: number, y: number) => {
-    g.ellipse(x, y, BW * 0.95, BH * 0.95).fill(pad);
-    g.ellipse(x, y, BW * 0.95, BH * 0.95).stroke({ color: team, width: 1.5, alpha: 0.55 });
-    g.rect(x - 5, y - 5, 1.8, 10).fill(mark); g.rect(x + 3.2, y - 5, 1.8, 10).fill(mark); g.rect(x - 5, y - 0.9, 8.2, 1.8).fill(mark); // "H"
-    for (const [hx, hy] of [[-BW * 0.82, 0], [BW * 0.82, 0], [0, -BH * 0.82], [0, BH * 0.82]] as [number, number][]) g.circle(x + hx, y + hy, 1.2).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
+    g.ellipse(x, y, BW * 1.0, BH * 1.0).fill(pad);
+    g.ellipse(x, y, BW * 1.0, BH * 1.0).stroke({ color: team, width: 1.5, alpha: 0.5 });
+    g.ellipse(x, y, BW * 0.78, BH * 0.78).stroke({ color: mark, width: 1, alpha: 0.4 });
+    g.rect(x - 5.5, y - 6, 2, 12).fill(mark); g.rect(x + 3.5, y - 6, 2, 12).fill(mark); g.rect(x - 5.5, y - 1, 9, 2).fill(mark); // "H"
+    for (const [hx, hy] of [[-BW * 0.85, 0], [BW * 0.85, 0], [0, -BH * 0.85], [0, BH * 0.85]] as [number, number][]) g.circle(x + hx, y + hy, 1.3).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
   };
 
-  // ---- shadow + team energy field (accent glow) ----
-  g.ellipse(cx, cy + BH * 1.5, BW * 3.7, BH * 2.5).fill({ color: 0x000000, alpha: 0.34 });
-  g.ellipse(cx, cy + BH * 1.3, BW * 4.3, BH * 3.0).fill({ color: team, alpha: 0.10 });
+  // ---- shadow + energy field (accent glow) ----
+  g.ellipse(cx, cy + BH * 1.7, BW * 4.0, BH * 2.7).fill({ color: 0x000000, alpha: 0.34 });
+  g.ellipse(cx, cy + BH * 1.5, BW * 4.6, BH * 3.2).fill({ color: team, alpha: 0.10 });
 
-  // ---- compound deck (concrete, faint accent rim) ----
-  isoBox(g, cx, cy + BH * 1.7, BW * 3.0, BH * 3.0, BH * 0.7, steelDk);
+  // ---- stepped concrete deck (base slab + raised inner platform w/ accent rim) ----
+  isoBox(g, cx, cy + BH * 1.85, BW * 3.2, BH * 3.2, BH * 0.55, steelDk);
+  isoBox(g, cx, cy + BH * 1.6, BW * 2.85, BH * 2.85, BH * 0.5, deckC);
+  const dT = (cy + BH * 1.6) - BH * 0.5;
+  g.poly([cx, dT - BH * 2.85, cx + BW * 2.85, dT, cx, dT + BH * 2.85, cx - BW * 2.85, dT]).stroke({ color: team, width: 1, alpha: 0.22 });
 
-  // ---- back row (up-screen, drawn first) ----
-  dish(cx - BW * 1.6, cy - BH * 0.4);
-  antenna(cx + BW * 1.9, cy - BH * 0.7, BH * 4.2);
-  dome(cx + BW * 0.6, cy - BH * 1.0, BW * 0.85); // radar dome
-  tower(cx - BW * 2.1, cy - BH * 0.2, BH * 3.2);
-  tower(cx + BW * 2.1, cy - BH * 0.2, BH * 3.2);
+  // ===== structures, back (up-screen) → front =====
+  dish(cx - BW * 1.0, cy - BH * 0.6);
+  dome(cx + BW * 1.1, cy - BH * 0.55, BW * 0.8); // radar dome
+  antenna(cx + BW * 1.25, cy + BH * 0.1, BH * 4.6);
+  tower(cx - BW * 2.4, cy - BH * 0.05, BH * 3.4);
+  tower(cx + BW * 2.4, cy - BH * 0.05, BH * 3.4);
+  building(cx - BW * 1.8, cy + BH * 0.55, BW * 0.8, BH * 0.8, BH * 2.6, 3, 2); // left barracks
+  building(cx + BW * 1.8, cy + BH * 0.55, BW * 0.8, BH * 0.8, BH * 2.4, 3, 2); // right lab block
+  dome(cx + BW * 1.8, cy + BH * 0.55 - BH * 2.4, BW * 0.55); // dome atop the lab
 
-  // ---- central command keep (concrete tower, team-lit windows + flag + beacon) ----
-  const keepH = BH * 5.0, keepY = cy + BH * 0.5;
-  isoBox(g, cx, keepY, BW * 1.05, BH * 1.05, keepH, concrete);
-  const top = keepY - keepH;
-  g.rect(cx - 1, top, 2, keepH).fill({ color: team, alpha: 0.4 }); // accent trim stripe up the edge
-  for (let r = 0; r < 4; r++) { g.rect(cx - BW * 0.62, top + BH * 0.9 + r * BH * 0.95, 4.5, 5.5).fill({ color: lit, alpha: 0.9 }); g.rect(cx + BW * 0.22, top + BH * 0.9 + r * BH * 0.95, 4.5, 5.5).fill({ color: lit, alpha: 0.9 }); }
-  g.rect(cx - 1.1, top - 22, 2.2, 22).fill(0xcfd8e3); // flag pole
-  g.poly([cx + 1, top - 22, cx + 17, top - 16.5, cx + 1, top - 11]).fill(tint(team, 0.4)); // banner (accent)
-  g.circle(cx, top - 1, 2.2).fill({ color: team, alpha: 0.6 + 0.4 * pulse }); // rooftop beacon
+  // central tiered HQ (3 stepped tiers)
+  const hqY = cy + BH * 0.9;
+  isoBox(g, cx, hqY, BW * 1.25, BH * 1.25, BH * 2.4, concrete); windows(cx, hqY - BH * 2.4, BW * 1.25, BH * 1.25, BH * 2.4, 3, 3);
+  const y2 = hqY - BH * 2.4; isoBox(g, cx, y2, BW * 0.92, BH * 0.92, BH * 2.0, conc2); windows(cx, y2 - BH * 2.0, BW * 0.92, BH * 0.92, BH * 2.0, 3, 2);
+  const y3 = y2 - BH * 2.0; isoBox(g, cx, y3, BW * 0.58, BH * 0.58, BH * 1.3, tint(conc2, 0.06)); windows(cx, y3 - BH * 1.3, BW * 0.58, BH * 0.58, BH * 1.3, 2, 1);
+  const top = y3 - BH * 1.3;
+  g.rect(cx - 1.2, top - 24, 2.4, 24).fill(0xcfd8e3); // flag pole
+  g.poly([cx + 1.2, top - 24, cx + 18, top - 18, cx + 1.2, top - 12]).fill(tint(team, 0.4)); // banner
+  g.circle(cx, top, 2.4).fill({ color: team, alpha: 0.6 + 0.4 * pulse }); // rooftop beacon
 
-  // ---- front row (down-screen, drawn last so it overlaps) ----
-  dome(cx + BW * 1.7, cy + BH * 1.1, BW * 0.7); // lab dome
-  helipad(cx - BW * 1.5, cy + BH * 1.2);
-  tower(cx - BW * 2.0, cy + BH * 1.0, BH * 2.9);
-  tower(cx + BW * 2.0, cy + BH * 1.0, BH * 2.9);
+  // ---- front row (drawn last so it overlaps) ----
+  tank(cx + BW * 1.55, cy + BH * 1.95, BW * 0.42, BH * 1.5);
+  tank(cx + BW * 2.15, cy + BH * 1.75, BW * 0.34, BH * 1.15);
+  helipad(cx - BW * 1.55, cy + BH * 2.0);
+  tower(cx - BW * 2.3, cy + BH * 1.55, BH * 3.0);
+  tower(cx + BW * 2.3, cy + BH * 1.55, BH * 3.0);
 
-  // ---- hp bar above the keep ----
-  g.rect(cx - BW, top - 34, BW * 2, 4).fill({ color: 0x000000, alpha: 0.4 });
-  g.rect(cx - BW, top - 34, (b.hp / b.maxHp) * BW * 2, 4).fill(team);
+  // ---- hp bar above the HQ ----
+  g.rect(cx - BW, top - 36, BW * 2, 4).fill({ color: 0x000000, alpha: 0.4 });
+  g.rect(cx - BW, top - 36, (b.hp / b.maxHp) * BW * 2, 4).fill(team);
   g.zIndex = b.x + b.y;
   return g;
 }
