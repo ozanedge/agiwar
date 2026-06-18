@@ -501,8 +501,16 @@ function decide(g: GameState, u: UnitState) {
     if (intruder) {
       if (enemyDist <= range) atk(enemy!);
       else mv(enemy!.x, enemy!.y);
-    } else if (cheb(u.x, u.y, myBase.x, myBase.y) > leash - 1) {
-      toBase(u.owner);
+    } else {
+      // no intruder: hold a forward GUARD RING in front of the base (toward the enemy), not on top of
+      // it. Each defender takes a slightly different angle across the frontal arc → a spread picket
+      // line. Falls back to walking out there; the occupancy spacing keeps them from stacking.
+      const foe = g.bases.find((b) => b.owner !== u.owner);
+      const guardR = Math.max(2 * GRID_SCALE, Math.round(leash * 0.55));
+      const ang = (foe ? Math.atan2(foe.y - myBase.y, foe.x - myBase.x) : 0) + (hash01(u.id, 7) - 0.5) * 1.5;
+      const gx = Math.max(0, Math.min(GRID_W - 1, Math.round(myBase.x + Math.cos(ang) * guardR)));
+      const gy = Math.max(0, Math.min(GRID_H - 1, Math.round(myBase.y + Math.sin(ang) * guardR)));
+      if (cheb(u.x, u.y, gx, gy) > GRID_SCALE) mv(gx, gy); // march out to / hold the picket
     }
     return;
   }
