@@ -54,7 +54,7 @@ export function stubCompile(prompt: string): BehaviorSpec {
   if (has("recon", "scout", "explore", "roam", "avoid", "evade", "flee", "stealth")) {
     spec = { ...spec, aggression: 0.1, engageRange: 3, retreatHealthPct: 0.6, explorationBias: 0.95, defendRadius: null };
   }
-  if (has("defend", "defensive", "guard", "protect", "perimeter", "hold", "base")) {
+  if (has("defens", "defend", "guard", "protect", "perimeter", "hold", "fortif", "turtle", "wall", "garrison")) {
     spec = { ...spec, aggression: 0.5, engageRange: 8, retreatHealthPct: 0.25, explorationBias: 0.0, defendRadius: 6 };
   }
   // fine-grained nudges
@@ -74,6 +74,37 @@ export function stubMix(prompt: string): Record<string, number> {
   if (has("humvee", "fast", "raid", "harass", "mobile")) mix.humvee = (mix.humvee || 0) + 100;
   if (has("gunner", "infantry", "soldier", "rifle", "troops")) mix.gunner = (mix.gunner || 0) + 100;
   return Object.keys(mix).length ? mix : { gunner: 100 };
+}
+
+/** Deterministic fallback ADVISOR (used when Bedrock is down): maps the player's MOST RECENT order
+ *  to a budget split + per-camp unit mix, so an executive order still visibly moves the economy
+ *  offline. Reads only the latest order line so it overrides the standing doctrine. */
+export function stubAdvise(prompt: string): {
+  attack: number; intel: number; defense: number; builder: number; turret: number;
+  mixes: Record<string, Record<string, number>>; reason: string;
+} {
+  const lines = prompt.split("\n").map((s) => s.replace(/^[•\-\s]+/, "").trim()).filter(Boolean);
+  const latest = (lines[lines.length - 1] ?? "").toLowerCase();
+  const has = (...ws: string[]) => ws.some((w) => latest.includes(w));
+  const hard = has("all ", "only", "everything", "100%", "full", "max", "pure", "nothing but", "!!"); // "go all-in" intent
+  // budget split — pick the dominant doctrine in the order, then bias hard or moderate.
+  let b = { attack: 30, intel: 12, defense: 15, builder: 10, turret: 10 };
+  if (has("defens", "defend", "turtle", "fortif", "hold the", "protect", "guard", "wall", "garrison")) {
+    b = hard ? { attack: 0, intel: 0, defense: 85, builder: 0, turret: 15 } : { attack: 12, intel: 8, defense: 52, builder: 8, turret: 20 };
+  } else if (has("attack", "aggress", "offens", "rush", "assault", "push", "strike", "siege", "overwhelm", "blitz")) {
+    b = hard ? { attack: 90, intel: 8, defense: 2, builder: 0, turret: 0 } : { attack: 58, intel: 10, defense: 12, builder: 10, turret: 10 };
+  } else if (has("recon", "scout", "intel", "spot", "surveil", "vision", "eyes", "map")) {
+    b = hard ? { attack: 12, intel: 73, defense: 5, builder: 10, turret: 0 } : { attack: 25, intel: 40, defense: 10, builder: 15, turret: 10 };
+  } else if (has("eco", "econom", "expand", "artifact", "boom", "greed", "engineer", "income", "build up")) {
+    b = hard ? { attack: 8, intel: 8, defense: 6, builder: 68, turret: 10 } : { attack: 20, intel: 12, defense: 12, builder: 45, turret: 11 };
+  }
+  // unit mix — if the order names a unit type, set EVERY camp to it (covers "ALL DEFENSE TANKS").
+  const mixes: Record<string, Record<string, number>> = {};
+  if (has("tank", "armor", "heavy", "humvee", "fast", "raid", "drone", "scout", "gunner", "infantry", "soldier", "rifle", "troops", "siege", "harass")) {
+    const u = stubMix(latest);
+    for (const c of ["aggressive", "recon", "defensive", "builder"]) mixes[c] = { ...u };
+  }
+  return { ...b, mixes, reason: "offline (no LLM)" };
 }
 
 /** The JSON contract handed to the LLM. Kept here so server + docs stay in sync. */

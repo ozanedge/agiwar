@@ -3,6 +3,7 @@
 // the current economy, then sets the budget allocation and buys investments.
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { INVESTMENTS, TRAINABLE, UnitType } from "../../shared/units.js";
+import { stubAdvise } from "../../shared/spec.js";
 import { GameState, INCOME_PER_TICK, playerBonus } from "./sim.js";
 import { latestOrder } from "./compiler.js";
 
@@ -58,36 +59,44 @@ function summarize(g: GameState, player: number): Summary {
 
 const clampPct = (n: any) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
 
-async function decide(summaryText: string, doctrine: string) {
-  const body = {
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 200,
-    system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: `Economic doctrine (chronological):\n"""${doctrine}"""\n\nThe player's MOST RECENT directive — weight it heavily; it overrides earlier notes on conflict:\n"${latestOrder(doctrine)}"\n\nEconomic report:\n${summaryText}\n\nYour allocation (JSON only):` }],
-  };
-  const res = await bedrock().send(
-    new InvokeModelCommand({ modelId: MODEL_ID, contentType: "application/json", accept: "application/json", body: JSON.stringify(body) })
-  );
-  const decoded = JSON.parse(new TextDecoder().decode(res.body));
-  const t: string = decoded?.content?.[0]?.text ?? "";
-  const raw = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-  // PER-CAMP unit mix: each budget is its own camp that can train any unit type independently
-  const CAMP_OF: Record<string, string> = { attack: "aggressive", intel: "recon", defense: "defensive", builder: "builder" };
-  const mixes: Record<string, Partial<Record<UnitType, number>>> = {};
-  if (raw.mix && typeof raw.mix === "object") {
-    for (const key of Object.keys(CAMP_OF)) {
-      const mm = (raw.mix as any)[key];
-      if (!mm || typeof mm !== "object") continue;
-      const m: Partial<Record<UnitType, number>> = {}; let tot = 0;
-      for (const u of TRAINABLE) { const w = Math.max(0, Math.round(Number(mm[u]) || 0)); if (w > 0) { m[u] = w; tot += w; } }
-      if (tot > 0) mixes[CAMP_OF[key]] = m;
+interface Allocation { attack: number; intel: number; defense: number; builder: number; turret: number; mixes: Record<string, Record<string, number>>; reason: string; }
+
+async function decide(summaryText: string, doctrine: string): Promise<Allocation> {
+  try {
+    const body = {
+      anthropic_version: "bedrock-2023-05-31",
+      max_tokens: 200,
+      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: `Economic doctrine (chronological):\n"""${doctrine}"""\n\nThe player's MOST RECENT directive — weight it heavily; it overrides earlier notes on conflict:\n"${latestOrder(doctrine)}"\n\nEconomic report:\n${summaryText}\n\nYour allocation (JSON only):` }],
+    };
+    const res = await bedrock().send(
+      new InvokeModelCommand({ modelId: MODEL_ID, contentType: "application/json", accept: "application/json", body: JSON.stringify(body) })
+    );
+    const decoded = JSON.parse(new TextDecoder().decode(res.body));
+    const t: string = decoded?.content?.[0]?.text ?? "";
+    const raw = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
+    // PER-CAMP unit mix: each budget is its own camp that can train any unit type independently
+    const CAMP_OF: Record<string, string> = { attack: "aggressive", intel: "recon", defense: "defensive", builder: "builder" };
+    const mixes: Record<string, Record<string, number>> = {};
+    if (raw.mix && typeof raw.mix === "object") {
+      for (const key of Object.keys(CAMP_OF)) {
+        const mm = (raw.mix as any)[key];
+        if (!mm || typeof mm !== "object") continue;
+        const m: Record<string, number> = {}; let tot = 0;
+        for (const u of TRAINABLE) { const w = Math.max(0, Math.round(Number(mm[u]) || 0)); if (w > 0) { m[u] = w; tot += w; } }
+        if (tot > 0) mixes[CAMP_OF[key]] = m;
+      }
     }
+    return {
+      attack: clampPct(raw.attack), intel: clampPct(raw.intel), defense: clampPct(raw.defense),
+      builder: clampPct(raw.builder), turret: clampPct(raw.turret), mixes,
+      reason: typeof raw.reason === "string" ? raw.reason.slice(0, 60) : "",
+    };
+  } catch (err) {
+    // Bedrock down (e.g. no AWS creds) → deterministic offline advisor so orders still move the economy
+    console.warn(`[advisor] Bedrock unavailable, using stub: ${(err as Error).message}`);
+    return stubAdvise(doctrine);
   }
-  return {
-    attack: clampPct(raw.attack), intel: clampPct(raw.intel), defense: clampPct(raw.defense),
-    builder: clampPct(raw.builder), turret: clampPct(raw.turret), mixes,
-    reason: typeof raw.reason === "string" ? raw.reason.slice(0, 60) : "",
-  };
 }
 
 export interface AdvisorRunner {
