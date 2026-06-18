@@ -20,13 +20,17 @@ economy AND set the army's production. Faithfully follow the player's doctrine. 
 {
   "attack": integer 0..100, "intel": integer 0..100, "defense": integer 0..100,
   "builder": integer 0..100, "turret": integer 0..100,   // % of income per budget; rest banks as savings. Keep the sum <= 100.
-  "mix": { "gunner": int, "tank": int, "humvee": int, "drone": int } | null,
+  "mix": { "attack": UNITS|null, "intel": UNITS|null, "defense": UNITS|null, "builder": UNITS|null } | null,
   "reason": "<= 8 words"
 }
-Budgets: attack=offensive units, intel=recon drones, defense=defensive units, builder=engineers that claim artifacts, turret=auto-built defenses.
-"mix" sets the WHOLE ARMY's unit composition (relative weights). USE IT to obey composition orders: \
-"tanks only" => {"tank":100}; "more drones" => boost drone; etc. null = leave each camp's current choice. \
-ALSO bias budgets toward the camp that fields the requested unit (tanks=defense, drones=intel, gunners=attack, humvees=builder).
+where UNITS = { "gunner": int, "tank": int, "humvee": int, "drone": int } (relative weights).
+Each budget is a CAMP (a behavior doctrine) that can train ANY unit type — they are independent. \
+"attack"=aggressive doctrine, "intel"=recon doctrine, "defense"=defensive doctrine, "builder"=engineers (claim artifacts), "turret"=auto-built defenses.
+"mix" sets each camp's unit composition SEPARATELY. Obey composition orders precisely:
+ - "tanks only" => set EVERY camp to {"tank":100}
+ - "attack tanks, intel humvees, defense gunners" => {"attack":{"tank":100},"intel":{"humvee":100},"defense":{"gunner":100}}
+ - "more drones in intel" => {"intel":{"drone":100}}
+Omit a camp to leave it unchanged; mix=null leaves all camps as-is.
 Unit types: gunner=balanced infantry, tank=strong/slow, humvee=fast/weak, drone=unarmed scout (huge vision).`;
 
 interface Summary { text: string; sig: string }
@@ -43,10 +47,11 @@ function summarize(g: GameState, player: number): Summary {
   const budgets = `attack ${camp("aggressive")}% intel ${camp("recon")}% defense ${camp("defensive")}% builder ${camp("builder")}% turret ${p.turretBudget}%`;
   const inv = INVESTMENTS.map((i) => `${i.label} Lv${p.invest[i.kind]}`).join(", ");
   const comp = TRAINABLE.map((u) => `${u} ${own.filter((o) => o.unit === u).length}`).join(", ");
+  const mixStr = (id: string) => { const m = p.camps.find((c) => c.id === id)!.production.mix; const parts = TRAINABLE.filter((u) => m[u]).map((u) => `${u}${m[u]}`); return parts.length ? parts.join("/") : "—"; };
   const text =
     `Banked resources: ${Math.floor(p.resources)}. Income ~${incomeS}/s. Army: ${own.length} units (${comp}). ` +
     `Home base hp: ${baseHp}%. Artifacts held: ${arts} (${neutralArts} unclaimed on map). ` +
-    `Current budgets: ${budgets}. Upgrades: ${inv}.`;
+    `Current budgets: ${budgets}. Current camp production — attack:${mixStr("aggressive")} intel:${mixStr("recon")} defense:${mixStr("defensive")} builder:${mixStr("builder")}. Upgrades: ${inv}.`;
   const sig = [Math.round(p.resources / 200), Math.round(own.length / 4), Math.round(baseHp / 25), arts, Math.min(3, neutralArts)].join("/");
   return { text, sig };
 }
@@ -66,16 +71,21 @@ async function decide(summaryText: string, doctrine: string) {
   const decoded = JSON.parse(new TextDecoder().decode(res.body));
   const t: string = decoded?.content?.[0]?.text ?? "";
   const raw = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-  // army-wide unit mix (weights over trainable types); null if the advisor leaves camps as-is
-  let mix: Partial<Record<UnitType, number>> | null = null;
+  // PER-CAMP unit mix: each budget is its own camp that can train any unit type independently
+  const CAMP_OF: Record<string, string> = { attack: "aggressive", intel: "recon", defense: "defensive", builder: "builder" };
+  const mixes: Record<string, Partial<Record<UnitType, number>>> = {};
   if (raw.mix && typeof raw.mix === "object") {
-    const m: Partial<Record<UnitType, number>> = {}; let tot = 0;
-    for (const u of TRAINABLE) { const w = Math.max(0, Math.round(Number((raw.mix as any)[u]) || 0)); if (w > 0) { m[u] = w; tot += w; } }
-    if (tot > 0) mix = m;
+    for (const key of Object.keys(CAMP_OF)) {
+      const mm = (raw.mix as any)[key];
+      if (!mm || typeof mm !== "object") continue;
+      const m: Partial<Record<UnitType, number>> = {}; let tot = 0;
+      for (const u of TRAINABLE) { const w = Math.max(0, Math.round(Number(mm[u]) || 0)); if (w > 0) { m[u] = w; tot += w; } }
+      if (tot > 0) mixes[CAMP_OF[key]] = m;
+    }
   }
   return {
     attack: clampPct(raw.attack), intel: clampPct(raw.intel), defense: clampPct(raw.defense),
-    builder: clampPct(raw.builder), turret: clampPct(raw.turret), mix,
+    builder: clampPct(raw.builder), turret: clampPct(raw.turret), mixes,
     reason: typeof raw.reason === "string" ? raw.reason.slice(0, 60) : "",
   };
 }
@@ -105,10 +115,12 @@ export function createAdvisor(player: number): AdvisorRunner {
           const set = (id: string, v: number) => { const c = p.camps.find((c) => c.id === id); if (c) c.production.budgetPct = Math.round(v * s); };
           set("aggressive", d.attack); set("recon", d.intel); set("defensive", d.defense); set("builder", d.builder);
           p.turretBudget = Math.round(d.turret * s);
-          // army-wide production: if the advisor chose a mix, retool every camp to it (so a "tanks
-          // only" order actually builds tanks). Upgrades remain the player's call (queued upgrades).
+          // per-camp production: retool any camp the advisor specified (each camp can train any unit
+          // type — "attack tanks, defense gunners" etc). Upgrades remain the player's call.
           let mixNote = "";
-          if (d.mix) { for (const c of p.camps) c.production.mix = { ...d.mix }; mixNote = ` · mix ${TRAINABLE.filter((u) => d.mix![u]).map((u) => u).join("/")}`; }
+          for (const c of p.camps) if (d.mixes[c.id]) c.production.mix = { ...d.mixes[c.id] };
+          const changed = p.camps.filter((c) => d.mixes[c.id]);
+          if (changed.length) mixNote = " · " + changed.map((c) => `${c.id.slice(0, 3)}=${TRAINABLE.filter((u) => d.mixes[c.id]![u]).map((u) => u[0]).join("")}`).join(",");
           notify(`Advisor: A${Math.round(d.attack * s)} I${Math.round(d.intel * s)} D${Math.round(d.defense * s)} B${Math.round(d.builder * s)} T${Math.round(d.turret * s)}${mixNote} — ${d.reason}`);
           onChange(); // push the new allocation to the client's Sankey
         })
