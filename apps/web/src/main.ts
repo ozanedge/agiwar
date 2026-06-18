@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, Sprite, Texture, Text } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -47,29 +47,11 @@ terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
-// Soft fog: vision is an ALPHA mask built from radial-gradient sprites (opaque core → transparent
-// edge), so the terrain fades out elegantly toward the limit of sight instead of a hard cut.
-const SOFT_PX = 128;
-const softTex = (() => {
-  const c = document.createElement("canvas"); c.width = c.height = SOFT_PX;
-  const ctx = c.getContext("2d")!; const g = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.12, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
-  g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.62, "rgba(255,255,255,0.96)"); g.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, SOFT_PX, SOFT_PX);
-  return Texture.from(c);
-})();
-const FADE = 1.32; // oversize the soft sprite so full vision reaches ~R, then fades beyond
-const expMask = new Container(); // union of all explored vision (persists; soft sprites)
-const visMask = new Container(); // union of current vision (rebuilt every tick; soft sprites)
+const expMask = new Graphics(); // union of all explored vision (persists across the match)
+const visMask = new Graphics(); // union of current vision (rebuilt every tick)
 terrainDim.mask = expMask;
 terrainBright.mask = visMask;
 world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
-function softVision(gx: number, gy: number, R: number): Sprite {
-  const sp = new Sprite(softTex);
-  sp.anchor.set(0.5);
-  sp.position.set(isoX(gx, gy), isoY(gx, gy));
-  sp.scale.set((R * TILE_W * 2 * FADE) / SOFT_PX, (R * TILE_H * 2 * FADE) / SOFT_PX); // iso-squashed disc
-  return sp;
-}
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -146,28 +128,32 @@ function bakeTerrain(seed: number, W: number, H: number) {
 
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
-  for (const c of expMask.removeChildren()) c.destroy();
-  for (const c of visMask.removeChildren()) c.destroy();
+  expMask.clear(); visMask.clear();
   bakeTerrain(seed, W, H);
   terrainKey = `${seed}:${W}:${H}`;
 }
 
+// Vision footprint: an iso-squashed ellipse (a circle on the tilted ground) — the mask is binary
+// (a clean ellipse shape), which the server's Chebyshev vision comfortably covers.
+function visionMark(g: Graphics, gx: number, gy: number, R: number) {
+  const cx = isoX(gx, gy), cy = isoY(gx, gy);
+  g.ellipse(cx, cy, R * TILE_W, R * TILE_H).fill(0xffffff);
+}
+
 function renderFog(s: StateMsg) {
-  // current vision (bright layer mask) — soft radial sprites, rebuilt every tick
-  for (const c of visMask.removeChildren()) c.destroy();
+  visMask.clear();
   const vm = modsFor(s.armyDoctrine).visionMult; // doctrine vision (Phantom sees farther)
   // a unit's sight = base range + HIGH-GROUND bonus (matches server), capped, ×doctrine
   const sight = (u: StateMsg["units"][number]) =>
     Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT);
-  for (const b of s.bases) if (b.owner === s.you) visMask.addChild(softVision(b.x, b.y, BASE_VISION * vm));
-  for (const u of s.units) if (u.owner === s.you) visMask.addChild(softVision(u.x, u.y, sight(u) * vm));
-  // explored memory (dim layer mask) — stamp a soft sprite the first time a viewer enters a coarse
-  // cell, so the seen-area grows softly as you scout without ever redrawing the whole mask.
+  for (const b of s.bases) if (b.owner === s.you) visionMark(visMask, b.x, b.y, BASE_VISION * vm);
+  for (const u of s.units) if (u.owner === s.you) visionMark(visMask, u.x, u.y, sight(u) * vm);
+  // explored memory (dim layer mask) — stamp the first time a viewer enters a coarse cell
   const stamp = (gx: number, gy: number, R: number) => {
     const key = (gx >> 5) * 100003 + (gy >> 5);
     if (exploredCoarse.has(key)) return;
     exploredCoarse.add(key);
-    expMask.addChild(softVision(gx, gy, R));
+    visionMark(expMask, gx, gy, R);
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
   for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, sight(u) * vm);
