@@ -552,7 +552,7 @@ function render(s: StateMsg) {
   syncMorale(s);
 }
 
-// ---- morale meter + booster ("rally troops") ----
+// ---- morale meter + booster ("send meals & entertainment to units") ----
 const mfill = document.getElementById("mfill") as HTMLElement;
 const mpct = document.getElementById("mpct")!;
 const mboost = document.getElementById("mboost") as HTMLButtonElement;
@@ -563,7 +563,7 @@ function syncMorale(s: StateMsg) {
   const col = m > 0.66 ? "#2fe0bd" : m > 0.4 ? "#ffb547" : "#ff3860"; // high / shaky / breaking
   mfill.style.background = col; mfill.style.color = col;
   mpct.textContent = `${Math.round(m * 100)}% · ${m > 0.66 ? "steady" : m > 0.4 ? "shaky" : "breaking"}`;
-  mboost.innerHTML = `⚑ Rally troops · ⛃${s.boosterCost ?? "—"}`;
+  mboost.innerHTML = `🍱 Send meals &amp; entertainment to units · ⛃${s.boosterCost ?? "—"}`;
   mboost.disabled = (s.resources ?? 0) < (s.boosterCost ?? Infinity);
 }
 
