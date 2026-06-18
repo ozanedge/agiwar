@@ -927,11 +927,15 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
   const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
   const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
-  const rad = u.unit === "tank" || u.unit === "turret" ? 10 : 8;
+  // footprint scale (length×width, applied to the rotated chassis) — tanks/humvees are much bigger
+  // on the ground; height (the z-stack) is unchanged. Matches their larger gameplay footprint.
+  const FOOT: Record<string, { x: number; y: number }> = { tank: { x: 1.6, y: 1.55 }, humvee: { x: 1.5, y: 1.48 } };
+  const fp = FOOT[u.unit] ?? { x: 1, y: 1 };
+  const rad = Math.round((u.unit === "tank" || u.unit === "turret" ? 10 : 8) * (fp.x + fp.y) / 2);
   const lift = u.unit === "drone" ? 14 : 2; // ground units sit on the deck; drone hovers
 
   const base = new Graphics(); // never rotates: shadow, glow, (turret ground ring)
-  base.ellipse(0, 3, 11, 4.5).fill({ color: 0x000000, alpha: 0.3 });
+  base.ellipse(0, 3, 11 * fp.x, 4.5 * fp.y).fill({ color: 0x000000, alpha: 0.3 });
   base.ellipse(0, 1, rad + 11, (rad + 11) * 0.5).fill({ color: side, alpha: 0.12 });
   base.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.14 });
   if (u.unit === "turret") base.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(ln);
@@ -951,6 +955,7 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
     wrap.position.set(t * 1.6, -(lift + i * SP));
     wrap.scale.set(1, 0.62); // iso ground squash
     const g = new Graphics();
+    g.scale.set(fp.x, fp.y); // widen/lengthen the chassis (scale in local space, then rotate to heading)
     g.rotation = heading;
     if (i === H) drawBody(g, u.unit, side, ln, acc); // lit, detailed top cap
     else drawSilhouette(g, u.unit, side, t); // sculpted volume, dark base → lit top

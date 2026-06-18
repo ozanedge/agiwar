@@ -239,7 +239,7 @@ function stepDownField(g: GameState, u: UnitState, dist: Int32Array): boolean {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     if (!dx && !dy) continue;
     const nx = u.x + dx, ny = u.y + dy;
-    if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H || isOccupied(nx, ny)) continue;
+    if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H || unitBlocked(u, nx, ny)) continue;
     const d = dist[ny * W + nx];
     if (d < best) { best = d; bx = nx; by = ny; }
   }
@@ -255,7 +255,7 @@ function stepToBase(g: GameState, u: UnitState, owner: number) {
     if (!dx && !dy) continue;
     const nx = u.x + dx, ny = u.y + dy;
     if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
-    if (isOccupied(nx, ny)) continue; // another unit is there — pick the next-best free step (queue up)
+    if (unitBlocked(u, nx, ny)) continue; // keep clear of other units (size-aware) — else queue up
     const d = dist[ny * W + nx];
     if (d < best) { best = d; bx = nx; by = ny; }
   }
@@ -331,13 +331,27 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
 
 const passable = (g: GameState, x: number, y: number) => x >= 0 && y >= 0 && x < GRID_W && y < GRID_H && g.passGrid[y * GRID_W + x] === 1;
 
-// Occupancy: each unit has size — no two units share a cell. `occ` holds every unit's cell for the
-// current tick (rebuilt each step), updated incrementally as units move so later movers see it.
+// Occupancy: each unit has SIZE — a footprint radius (in fine cells). Two units must stay at least
+// (footprint_a + footprint_b) cells apart, so bigger units carve out more room and everyone spreads
+// out instead of stacking. `occ` maps each unit's cell → the unit (rebuilt each step, updated
+// incrementally as units move so later movers see it).
+const FOOTPRINT: Record<string, number> = { gunner: 1, humvee: 2, tank: 2, turret: 2, drone: 0 };
+const MAX_FOOT = 2; // largest FOOTPRINT — scan radius bound
 const cellKey = (x: number, y: number) => y * GRID_W + x;
-let occ: Set<number> | null = null;
-const isOccupied = (x: number, y: number) => occ !== null && occ.has(cellKey(x, y));
+let occ: Map<number, UnitState> | null = null;
+// would (x,y) put u within (its footprint + the other's footprint) of any OTHER unit? (excludes self)
+function unitBlocked(u: UnitState, x: number, y: number): boolean {
+  if (!occ) return false;
+  const Ru = FOOTPRINT[u.unit] ?? 1, reach = Ru + MAX_FOOT;
+  for (let dy = -reach; dy <= reach; dy++) for (let dx = -reach; dx <= reach; dx++) {
+    const other = occ.get(cellKey(x + dx, y + dy));
+    if (!other || other === u) continue;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < Ru + (FOOTPRINT[other.unit] ?? 1)) return true;
+  }
+  return false;
+}
 function placeUnit(u: UnitState, nx: number, ny: number) {
-  if (occ) { occ.delete(cellKey(u.x, u.y)); occ.add(cellKey(nx, ny)); }
+  if (occ) { occ.delete(cellKey(u.x, u.y)); occ.set(cellKey(nx, ny), u); }
   u.x = nx; u.y = ny;
 }
 
@@ -345,7 +359,7 @@ const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < GRID_W && y <
 const flying = (u: UnitState) => !!UNIT_STATS[u.unit].flying;
 // Flying units (drones) ignore terrain AND ground occupancy — they're in the air.
 const canEnter = (g: GameState, u: UnitState, x: number, y: number) =>
-  inBounds(x, y) && (flying(u) || (passable(g, x, y) && !isOccupied(x, y)));
+  inBounds(x, y) && (flying(u) || (passable(g, x, y) && !unitBlocked(u, x, y)));
 const moveUnit = (u: UnitState, x: number, y: number) => { if (flying(u)) { u.x = x; u.y = y; } else placeUnit(u, x, y); };
 
 const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
@@ -606,8 +620,8 @@ export function step(g: GameState) {
   }
   // occupancy: units have size — mark every unit's cell, then movement avoids occupied cells so no
   // two units stack. Updated incrementally as each unit moves, so the order is consistent.
-  occ = new Set<number>();
-  for (const u of g.units) if (!flying(u)) occ.add(cellKey(u.x, u.y)); // flying units don't occupy the ground
+  occ = new Map<number, UnitState>();
+  for (const u of g.units) if (!flying(u)) occ.set(cellKey(u.x, u.y), u); // flying units don't occupy the ground
   flowComputes = 0; // per-tick budget for new dynamic flow fields
   // morale: decay recent losses + booster, then recompute (used by decide() this tick)
   for (const p of g.players) {
