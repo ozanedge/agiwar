@@ -494,7 +494,11 @@ function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
   const cx = isoX(p.x, p.y), cy = isoY(p.x, p.y) - elev + 2;
   for (let i = 0; i < 2; i++) { const t = (((s.tick % 30) / 30) + i * 0.5) % 1; const r = 7 + t * 18; g.ellipse(cx, cy, r, r * 0.5).stroke({ color: OWN_COLOR, width: 1.6, alpha: 0.5 * (1 - t) }); } // sonar pulse
   g.ellipse(cx, cy, 11, 5.5).stroke({ color: OWN_COLOR, width: 1.5, alpha: 0.7 }); // target ring
-  for (const [ox, oy] of [[15, 0], [-15, 0], [0, 7.5], [0, -7.5]] as [number, number][]) g.moveTo(cx + ox, cy + oy).lineTo(cx + ox * 0.55, cy + oy * 0.55).stroke({ color: OWN_COLOR, width: 1.5, alpha: 0.65 }); // reticle ticks
+  // reticle ticks as FILLED rects (no moveTo/lineTo — those leaked a stray line to world-origin)
+  g.rect(cx + 9, cy - 0.8, 7, 1.6).fill({ color: OWN_COLOR, alpha: 0.65 });
+  g.rect(cx - 16, cy - 0.8, 7, 1.6).fill({ color: OWN_COLOR, alpha: 0.65 });
+  g.rect(cx - 0.8, cy + 4.5, 1.6, 4).fill({ color: OWN_COLOR, alpha: 0.65 });
+  g.rect(cx - 0.8, cy - 8.5, 1.6, 4).fill({ color: OWN_COLOR, alpha: 0.65 });
   g.circle(cx, cy, 2.2).fill({ color: OWN_COLOR, alpha: 0.95 });
   g.zIndex = p.x + p.y;
   return g;
@@ -537,8 +541,10 @@ function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {
   if (capping) {
     const cc = a.capOwner === s.you ? OWN_COLOR : a.capOwner >= 0 ? ENEMY_COLOR : 0xffd76b;
     g.circle(cx, ringY, 9).stroke({ color: 0x05080b, width: 3.2, alpha: 0.55 }); // track
-    g.arc(cx, ringY, 9, -Math.PI / 2, -Math.PI / 2 + a.capProgress * Math.PI * 2).stroke({ color: cc, width: 3.2, alpha: 0.95 }); // progress
     g.circle(cx, ringY, 9).stroke({ color: cc, width: 1, alpha: 0.25 }); // faint full ring
+    // progress arc — moveTo the arc START first, else Pixi draws a connector line from (0,0) (the "laser")
+    const a0 = -Math.PI / 2;
+    g.moveTo(cx + 9 * Math.cos(a0), ringY + 9 * Math.sin(a0)).arc(cx, ringY, 9, a0, a0 + a.capProgress * Math.PI * 2).stroke({ color: cc, width: 3.2, alpha: 0.95 });
   }
   const label = neutral ? (capping ? `${a.bonus.label}  ⟳ ${Math.round(a.capProgress * 100)}%` : `${a.bonus.label}  ▸ send a builder`) : a.bonus.label;
   const t = new Text({ text: label, style: { fill: accent, fontFamily: "JetBrains Mono, monospace", fontSize: 10 } });
