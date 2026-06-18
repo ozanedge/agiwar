@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
+import { Application, BlurFilter, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -48,7 +48,11 @@ const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
 const expMask = new Graphics(); // union of all explored vision (persists across the match)
-const visMask = new Graphics(); // union of current vision (rebuilt every tick)
+const visMask = new Graphics(); // union of current vision (rebuilt every frame from eased positions)
+// Blur the masks → their alpha edge feathers into a gradient, so visibility fades softly at the
+// limit of sight (a blurred solid ellipse stays opaque in the middle, so no blackout risk).
+visMask.filters = [new BlurFilter({ strength: 18, quality: 4 })];
+expMask.filters = [new BlurFilter({ strength: 14, quality: 3 })];
 terrainDim.mask = expMask;
 terrainBright.mask = visMask;
 world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
