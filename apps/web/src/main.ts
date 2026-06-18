@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Texture, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -47,11 +47,29 @@ terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
-const expMask = new Graphics(); // union of all explored vision (persists across the match)
-const visMask = new Graphics(); // union of current vision (rebuilt every tick)
+// Soft fog: vision is an ALPHA mask built from radial-gradient sprites (opaque core → transparent
+// edge), so the terrain fades out elegantly toward the limit of sight instead of a hard cut.
+const SOFT_PX = 128;
+const softTex = (() => {
+  const c = document.createElement("canvas"); c.width = c.height = SOFT_PX;
+  const ctx = c.getContext("2d")!; const g = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.12, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
+  g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.62, "rgba(255,255,255,0.96)"); g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, SOFT_PX, SOFT_PX);
+  return Texture.from(c);
+})();
+const FADE = 1.32; // oversize the soft sprite so full vision reaches ~R, then fades beyond
+const expMask = new Container(); // union of all explored vision (persists; soft sprites)
+const visMask = new Container(); // union of current vision (rebuilt every tick; soft sprites)
 terrainDim.mask = expMask;
 terrainBright.mask = visMask;
 world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
+function softVision(gx: number, gy: number, R: number): Sprite {
+  const sp = new Sprite(softTex);
+  sp.anchor.set(0.5);
+  sp.position.set(isoX(gx, gy), isoY(gx, gy));
+  sp.scale.set((R * TILE_W * 2 * FADE) / SOFT_PX, (R * TILE_H * 2 * FADE) / SOFT_PX); // iso-squashed disc
+  return sp;
+}
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -63,6 +81,15 @@ function isoBox(g: Graphics, x: number, yBase: number, hw: number, hh: number, h
   g.poly([x, yBase - h - hh, x + hw, yBase - h, x, yBase - h + hh, x - hw, yBase - h]).fill(tint(color, 0.12)); // top
 }
 
+function lerpColor(a: number, b: number, t: number): number {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255, br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
+}
+// health → green (full) · yellow · orange · red (empty)
+function hpColor(f: number): number {
+  f = Math.max(0, Math.min(1, f));
+  return f < 0.5 ? lerpColor(0xe23b3b, 0xf2b134, f / 0.5) : lerpColor(0xf2b134, 0x3fdd6a, (f - 0.5) / 0.5);
+}
 function tint(hex: number, f: number): number {
   let r = (hex >> 16) & 255, g = (hex >> 8) & 255, b = hex & 255;
   if (f >= 0) { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; }
@@ -119,35 +146,28 @@ function bakeTerrain(seed: number, W: number, H: number) {
 
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
-  expMask.clear(); visMask.clear();
+  for (const c of expMask.removeChildren()) c.destroy();
+  for (const c of visMask.removeChildren()) c.destroy();
   bakeTerrain(seed, W, H);
   terrainKey = `${seed}:${W}:${H}`;
 }
 
-// Vision footprint for R cells around (gx,gy): an iso-squashed ELLIPSE (a circle lying on the
-// tilted ground) so sight reads as a soft radius rather than a hard square/diamond. Cosmetic —
-// the server fog-gates with the Chebyshev box, which this ellipse comfortably covers.
-function visionMark(g: Graphics, gx: number, gy: number, R: number) {
-  const cx = isoX(gx, gy), cy = isoY(gx, gy);
-  g.ellipse(cx, cy, R * TILE_W, R * TILE_H).fill(0xffffff);
-}
-
 function renderFog(s: StateMsg) {
-  // current vision (bright layer mask) — rebuilt every tick from your bases + units
-  visMask.clear();
+  // current vision (bright layer mask) — soft radial sprites, rebuilt every tick
+  for (const c of visMask.removeChildren()) c.destroy();
   const vm = modsFor(s.armyDoctrine).visionMult; // doctrine vision (Phantom sees farther)
   // a unit's sight = base range + HIGH-GROUND bonus (matches server), capped, ×doctrine
   const sight = (u: StateMsg["units"][number]) =>
     Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT);
-  for (const b of s.bases) if (b.owner === s.you) visionMark(visMask, b.x, b.y, BASE_VISION * vm);
-  for (const u of s.units) if (u.owner === s.you) visionMark(visMask, u.x, u.y, sight(u) * vm);
-  // explored memory (dim layer mask) — stamp a diamond the first time a viewer enters a coarse
-  // cell, so the seen-area grows as you scout without ever redrawing the whole mask.
+  for (const b of s.bases) if (b.owner === s.you) visMask.addChild(softVision(b.x, b.y, BASE_VISION * vm));
+  for (const u of s.units) if (u.owner === s.you) visMask.addChild(softVision(u.x, u.y, sight(u) * vm));
+  // explored memory (dim layer mask) — stamp a soft sprite the first time a viewer enters a coarse
+  // cell, so the seen-area grows softly as you scout without ever redrawing the whole mask.
   const stamp = (gx: number, gy: number, R: number) => {
     const key = (gx >> 5) * 100003 + (gy >> 5);
     if (exploredCoarse.has(key)) return;
     exploredCoarse.add(key);
-    visionMark(expMask, gx, gy, R);
+    expMask.addChild(softVision(gx, gy, R));
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
   for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, sight(u) * vm);
@@ -710,7 +730,7 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
 
   // ---- hp bar above the spire ----
   g.rect(cx - BW, top - 40, BW * 2, 4).fill({ color: 0x000000, alpha: 0.4 });
-  g.rect(cx - BW, top - 40, (b.hp / b.maxHp) * BW * 2, 4).fill(team);
+  g.rect(cx - BW, top - 40, (b.hp / b.maxHp) * BW * 2, 4).fill(hpColor(b.hp / b.maxHp));
   g.zIndex = b.x + b.y;
   return g;
 }
@@ -829,7 +849,9 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
 
   const top = new Graphics(); // never rotates: hp bar + override ring, above the stacked volume
   const topY = lift + H * 1.3 + rad * 0.4;
-  if (u.hp < u.maxHp) top.rect(-rad, -topY - 6, (u.hp / u.maxHp) * rad * 2, 2).fill(0xeaf2fb);
+  const frac = Math.max(0, u.hp / u.maxHp); // hp bar persists on every unit, green→yellow→orange→red
+  top.rect(-rad, -topY - 6.5, rad * 2, 2.6).fill({ color: 0x05080b, alpha: 0.6 }); // track
+  top.rect(-rad, -topY - 6.5, frac * rad * 2, 2.6).fill(hpColor(frac)); // spectrum fill
   if (u.overrideUntil > s.tick) top.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
   cont.addChild(top);
   return cont;
