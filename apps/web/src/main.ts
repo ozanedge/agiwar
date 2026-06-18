@@ -1035,27 +1035,68 @@ app.ticker.add(() => {
   rebuildVisionMask(); // shroud glides with the eased unit positions + radii
 });
 
+// how each army upgrade modifies the inspected unit (income is economy-wide, not per-unit). Reuses
+// the upgrades-panel UP_ICON for visual consistency.
+const hex = (n: number) => `#${(n & 0xffffff).toString(16).padStart(6, "0")}`;
+
 function updateReadout() {
   const u = pinned ?? hovered; // pinned (clicked) takes precedence and persists
   if (!u || !latestState) { readoutEl.innerHTML = `<span class="sub">hover a unit to inspect · click to pin</span>`; return; }
   const s = latestState, st = UNIT_STATS[u.unit];
   const mine = u.owner === s.you;
+  const b = mine ? s.bonuses : { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 }; // we only know OUR upgrades
+  const lv = (k: string) => (mine ? s.invest[k as keyof typeof s.invest] || 0 : 0);
   const h = heightAt(u.x, u.y, s.seed, s.gridW, s.gridH);
   const hg = highGroundBonus(h); // high-ground range/sight bonus on this tile
-  const ground = h >= 0.60 ? `<span style="color:#ffd76b">⛰ high ground</span> (+${hg} rng/sight)` : h < 0.40 ? `<span style="color:#8aa">↓ low ground</span>` : `level ground`;
-  const vision = Math.min(VISION_CAP, (st.range + hg) * VISION_MULT);
-  const rows: string[] = [];
-  rows.push(`<b>${st.label}</b> #${u.id} · <span style="color:${mine ? "#00ffd1" : "#ff6b80"}">${mine ? "yours" : "enemy"}</span>${pinned ? ` · 📌 <span class="sub">pinned</span>` : ""}`);
-  rows.push(`HP <b>${u.hp}/${u.maxHp}</b>`);
-  if (u.camp) {
-    const cls = DOCTRINE_CLASS[u.camp], overridden = u.overrideUntil > s.tick;
-    rows.push(`Doctrine <span class="${cls}">${u.camp}</span>${overridden ? ` · <span style="color:#ffd76b">OVERRIDE ${u.overrideLabel} (${Math.ceil((u.overrideUntil - s.tick) / 10)}s → reverts)</span>` : ` <span class="sub">(native)</span>`}`);
-  } else rows.push(`<b>Building</b> <span class="sub">— stationary, no doctrine</span>`);
-  rows.push(`Damage <b>${st.dmg}</b> · Range <b>${st.range}</b>${hg ? `<span style="color:#ffd76b"> +${hg}</span>` : ""} · Accuracy <b>${st.accuracy > 0 ? Math.round(st.accuracy * 100) + "%" : "—"}</b>`);
-  rows.push(`Moves every <b>${st.moveEvery}t</b> · Fires every <b>${st.attackEvery}t</b>${st.flying ? ` · <span style="color:#5ab0ff">✈ flying</span>` : ""}${st.stationary ? ` · <span class="sub">stationary</span>` : ""}`);
-  rows.push(`Vision <b>${vision}</b> · Cost <b>${st.cost}</b> · Heading ${u.dx},${u.dy}`);
-  rows.push(`<span class="sub">${ground} · h ${h.toFixed(2)} · @ ${u.x},${u.y}</span>`);
-  readoutEl.innerHTML = rows.join("<br>");
+  const ground = h >= 0.60 ? `<span class="hi">⛰ high ground</span> +${hg} rng/sight` : h < 0.40 ? `<span class="sub">↓ low ground</span>` : `level ground`;
+  const effDmg = st.dmg + b.damage, effRange = st.range + b.range;
+  const vision = Math.min(VISION_CAP, (effRange + hg) * VISION_MULT);
+  const teamCol = mine ? "#00ffd1" : "#ff6b80";
+
+  // a stat cell: shows the effective value, with the upgrade delta called out in accent when boosted
+  const stat = (k: string, val: string, delta?: string) =>
+    `<div class="uc-stat"><span class="uc-k">${k}</span><span class="uc-v">${val}${delta ? `<span class="uc-d">${delta}</span>` : ""}</span></div>`;
+
+  // UPGRADES block — every army upgrade, its level, and exactly what it does to THIS unit. Active
+  // ones are bright; un-purchased ones are dimmed so the picture is complete and unambiguous.
+  const upEffect: Record<string, string> = {
+    damage: b.damage ? `+${b.damage} damage` : "+ damage",
+    hp: b.hp ? `+${b.hp} max HP` : "+ max HP",
+    armor: b.armor ? `−${b.armor} damage taken` : "− damage taken",
+    range: b.range ? `+${b.range} range & sight` : "+ range & sight",
+    speed: b.speed ? `+${b.speed * 10}% move speed` : "+ move speed",
+    income: "economy-wide (not this unit)",
+  };
+  const upRows = INVESTMENTS.map((inv) => {
+    const level = lv(inv.kind), on = level > 0 && inv.kind !== "income";
+    return `<div class="uc-up${on ? "" : " off"}"><span class="uc-upi">${UP_ICON[inv.kind]}</span>` +
+      `<span class="uc-upn">${inv.label}</span><span class="uc-uplv">Lv${level}</span>` +
+      `<span class="uc-upe">${on ? upEffect[inv.kind] : level > 0 ? upEffect[inv.kind] : "—"}</span></div>`;
+  }).join("");
+
+  const doctrine = u.camp
+    ? (() => { const overridden = u.overrideUntil > s.tick; return `<span class="uc-doc ${DOCTRINE_CLASS[u.camp]}">${u.camp}</span>` + (overridden ? `<span class="uc-ovr">⚡ ${u.overrideLabel} · ${Math.ceil((u.overrideUntil - s.tick) / 10)}s</span>` : `<span class="sub"> native</span>`); })()
+    : `<span class="uc-doc bld">building</span><span class="sub"> stationary</span>`;
+
+  const frac = Math.max(0, u.hp / u.maxHp);
+  readoutEl.innerHTML =
+    `<div class="uc">` +
+    `<div class="uc-hd"><span class="uc-name">${st.label}</span><span class="uc-id">#${u.id}</span>` +
+    `<span class="uc-badge" style="color:${teamCol};border-color:${teamCol}">${mine ? "YOURS" : "ENEMY"}</span>` +
+    `${pinned ? `<span class="uc-pin">📌 pinned</span>` : ""}</div>` +
+    `<div class="uc-doctrine">${doctrine}</div>` +
+    `<div class="uc-hpbar"><div class="uc-hpfill" style="width:${Math.round(frac * 100)}%;background:${hex(hpColor(frac))}"></div><span class="uc-hptxt">${u.hp} / ${u.maxHp} HP</span></div>` +
+    `<div class="uc-stats">` +
+    stat("Damage", String(effDmg), b.damage ? `+${b.damage}` : "") +
+    stat("Range", String(effRange) + (hg ? ` <span class="hi">+${hg}</span>` : ""), b.range ? `+${b.range}` : "") +
+    stat("Accuracy", st.accuracy > 0 ? Math.round(st.accuracy * 100) + "%" : "—") +
+    stat("Vision", String(vision), b.range ? `+${b.range * VISION_MULT}` : "") +
+    stat("Fire rate", st.attackEvery >= 9999 ? "—" : `every ${st.attackEvery}t`) +
+    stat("Move", st.stationary ? "stationary" : `every ${st.moveEvery}t${st.flying ? " ✈" : ""}`, b.speed ? `+${b.speed * 10}%` : "") +
+    `</div>` +
+    `<div class="uc-ups"><div class="uc-ups-h">${mine ? "UPGRADES ON THIS UNIT" : "ENEMY — upgrades unknown"}</div>${mine ? upRows : ""}</div>` +
+    `<div class="uc-foot">${ground} · cost ${st.cost} · @ ${u.x},${u.y}</div>` +
+    `</div>`;
 }
 
 // ---- the 6 commanders: one cohesive bottom strip. Each shows its accumulated MEMORY above
