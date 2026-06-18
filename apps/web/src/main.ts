@@ -597,12 +597,13 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
     g.rect(x - 0.9, y - h, 1.8, h).fill(steel);
     g.circle(x, y - h, 1.8).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
   };
-  const helipad = (x: number, y: number) => {
-    g.ellipse(x, y, BW * 1.0, BH * 1.0).fill(pad);
-    g.ellipse(x, y, BW * 1.0, BH * 1.0).stroke({ color: team, width: 1.5, alpha: 0.5 });
-    g.ellipse(x, y, BW * 0.78, BH * 0.78).stroke({ color: mark, width: 1, alpha: 0.4 });
-    g.rect(x - 5.5, y - 6, 2, 12).fill(mark); g.rect(x + 3.5, y - 6, 2, 12).fill(mark); g.rect(x - 5.5, y - 1, 9, 2).fill(mark); // "H"
-    for (const [hx, hy] of [[-BW * 0.85, 0], [BW * 0.85, 0], [0, -BH * 0.85], [0, BH * 0.85]] as [number, number][]) g.circle(x + hx, y + hy, 1.3).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
+  const helipad = (x: number, y: number, rw: number, rh: number) => { // a rooftop landing pad
+    const sc = rw / (BW * 1.0); // scale the markings to the pad size
+    g.ellipse(x, y, rw, rh).fill(pad);
+    g.ellipse(x, y, rw, rh).stroke({ color: team, width: 1.5, alpha: 0.55 });
+    g.ellipse(x, y, rw * 0.78, rh * 0.78).stroke({ color: mark, width: 1, alpha: 0.4 });
+    g.rect(x - 5.5 * sc, y - 6 * sc, 2 * sc, 12 * sc).fill(mark); g.rect(x + 3.5 * sc, y - 6 * sc, 2 * sc, 12 * sc).fill(mark); g.rect(x - 5.5 * sc, y - 1 * sc, 9 * sc, 2 * sc).fill(mark); // "H"
+    for (const [hx, hy] of [[-rw * 0.85, 0], [rw * 0.85, 0], [0, -rh * 0.85], [0, rh * 0.85]] as [number, number][]) g.circle(x + hx, y + hy, 1.3).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
   };
 
   // ---- shadow + energy field (accent glow) ----
@@ -621,7 +622,8 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   antenna(cx + BW * 1.25, cy + BH * 0.1, BH * 4.6);
   tower(cx - BW * 2.4, cy - BH * 0.05, BH * 3.4);
   tower(cx + BW * 2.4, cy - BH * 0.05, BH * 3.4);
-  building(cx - BW * 1.8, cy + BH * 0.55, BW * 0.8, BH * 0.8, BH * 2.6, 3, 2); // left barracks
+  building(cx - BW * 1.85, cy + BH * 0.7, BW * 1.05, BH * 1.05, BH * 2.0, 2, 3); // left air-control building (wide flat roof)
+  helipad(cx - BW * 1.85, (cy + BH * 0.7) - BH * 2.0, BW * 0.92, BH * 0.92); // helipad ON the roof
   building(cx + BW * 1.8, cy + BH * 0.55, BW * 0.8, BH * 0.8, BH * 2.4, 3, 2); // right lab block
   dome(cx + BW * 1.8, cy + BH * 0.55 - BH * 2.4, BW * 0.55); // dome atop the lab
 
@@ -638,7 +640,7 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   // ---- front row (drawn last so it overlaps) ----
   tank(cx + BW * 1.55, cy + BH * 1.95, BW * 0.42, BH * 1.5);
   tank(cx + BW * 2.15, cy + BH * 1.75, BW * 0.34, BH * 1.15);
-  helipad(cx - BW * 1.55, cy + BH * 2.0);
+  tank(cx - BW * 1.5, cy + BH * 2.0, BW * 0.38, BH * 1.3); // moved fuel storage onto the freed ground spot
   tower(cx - BW * 2.3, cy + BH * 1.55, BH * 3.0);
   tower(cx + BW * 2.3, cy + BH * 1.55, BH * 3.0);
 
