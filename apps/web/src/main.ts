@@ -835,17 +835,11 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
     g.rect(-6, -5.7, 0.7, 4).fill(m.gun); g.rect(-4, -5.3, 0.7, 3.4).fill(m.gun); // antennas
     g.circle(6.2, -3.5, 0.7).fill(side); // marker light
     pip(-4.7, 0, 1.3);
-  } else if (type === "gunner") { // modern infantryman: plate carrier, ruck, NVG helmet, optic'd carbine
+  } else if (type === "gunner") { // modern infantryman: plate carrier, ruck, NVG helmet (carbine = drawGunnerWeapon, at chest height)
     g.roundRect(-4, -2.4, 3, 4.8, 1).fill(m.steelDkr); // ruck (rear)
     g.roundRect(-2.2, -3, 4.8, 6, 2).fill(m.steel).stroke(ln); g.roundRect(-2, -2.6, 2.1, 5.2, 1).fill({ color: m.steelLt, alpha: 0.5 }); // plate carrier / shoulders
     g.circle(0.7, 0, 2.7).fill(m.steelLt).stroke(ln); g.arc(0.7, 0, 2.7, -1.1, 1.1).fill({ color: tint(m.steelLt, 0.3), alpha: 0.5 }); // helmet
     g.roundRect(2.7, -0.9, 1.5, 1.8, 0.5).fill(m.steelDk); // NVG mount (front)
-    const gy = -1.8; // carbine, shouldered to the right
-    g.rect(-2.6, gy - 0.4, 3.6, 1.4).fill(tint(m.gun, -0.05)); // stock + receiver
-    g.rect(1, gy - 0.35, 8, 1.25).fill(m.gun); // handguard / barrel
-    g.roundRect(2.1, gy - 1.4, 2.5, 1.2, 0.4).fill(m.gunLt); // optic
-    g.rect(4.6, gy + 0.9, 1.2, 1.7).fill(tint(m.gun, -0.1)); // foregrip
-    g.roundRect(9, gy - 0.7, 2.7, 1.7, 0.7).fill(tint(m.gun, 0.1)); // suppressor
     g.circle(-1.5, -2.5, 0.65).fill(side); // shoulder IR strobe
     pip(0.7, -0.2, 0.95);
   } else if (type === "drone") { // sleek quad: X-frame, motor nacelles + prop-blur discs, gimbal cam, LEDs
@@ -868,6 +862,18 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
     g.poly([-6, -4, 2, -4.4, 5, -2]).stroke(rim);
     pip(-2.6, 2.7, 1.1);
   }
+}
+
+// The gunner's carbine — drawn on a MID-HEIGHT layer (chest, where the hands are) instead of the
+// apex, so the rifle reads as held across the body rather than poking out of the helmet. forward = +x.
+function drawGunnerWeapon(g: Graphics, side: number) {
+  const m = unitPalette(side);
+  const gy = -1.6; // shouldered slightly to one side
+  g.rect(-2.8, gy - 0.4, 3.8, 1.4).fill(tint(m.gun, -0.05)); // stock + receiver
+  g.rect(1, gy - 0.35, 8, 1.25).fill(m.gun); // handguard / barrel
+  g.roundRect(2.1, gy - 1.4, 2.5, 1.2, 0.4).fill(m.gunLt); // optic
+  g.rect(4.6, gy + 0.9, 1.2, 1.7).fill(tint(m.gun, -0.1)); // foregrip
+  g.roundRect(9, gy - 0.7, 2.7, 1.7, 0.7).fill(tint(m.gun, 0.1)); // suppressor
 }
 
 // Cross-section of the unit at height fraction t (0 = ground, 1 = apex). Varying the shape
@@ -948,6 +954,7 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
     g.rotation = heading;
     if (i === H) drawBody(g, u.unit, side, ln, acc); // lit, detailed top cap
     else drawSilhouette(g, u.unit, side, t); // sculpted volume, dark base → lit top
+    if (u.unit === "gunner" && i === Math.round(H * 0.6)) drawGunnerWeapon(g, side); // carbine at chest height
     wrap.addChild(g);
     cont.addChild(wrap);
   }
