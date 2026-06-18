@@ -41,18 +41,20 @@ app.stage.addChild(world);
 // Terrain is BAKED ONCE into a texture (no per-tick tile redraw). Fog is a cheap, resolution-
 // independent VISION-MASK overlay: unexplored = stage bg shows through · explored = dim terrain
 // (expMask) · currently visible = bright terrain (visMask) drawn on top.
-const terrainDim = new Sprite(); // baked terrain, darkened — shown where ever-explored
-terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
-const terrainBright = new Sprite(); // full-bright terrain, revealed (+ feathered) where currently seen
-// Soft fog: a true ALPHA mask. Radial-gradient blobs (opaque core → transparent edge) are rendered
-// into a RenderTexture, and a SINGLE Sprite of it is used as the terrain mask — a single-Sprite mask
-// is alpha-based in Pixi v8 (a Graphics/Container mask is a hard stencil → rectangles), so terrain
-// fades out smoothly toward the sight limit. The current-vision RT is re-rendered EVERY FRAME from
-// the units' EASED (glide) positions, so the soft shroud glides smoothly instead of snapping at 5Hz.
-const FOG_RES = 3; // fog mask rendered at 1/FOG_RES resolution (smooth blobs don't need full res)
+const terrainBright = new Sprite(); // full-bright baked terrain, drawn DIRECTLY (no mask)
+// Soft fog WITHOUT masking the (map-sized) terrain. Masking a huge sprite renders it through a
+// filter into an intermediate texture whose size = the sprite's on-screen bounds; past ~1.4× zoom
+// that exceeds the GPU max texture size and gets clamped → the map blacks out. Instead we draw the
+// terrain directly (the GPU clips it to the viewport, no size limit) and lay a single FOG OVERLAY
+// on top: a tinted sprite whose per-pixel ALPHA = darkness (1 = unexplored, ~0.4 = explored memory,
+// 0 = currently visible). The overlay is composited in a FIXED, map-sized RenderTexture (fogRT,
+// zoom-INDEPENDENT) by ERASE-blending the soft vision/explored blobs out of a tinted fill — so
+// nothing huge ever passes through a mask/filter. Soft radial blobs → the elegant fade; visRT is
+// re-composited every frame from the units' EASED positions → it glides.
+const FOG_RES = 3; // fog overlay rendered at 1/FOG_RES resolution (smooth blobs don't need full res)
 const SOFT_PX = 128;
 const softTex = (() => {
   const c = document.createElement("canvas"); c.width = c.height = SOFT_PX;
@@ -65,13 +67,15 @@ const softTex = (() => {
   return Texture.from(c);
 })();
 const FADE = 1.55; // oversize each blob so sight still reaches ~R despite the long inward fade
-const visScene = new Container(), expScene = new Container(); // off-screen blob scenes (rendered to RTs)
+const FOG_TINT = 0x02060a; // overlay color (matches the canvas bg → seamless in unexplored areas)
+const MEM_BRIGHT = 0.62; // explored-but-unseen terrain brightness (the rest = fog tint)
+const visScene = new Container(), expScene = new Container(); // off-screen blob scenes (→ visRT/expRT)
 visScene.scale.set(1 / FOG_RES); expScene.scale.set(1 / FOG_RES);
-const visMaskSprite = new Sprite(), expMaskSprite = new Sprite(); // single-Sprite alpha masks
-let visRT: RenderTexture | null = null, expRT: RenderTexture | null = null, fogOX = 0, fogOY = 0;
-terrainDim.mask = expMaskSprite;
-terrainBright.mask = visMaskSprite;
-world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, visMaskSprite, expMaskSprite);
+const fogScene = new Container(); // composites fogRT each frame (tinted fill, blobs erased out)
+const fogSprite = new Sprite(); // the fog overlay, drawn directly over the terrain
+let visRT: RenderTexture | null = null, expRT: RenderTexture | null = null, fogRT: RenderTexture | null = null;
+let fogOX = 0, fogOY = 0;
+world.addChild(terrainBright, fogSprite, entityLayer, fxLayer);
 function blobScale(sp: Sprite, gx: number, gy: number, R: number) {
   sp.position.set(isoX(gx, gy) - fogOX, isoY(gx, gy) - fogOY); // world px relative to terrain origin
   sp.scale.set((R * TILE_W * 2 * FADE) / SOFT_PX, (R * TILE_H * 2 * FADE) / SOFT_PX); // iso-squashed disc
@@ -156,24 +160,31 @@ function bakeTerrain(seed: number, W: number, H: number) {
   const b = g.getLocalBounds();
   if (terrainTex) terrainTex.destroy(true);
   terrainTex = app.renderer.generateTexture({ target: g, resolution: 1 });
-  for (const sp of [terrainDim, terrainBright]) { sp.texture = terrainTex; sp.position.set(b.minX, b.minY); }
+  terrainBright.texture = terrainTex; terrainBright.position.set(b.minX, b.minY);
   g.destroy();
-  // (re)create the fog-mask RenderTextures sized to the terrain bounds (downscaled by FOG_RES)
+  // (re)create the fog RenderTextures sized to the terrain bounds (downscaled by FOG_RES). These are
+  // FIXED-size and zoom-independent — the source of the soft fade, never a per-zoom intermediate.
   fogOX = b.minX; fogOY = b.minY;
   const fw = Math.max(1, Math.ceil(b.width / FOG_RES)), fh = Math.max(1, Math.ceil(b.height / FOG_RES));
-  if (visRT) visRT.destroy(true);
-  if (expRT) expRT.destroy(true);
-  visRT = RenderTexture.create({ width: fw, height: fh });
-  expRT = RenderTexture.create({ width: fw, height: fh });
-  visMaskSprite.texture = visRT; expMaskSprite.texture = expRT;
-  for (const ms of [visMaskSprite, expMaskSprite]) { ms.position.set(b.minX, b.minY); ms.scale.set(FOG_RES); }
+  for (const rt of [visRT, expRT, fogRT]) if (rt) rt.destroy(true);
+  visRT = RenderTexture.create({ width: fw, height: fh }); // white soft vision blobs (per frame)
+  expRT = RenderTexture.create({ width: fw, height: fh }); // white soft explored blobs (on growth)
+  fogRT = RenderTexture.create({ width: fw, height: fh }); // composited darkness overlay (per frame)
+  // fogScene: a tinted fill with the vision/explored blobs ERASE-blended out → alpha = darkness.
+  for (const c of fogScene.removeChildren()) c.destroy();
+  const fill = new Graphics().rect(0, 0, fw, fh).fill({ color: FOG_TINT, alpha: 1 }); // unexplored
+  const expErase = new Sprite(expRT); expErase.blendMode = "erase"; expErase.alpha = MEM_BRIGHT; // → memory
+  const visErase = new Sprite(visRT); visErase.blendMode = "erase"; // → fully revealed
+  fogScene.addChild(fill, expErase, visErase);
+  fogSprite.texture = fogRT; fogSprite.position.set(b.minX, b.minY); fogSprite.scale.set(FOG_RES);
 }
 
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
   for (const c of expScene.removeChildren()) c.destroy();
   for (const sp of visPool) sp.visible = false;
-  bakeTerrain(seed, W, H); // (re)creates the fog RenderTextures
+  bakeTerrain(seed, W, H); // (re)creates the fog RenderTextures + compositing scene
+  if (expRT) app.renderer.render({ container: expScene, target: expRT, clear: true }); // clear explored
   terrainKey = `${seed}:${W}:${H}`;
 }
 
@@ -182,11 +193,11 @@ function unitSight(u: StateMsg["units"][number], s: StateMsg): number {
   return Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT) * modsFor(s.armyDoctrine).visionMult;
 }
 
-// Current-vision soft mask — rebuilt EVERY FRAME from the units' EASED (glide) positions + eased
-// radii (pooled radial-gradient blobs), then re-rendered into visRT so the soft shroud GLIDES
-// smoothly with the units instead of snapping at the 5Hz server rate.
+// Current-vision blobs — rebuilt EVERY FRAME from the units' EASED (glide) positions + eased radii
+// (pooled radial-gradient blobs) into visRT, then the fog overlay (fogRT) is re-composited, so the
+// soft shroud GLIDES smoothly with the units instead of snapping at the 5Hz server rate.
 function rebuildVisionMask() {
-  if (!latestState || !visRT) return;
+  if (!latestState || !visRT || !fogRT) return;
   const s = latestState;
   const vm = modsFor(s.armyDoctrine).visionMult;
   let i = 0;
@@ -194,6 +205,7 @@ function rebuildVisionMask() {
   for (const e of unitViews.values()) if (e.u.owner === s.you) { setVisBlob(i, e.gx, e.gy, e.vr); i++; }
   for (let j = i; j < visPool.length; j++) visPool[j].visible = false;
   app.renderer.render({ container: visScene, target: visRT, clear: true });
+  app.renderer.render({ container: fogScene, target: fogRT, clear: true }); // tint − vision − explored
 }
 
 // Explored "memory" mask — grows discretely as you scout (a soft blob per new coarse cell, persisted
