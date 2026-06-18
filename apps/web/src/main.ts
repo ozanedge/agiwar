@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Filter, GlProgram, Graphics, Sprite, Text } from "pixi.js";
+import { Application, Container, Filter, GlProgram, Graphics, Sprite, Text, UniformGroup } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -53,7 +53,7 @@ terrainDim.mask = expMask;
 // vision source's edge — a genuine continuous gradient (no stepped layers, no alpha-mask blackout).
 // The shader outputs terrainColor·visibility; where visibility→0 the dim terrain shows through.
 const terrainBright = new Sprite(); // full-bright terrain, faded at the sight edges by the fog shader
-const FOG_MAX_SRC = 160; // max simultaneous on-screen vision sources fed to the shader
+const FOG_MAX_SRC = 64; // max simultaneous on-screen vision sources fed to the shader
 const fogFrag = `
 in vec2 vTextureCoord;
 out vec4 finalColor;
@@ -71,7 +71,7 @@ void main(void) {
   for (int i = 0; i < ${FOG_MAX_SRC}; i++) {
     if (i >= n) break;
     vec4 s = uSources[i];
-    vec2 d = (p - s.xy) / s.zw;                 // normalize to this source's ellipse (1.0 at edge)
+    vec2 d = (p - s.xy) / max(s.zw, vec2(0.5)); // normalize to this source's ellipse (1.0 at edge)
     vis = max(vis, 1.0 - smoothstep(uInner, 1.0, length(d)));
   }
   finalColor = col * vis; // premultiplied alpha → scaling rgb+alpha together fades to the dim layer
@@ -93,15 +93,16 @@ void main(void) {
   vTextureCoord = aPosition * (uOutputFrame.zw * uInputSize.zw);
 }`;
 const fogSources = new Float32Array(FOG_MAX_SRC * 4);
+// explicit UniformGroup (mirrors Pixi's own DisplacementFilter) so per-frame writes upload reliably
+const fogUniforms = new UniformGroup({
+  uSources: { value: fogSources, type: "vec4<f32>", size: FOG_MAX_SRC },
+  uCount: { value: 0, type: "f32" },
+  uInner: { value: 0.55, type: "f32" },
+});
 const fogFilter = new Filter({
   glProgram: GlProgram.from({ vertex: fogVert, fragment: fogFrag }),
-  resources: {
-    fogUniforms: {
-      uSources: { value: fogSources, type: "vec4<f32>", size: FOG_MAX_SRC },
-      uCount: { value: 0, type: "f32" },
-      uInner: { value: 0.55, type: "f32" },
-    },
-  },
+  resources: { fogUniforms },
+  clipToViewport: true, // clip the (map-sized) sprite's filter pass to the screen — bounded RT
 });
 terrainBright.filters = [fogFilter];
 world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask);
@@ -182,7 +183,7 @@ function bakeTerrain(seed: number, W: number, H: number) {
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
   expMask.clear();
-  fogFilter.resources.fogUniforms.uniforms.uCount = 0;
+  fogUniforms.uniforms.uCount = 0; fogUniforms.update();
   bakeTerrain(seed, W, H);
   terrainKey = `${seed}:${W}:${H}`;
 }
@@ -218,9 +219,8 @@ function rebuildVisionMask() {
   };
   for (const b of s.bases) if (b.owner === s.you) add(b.x, b.y, BASE_VISION * vm);
   for (const e of unitViews.values()) if (e.u.owner === s.you) add(e.gx, e.gy, e.vr);
-  const u = fogFilter.resources.fogUniforms.uniforms;
-  u.uCount = n;
-  fogFilter.resources.fogUniforms.update();
+  fogUniforms.uniforms.uCount = n;
+  fogUniforms.update();
 }
 
 // Explored "memory" mask — grows discretely as you scout (a coarse stamp per new cell).
