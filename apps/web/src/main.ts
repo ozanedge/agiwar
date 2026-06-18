@@ -163,18 +163,27 @@ function resetFog(seed: number, W: number, H: number) {
   terrainKey = `${seed}:${W}:${H}`;
 }
 
-function renderFog(s: StateMsg) {
-  if (!visRT || !expRT) return;
-  const vm = modsFor(s.armyDoctrine).visionMult; // doctrine vision (Phantom sees farther)
-  // a unit's sight = base range + HIGH-GROUND bonus (matches server), capped, ×doctrine
-  const sight = (u: StateMsg["units"][number]) =>
-    Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT);
-  // current vision — rebuilt each tick into visRT (soft alpha blobs)
+// a unit's sight = base range + HIGH-GROUND bonus (matches server), capped, ×doctrine
+function unitSight(u: StateMsg["units"][number], s: StateMsg): number {
+  return Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT) * modsFor(s.armyDoctrine).visionMult;
+}
+
+// Current vision (bright mask) — rebuilt EVERY FRAME from the units' INTERPOLATED positions so the
+// shroud glides with them instead of snapping at the 5Hz server rate.
+function rebuildVisionMask() {
+  if (!visRT || !latestState) return;
+  const s = latestState;
+  const vm = modsFor(s.armyDoctrine).visionMult;
   for (const c of visScene.removeChildren()) c.destroy();
   for (const b of s.bases) if (b.owner === s.you) softBlob(visScene, b.x, b.y, BASE_VISION * vm);
-  for (const u of s.units) if (u.owner === s.you) softBlob(visScene, u.x, u.y, sight(u) * vm);
+  for (const e of unitViews.values()) if (e.u.owner === s.you) softBlob(visScene, e.gx, e.gy, unitSight(e.u, s)); // glide-positioned
   app.renderer.render({ container: visScene, target: visRT, clear: true });
-  // explored memory — add a blob the first time a viewer enters a coarse cell; persists in expRT
+}
+
+// Explored "memory" (dim mask) — grows discretely as you scout (a coarse stamp per new cell).
+function renderFog(s: StateMsg) {
+  if (!expRT) return;
+  const vm = modsFor(s.armyDoctrine).visionMult;
   let grew = false;
   const stamp = (gx: number, gy: number, R: number) => {
     const key = (gx >> 5) * 100003 + (gy >> 5);
@@ -182,7 +191,7 @@ function renderFog(s: StateMsg) {
     exploredCoarse.add(key); softBlob(expScene, gx, gy, R); grew = true;
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
-  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, sight(u) * vm);
+  for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, unitSight(u, s));
   if (grew) app.renderer.render({ container: expScene, target: expRT, clear: true });
 }
 
@@ -909,7 +918,7 @@ function reconcileUnits(s: StateMsg) {
 // glide every holder toward its target cell each frame (frame-rate independent exponential ease)
 const GLIDE_RATE = 9;
 app.ticker.add(() => {
-  if (!latestState || !unitViews.size) return;
+  if (!latestState) return;
   const s = latestState;
   const k = 1 - Math.exp(-Math.min(0.05, app.ticker.deltaMS / 1000) * GLIDE_RATE);
   for (const e of unitViews.values()) {
@@ -917,6 +926,7 @@ app.ticker.add(() => {
     e.gy += (e.tgy - e.gy) * k;
     placeHolder(e, s);
   }
+  rebuildVisionMask(); // shroud follows the gliding units every frame (no 5Hz snap)
 });
 
 function updateReadout() {
