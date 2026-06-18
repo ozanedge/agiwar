@@ -45,6 +45,10 @@ const HIGH_GROUND_MIN = 0.6, HIGH_GROUND_MAX = 1.6;
 // the army travels as a coherent pack instead of a scattered swarm of independent wanderers.
 const PACK_RADIUS = 14 * GRID_SCALE; // friendly combatants within this many cells form one pack
 const PACK_KEEP = 4 * GRID_SCALE; // a straggler farther than this from the pack center rejoins it
+const SUPPORT_RADIUS = 8 * GRID_SCALE; // a unit rushes to help only allies being attacked THIS close
+const SUPPORT_MEMORY = 14; // ticks an "ally under attack" beacon stays hot after the last shot at it
+// last tick each unit was fired upon (by an enemy) — lets nearby allies rally to a unit in a fight.
+const underAttack = new Map<number, number>();
 const groundHeight = (g: GameState, x: number, y: number) => heightAt(x, y, g.seed, GRID_W, GRID_H);
 // extra attack range + sight (in fine cells) from standing on high ground — a big positional edge
 const hgBonus = (g: GameState, x: number, y: number) => highGroundBonus(groundHeight(g, x, y));
@@ -315,15 +319,15 @@ function effectiveSpec(g: GameState, u: UnitState): BehaviorSpec {
   return camp ? camp.spec : PRESET_SPECS[u.camp];
 }
 
-type Target = { x: number; y: number; owner: number; ref: { hp: number } };
+type Target = { x: number; y: number; owner: number; ref: { hp: number }; unit?: UnitState };
 function nearestEnemy(g: GameState, u: UnitState): Target | null {
   let best: Target | null = null;
   let bestD = Infinity;
-  const consider = (x: number, y: number, owner: number, ref: { hp: number }) => {
+  const consider = (x: number, y: number, owner: number, ref: { hp: number }, unit?: UnitState) => {
     const d = cheb(u.x, u.y, x, y);
-    if (d < bestD) { bestD = d; best = { x, y, owner, ref }; }
+    if (d < bestD) { bestD = d; best = { x, y, owner, ref, unit }; }
   };
-  for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e.owner, e);
+  for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e.owner, e, e);
   for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b.owner, b);
   for (const a of g.artifacts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy artifacts
   return best;
@@ -523,6 +527,26 @@ function decide(g: GameState, u: UnitState) {
     return;
   }
 
+  // 3b) SUPPORT A NEARBY ALLY UNDER ATTACK: if a close ally is currently in a fight, rush to group up
+  // with it and join the engagement. Deliberately short-ranged (SUPPORT_RADIUS) so it's local mutual
+  // support, not a map-wide swarm. Armed units only; scouts keep scouting.
+  if (!isScout && canMove) {
+    let ally: UnitState | null = null, ad = SUPPORT_RADIUS + 1;
+    for (const a of g.units) {
+      if (a === u || a.owner !== u.owner || a.hp <= 0) continue;
+      const last = underAttack.get(a.id);
+      if (last === undefined || g.tick - last > SUPPORT_MEMORY) continue; // not currently in a fight
+      const d = cheb(u.x, u.y, a.x, a.y);
+      if (d <= SUPPORT_RADIUS && d < ad) { ad = d; ally = a; }
+    }
+    if (ally) {
+      // close in: shoot the attacker if it's already in reach, else move onto the embattled ally
+      if (enemy && enemyDist <= SUPPORT_RADIUS) { if (enemyDist <= range) atk(enemy!); else mv(enemy!.x, enemy!.y); }
+      else mv(ally.x, ally.y);
+      return;
+    }
+  }
+
   // 4) no engagement: drift by doctrine.
   //    forwardChance high for attack, ~0 for recon; wanderChance high for recon (roams, incl back);
   //    leftover probability = hold position (conservative). Defensive units are usually leashed above.
@@ -561,6 +585,7 @@ function attack(g: GameState, u: UnitState, target: Target) {
   const highSteady = 1 + 0.12 * (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y));
   const hitChance = Math.max(0.1, Math.min(0.98, stats.accuracy * falloff * highSteady * moraleAccFactor(g.players[u.owner].morale)));
   const hit = hash01(u.id + 91, g.tick) < hitChance; // decorrelated from movement/engage rolls
+  if (target.unit) underAttack.set(target.unit.id, g.tick); // beacon: this ally is in a fight (hit or not)
   if (hit) {
     const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult); // artifact/investment + doctrine
     // high-ground rule: scale damage by elevation delta, clamped; Highland doctrine amplifies it.
@@ -642,6 +667,7 @@ export function step(g: GameState) {
   occ = null;
   // tally casualties this tick → recent losses (drags morale)
   for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
+  for (const u of g.units) if (u.hp <= 0) underAttack.delete(u.id); // drop dead units from the support beacons
   g.units = g.units.filter((u) => u.hp > 0);
   // a sieged artifact reverts to neutral (recapturable) rather than being destroyed
   for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; a.capProgress = 0; a.capOwner = -1; }
