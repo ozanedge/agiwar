@@ -47,6 +47,15 @@
                     radial-gradient(150% 130% at 50% 55%, transparent 52%, rgba(1,4,8,.6)); }
       /* full-width bottom strip; 6 equal flex cards fill it */
       #controls { grid-column: 1 / 4; grid-row: 3; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--edge); align-items: stretch; background: var(--bg-panel); backdrop-filter: blur(6px); }
+      /* the single ORDERS console — bottom-left, broadcasts to the whole staff */
+      .orders { box-sizing: border-box; flex: 0 0 312px; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px; border: 1px solid var(--accent); border-radius: 8px; background: linear-gradient(180deg, rgba(0,255,209,.07), rgba(0,255,209,.02)); box-shadow: 0 0 22px rgba(0,255,209,.14), inset 0 0 24px rgba(0,255,209,.05); }
+      .orders .ordhd { font-size: 12px; font-weight: 700; letter-spacing: .08em; color: #eafffb; text-shadow: 0 0 8px rgba(0,255,209,.4); }
+      .orders .ordhd .ordsub { font-weight: 400; letter-spacing: .02em; color: var(--accent-dim); font-size: 10px; }
+      .orders textarea { flex: 1; min-height: 0; resize: none; background: #03080d; color: var(--text); border: 1px solid rgba(0,255,209,.3); border-radius: 5px; padding: 8px 9px; font: inherit; line-height: 1.4; }
+      .orders textarea::placeholder { color: #5d7570; }
+      .orders textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 10px rgba(0,255,209,.25); }
+      .orders .send { padding: 8px; justify-content: center; border-color: var(--accent); color: #eafffb; font-weight: 600; }
+      .orders .send:hover { background: rgba(0,255,209,.16); box-shadow: 0 0 12px rgba(0,255,209,.3); }
       .cmd { box-sizing: border-box; flex: 1 1 0; min-width: 0; border: 1px solid var(--edge); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 0 14px rgba(0,255,209,.05); }
       .cmd .cmdhd { display: flex; align-items: center; gap: 7px; min-width: 0; }
       .cmd .cmdhd .av { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 9px; filter: drop-shadow(0 0 5px rgba(0,255,209,.18)); }

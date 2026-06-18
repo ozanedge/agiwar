@@ -1123,26 +1123,36 @@ function avatarSVG(id: string): string {
 
 function buildCommanders() {
   controlsEl.innerHTML = "";
+  // ONE order box (bottom-left). Whatever you type is broadcast to your whole staff; each commander
+  // applies the part relevant to its role. The six cards to the right are now display-only — they
+  // show each commander and how the order landed in its memory + current doctrine.
+  const orders = document.createElement("div");
+  orders.className = "orders";
+  orders.innerHTML =
+    `<div class="ordhd">⌖ ORDERS <span class="ordsub">→ broadcast to your whole staff</span></div>` +
+    `<textarea id="order-input" placeholder="Command your generals & advisors…  e.g. “push the east, tanks up front, save for armor”  (Enter to send)"></textarea>` +
+    `<button class="send" id="order-send">Relay order ▸</button>`;
+  controlsEl.appendChild(orders);
+  const relay = () => {
+    const inp = document.getElementById("order-input") as HTMLTextAreaElement;
+    const text = inp.value.trim();
+    if (!text) return;
+    inp.value = "";
+    sendCmd({ type: "command", text });
+  };
+  (document.getElementById("order-send") as HTMLButtonElement).onclick = relay;
+  (document.getElementById("order-input") as HTMLTextAreaElement).addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); relay(); } // Enter sends, Shift+Enter = newline
+  });
+
   for (const c of COMMANDERS) {
     const div = document.createElement("div");
     div.className = "cmd";
     div.innerHTML =
       `<div class="cmdhd">${avatarSVG(c.id)}<h4 class="${c.cls}" id="lbl-${c.id}">…</h4></div>` +
       `<div class="mem" id="mem-${c.id}"></div>` +
-      (c.kind === "camp" ? `<div class="spec" id="spec-${c.id}"></div><span class="cool" id="cool-${c.id}"></span>` : "") +
-      `<div class="cmdrow"><input id="in-${c.id}" placeholder="message…"/><button class="send" id="send-${c.id}">Send</button></div>`;
+      (c.kind === "camp" ? `<div class="spec" id="spec-${c.id}"></div><span class="cool" id="cool-${c.id}"></span>` : "");
     controlsEl.appendChild(div);
-    const send = () => {
-      const inp = document.getElementById(`in-${c.id}`) as HTMLInputElement;
-      const text = inp.value.trim();
-      if (!text) return;
-      inp.value = "";
-      if (c.kind === "camp") sendCmd({ type: "editPrompt", camp: c.id, prompt: text });
-      else if (c.kind === "field") sendCmd({ type: "editFieldGeneral", prompt: text });
-      else sendCmd({ type: "editAdvisor", prompt: text });
-    };
-    (document.getElementById(`send-${c.id}`) as HTMLButtonElement).onclick = send;
-    (document.getElementById(`in-${c.id}`) as HTMLInputElement).addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   }
 }
 function syncCommanders() {

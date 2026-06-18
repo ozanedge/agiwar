@@ -2,7 +2,7 @@
 // Each match is a Room with its own GameState, tick loop, and per-player field generals.
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
-import type { ClientMsg, ServerMsg } from "../../shared/types.js";
+import type { Camp, ClientMsg, ServerMsg } from "../../shared/types.js";
 import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
@@ -66,6 +66,26 @@ const appendMemory = (cur: string, msg: string): string => {
   if (!add) return cur;
   return (cur + "\n• " + add).split("\n").map((s) => s.trim()).filter(Boolean).slice(-14).join("\n");
 };
+
+// (re)compile one camp general from its full memory → native doctrine spec + unit mix. Cooldown-gated
+// by the caller; this just runs the compile and pushes the result. Used by both the single-camp edit
+// and the broadcast "command" (which recompiles every off-cooldown camp).
+async function recompileCamp(ws: WebSocket, g: GameState, player: number, camp: Camp) {
+  camp.compiling = true;
+  sendOwnCamps(ws, g, player); // reflect "compiling…"
+  try {
+    const { spec, mix, source } = await compilePolicy(camp.prompt);
+    camp.spec = spec;
+    if (mix) camp.production.mix = mix; // the general also chooses what it trains
+    send(ws, { type: "notice", level: "info", text: `${camp.label} retrained via ${source}.` });
+  } catch (err) {
+    send(ws, { type: "notice", level: "error", text: `${camp.label} retrain failed (${(err as Error).message}).` });
+  } finally {
+    camp.compiling = false;
+    camp.cooldownUntil = wallClock() + COOLDOWN_MS;
+    sendOwnCamps(ws, g, player);
+  }
+}
 
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
@@ -337,15 +357,28 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
       send(ws, { type: "notice", level: "info", text: `Noted for ${camp.label} — doctrine recompiles in ${Math.ceil((camp.cooldownUntil - now) / 1000)}s.` });
       return;
     }
-    camp.compiling = true;
-    sendOwnCamps(ws, g, player); // reflect "compiling…"
-    const { spec, mix, source } = await compilePolicy(camp.prompt); // compile the full memory
-    camp.spec = spec;
-    if (mix) camp.production.mix = mix; // the general also chooses what it trains (incl. drones)
-    camp.compiling = false;
-    camp.cooldownUntil = wallClock() + COOLDOWN_MS;
-    sendOwnCamps(ws, g, player);
-    send(ws, { type: "notice", level: "info", text: `${camp.label} retrained via ${source}.` });
+    await recompileCamp(ws, g, player, camp);
+    return;
+  }
+
+  // ONE order → the whole staff. Each commander gets the order in its memory and applies the parts
+  // relevant to its own role: the field general & advisor on their next event-gated decision, and
+  // every camp general recompiles its doctrine now (those still on cooldown just bank the memory and
+  // recompile when it lifts). This is the single command box the player types into.
+  if (msg.type === "command") {
+    const text = String(msg.text ?? "").trim();
+    if (!text) return;
+    const p = g.players[player];
+    p.advisor.prompt = appendMemory(p.advisor.prompt, text); room.advisors[player]?.resetGate();
+    p.fieldGeneral.prompt = appendMemory(p.fieldGeneral.prompt, text); room.runners[player]?.resetGate();
+    for (const camp of p.camps) camp.prompt = appendMemory(camp.prompt, text);
+    sendOwnCamps(ws, g, player); // memory now visible on every commander card
+    send(ws, { type: "notice", level: "info", text: `Order relayed to all commanders: "${text.length > 70 ? text.slice(0, 70) + "…" : text}"` });
+    const now = wallClock();
+    const deferred = p.camps.filter((c) => now < c.cooldownUntil).length;
+    for (const camp of p.camps) if (now >= camp.cooldownUntil) void recompileCamp(ws, g, player, camp); // off-cooldown camps recompile now (concurrently)
+    if (deferred) send(ws, { type: "notice", level: "info", text: `${deferred} camp${deferred > 1 ? "s" : ""} on cooldown — will apply the order when it lifts.` });
+    return;
   }
 }
 

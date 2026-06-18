@@ -184,6 +184,7 @@ export interface FieldGeneralDecision {
 
 /** client -> server commands. Deliberately sparse — this is a low-APM game. */
 export type ClientMsg =
+  | { type: "command"; text: string } // ONE order broadcast to the whole staff; each commander applies the part relevant to its role
   | { type: "editPrompt"; camp: DoctrineId; prompt: string }
   | { type: "editFieldGeneral"; prompt: string } // reauthor the field general's command style
   | { type: "editAdvisor"; prompt: string } // reauthor the investment advisor's economic doctrine
