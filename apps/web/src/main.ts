@@ -176,7 +176,7 @@ function rebuildVisionMask() {
   const vm = modsFor(s.armyDoctrine).visionMult;
   for (const c of visScene.removeChildren()) c.destroy();
   for (const b of s.bases) if (b.owner === s.you) softBlob(visScene, b.x, b.y, BASE_VISION * vm);
-  for (const e of unitViews.values()) if (e.u.owner === s.you) softBlob(visScene, e.gx, e.gy, unitSight(e.u, s)); // glide-positioned
+  for (const e of unitViews.values()) if (e.u.owner === s.you) softBlob(visScene, e.gx, e.gy, e.vr); // glide-positioned + eased radius
   app.renderer.render({ container: visScene, target: visRT, clear: true });
 }
 
@@ -880,7 +880,7 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
 }
 
 // ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
-interface UnitView { holder: Container; art: Container | null; gx: number; gy: number; tgx: number; tgy: number; u: StateMsg["units"][number]; }
+interface UnitView { holder: Container; art: Container | null; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
 const unitViews = new Map<number, UnitView>();
 const transientFx: Container[] = []; // bases/artifacts/rally — rebuilt each state (no interpolation)
 
@@ -898,7 +898,7 @@ function reconcileUnits(s: StateMsg) {
     if (!e) {
       const holder = new Container();
       holder.eventMode = "static"; holder.cursor = "pointer";
-      e = { holder, art: null, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, u };
+      e = { holder, art: null, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
       const ev = e;
       holder.on("pointerover", () => { hovered = ev.u; updateReadout(); });
       holder.on("pointerout", () => { if (hovered?.id === ev.u.id) { hovered = null; updateReadout(); } });
@@ -924,6 +924,7 @@ app.ticker.add(() => {
   for (const e of unitViews.values()) {
     e.gx += (e.tgx - e.gx) * k;
     e.gy += (e.tgy - e.gy) * k;
+    e.vr += (unitSight(e.u, s) - e.vr) * k; // ease the vision RADIUS too (high-ground changes it)
     placeHolder(e, s);
   }
   rebuildVisionMask(); // shroud follows the gliding units every frame (no 5Hz snap)
