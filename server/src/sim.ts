@@ -427,16 +427,17 @@ function packCenter(g: GameState, u: UnitState, R: number): { x: number; y: numb
 function decide(g: GameState, u: UnitState) {
   const stats = UNIT_STATS[u.unit];
   const period = (n: number) => Math.max(1, Math.round(n * SPEED_MULT));
-  // Movement is on the finer grid (GRID_SCALE× cells/axis). To keep PHYSICAL speed + the
-  // per-type hierarchy: act ~GRID_SCALE× more often (movePeriod), and for units whose ideal
-  // cadence would drop below 1 tick, take `stepBoost` fine steps per action instead. Attack
-  // cadence is time-based, so it is NOT touched by the grid change.
   const mods = playerMods(g, u.owner);
   const bonus = playerBonus(g, u.owner);
-  const speedInv = 1 / (1 + bonus.speed * 0.1); // Engines upgrade: each level ~10% faster (smaller period)
-  const movePeriod = Math.max(1, Math.round((stats.moveEvery / GRID_SCALE) * SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale) * speedInv)); // doctrine + morale + upgrade speed
-  const stepBoost = Math.max(1, Math.round(GRID_SCALE / stats.moveEvery));
-  const canMove = (g.tick + u.id) % movePeriod === 0; // per-type speed
+  // FRACTIONAL speed: accumulate cells/tick (no integer-period rounding, so the per-type ratio is
+  // exact — a tank with moveEvery 2× a gunner's moves at exactly half a gunner's speed, always).
+  //   cells/tick = (GRID_SCALE / moveEvery) × Engines-speedup ÷ (global × doctrine × morale slowdowns)
+  const slow = SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale);
+  const cellsPerTick = stats.stationary ? 0 : (GRID_SCALE / stats.moveEvery) * (1 + bonus.speed * 0.1) / slow;
+  const acc = ((u as any)._acc || 0) + cellsPerTick;
+  const stepBoost = Math.floor(acc); // whole cells to advance this tick (0,1,2…)
+  (u as any)._acc = acc - stepBoost; // carry the fraction
+  const canMove = stepBoost > 0;
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
