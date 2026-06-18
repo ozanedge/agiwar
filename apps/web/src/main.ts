@@ -313,20 +313,47 @@ function restart(solo: boolean) {
 }
 
 // ---- army doctrine picker (once per match, #4): your build identity ----
-function showDoctrinePicker(current: string) {
+const DOCTRINE_SECONDS = 15;
+let doctrineTimer: number | undefined;
+function pickDoctrine(id: string) {
+  clearInterval(doctrineTimer);
+  sendCmd({ type: "chooseArmyDoctrine", id });
   document.getElementById("doctrine")?.remove();
+}
+function showDoctrinePicker(current: string) {
+  clearInterval(doctrineTimer);
+  document.getElementById("doctrine")?.remove();
+  const C = 2 * Math.PI * 18; // ring circumference for the spindown
   const el = document.createElement("div");
   el.id = "doctrine";
-  el.innerHTML = `<div class="dpanel"><h3>Choose your army doctrine</h3><div class="dsub">Your build identity for this match — pick how you want to win. You can play on without choosing (Combined Arms).</div><div class="dcards"></div></div>`;
+  el.innerHTML =
+    `<div class="dpanel">` +
+    `<svg class="dtimer" viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="18"/><circle class="ring" cx="22" cy="22" r="18"/><text id="dtnum" x="22" y="26.5">${DOCTRINE_SECONDS}</text></svg>` +
+    `<h3>Choose your army doctrine</h3>` +
+    `<div class="dsub">Your build identity for this match — pick how you want to win. Auto-selects Combined Arms when the timer runs out.</div>` +
+    `<div class="dcards"></div></div>`;
   const cards = el.querySelector(".dcards")!;
   for (const d of ARMY_DOCTRINES) {
     const c = document.createElement("button");
     c.className = "dcard" + (d.id === current ? " cur" : "");
     c.innerHTML = `<div class="dl">${d.label}</div><div class="dh">${d.hint}</div><div class="db">${d.blurb}</div>`;
-    c.onclick = () => { sendCmd({ type: "chooseArmyDoctrine", id: d.id }); el.remove(); };
+    c.onclick = () => pickDoctrine(d.id);
     cards.appendChild(c);
   }
   stage.appendChild(el);
+  // 15s circular spindown → auto-pick Combined Arms (balanced) on timeout
+  const ring = el.querySelector(".ring") as SVGCircleElement;
+  ring.style.strokeDasharray = `${C}`;
+  ring.style.strokeDashoffset = "0";
+  ring.style.transition = `stroke-dashoffset ${DOCTRINE_SECONDS}s linear`;
+  requestAnimationFrame(() => { ring.style.strokeDashoffset = `${C}`; });
+  const num = el.querySelector("#dtnum")!;
+  let left = DOCTRINE_SECONDS;
+  doctrineTimer = window.setInterval(() => {
+    left -= 1;
+    num.textContent = String(Math.max(0, left));
+    if (left <= 0) pickDoctrine("balanced");
+  }, 1000);
 }
 
 // ---- strategic fork banner (#1/#5): a commander asks; you answer (or it auto-resolves) ----
@@ -511,21 +538,73 @@ function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(b.x, b.y), cy = isoY(b.x, b.y) - elev;
   const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
-  // base art is drawn in TILE units; tiles shrank by GRID_SCALE, so scale back up to keep the
-  // fortress the same on-screen size as before (it spans more fine cells now, which is correct).
-  const BW = TILE_W * GRID_SCALE, BH = TILE_H * GRID_SCALE;
-  // big iso fortress: shadow → team glow → stone platform → flanking towers → central keep → flag → hp
-  g.ellipse(cx, cy + BH * 1.0, BW * 2.5, BH * 1.7).fill({ color: 0x000000, alpha: 0.32 });
-  g.ellipse(cx, cy + BH * 0.9, BW * 3.0, BH * 2.1).fill({ color: team, alpha: 0.12 }); // team glow
-  isoBox(g, cx, cy + BH * 1.3, BW * 2.0, BH * 2.0, BH * 0.6, 0x3a4250); // platform
-  isoBox(g, cx - BW * 1.25, cy + BH * 0.5, BW * 0.5, BH * 0.5, BH * 3.2, tint(team, -0.12)); // L tower
-  isoBox(g, cx + BW * 1.25, cy + BH * 0.5, BW * 0.5, BH * 0.5, BH * 3.2, tint(team, -0.12)); // R tower
-  const keepH = BH * 4.6, keepBaseY = cy + BH * 0.2;
-  isoBox(g, cx, keepBaseY, BW * 0.95, BH * 0.95, keepH, team); // central keep
-  const topY = keepBaseY - keepH - BH * 0.95;
-  g.rect(cx - 1, topY - 18, 2, 18).fill(0xcfd8e3); // flag pole
-  g.poly([cx + 1, topY - 18, cx + 15, topY - 13, cx + 1, topY - 8]).fill(tint(team, 0.35)); // banner
-  g.rect(cx - BW * 0.95, topY - 26, (b.hp / b.maxHp) * BW * 1.9, 4).fill(team); // hp bar
+  const wall = tint(team, -0.22), lit = tint(team, 0.35), steel = 0x3a4250;
+  const pulse = 0.5 + 0.5 * Math.sin(s.tick / 6);
+  const BW = TILE_W * GRID_SCALE, BH = TILE_H * GRID_SCALE; // ~old tile size (base art kept big)
+
+  // ---- structure drawers (screen-space, drawn back→front) ----
+  const tower = (x: number, y: number, h: number) => { // guard tower w/ lit crown + blinker
+    isoBox(g, x, y, BW * 0.42, BH * 0.42, h, wall);
+    const t = y - h; g.poly([x, t - BH * 0.6, x + BW * 0.5, t - BH * 0.18, x, t + BH * 0.24, x - BW * 0.5, t - BH * 0.18]).fill(tint(team, 0.18)); // crown
+    g.circle(x, t - BH * 0.3, 1.6).fill({ color: 0xff5d5d, alpha: 0.5 + 0.5 * pulse });
+  };
+  const dome = (x: number, y: number, r: number) => { // radar / lab dome
+    g.ellipse(x, y, r, r * 0.5).fill(tint(steel, -0.2));
+    g.circle(x, y - r * 0.12, r * 0.92).fill(tint(team, -0.3)).stroke({ color: tint(team, 0.25), width: 1, alpha: 0.5 });
+    g.circle(x - r * 0.32, y - r * 0.42, r * 0.3).fill({ color: 0xffffff, alpha: 0.12 });
+  };
+  const dish = (x: number, y: number) => { // satellite dish on a mast
+    g.rect(x - 1.3, y - 13, 2.6, 13).fill(wall);
+    g.ellipse(x + 4, y - 15, 8.5, 5.4).fill(tint(team, 0.05)).stroke({ color: tint(team, 0.35), width: 1.2, alpha: 0.7 });
+    g.ellipse(x + 4, y - 15, 4.6, 2.9).fill(tint(steel, -0.25));
+    g.moveTo(x + 4, y - 15).lineTo(x + 9, y - 19).stroke({ color: wall, width: 1 });
+    g.circle(x + 9, y - 19, 1.5).fill({ color: team, alpha: 0.55 + 0.45 * pulse });
+  };
+  const antenna = (x: number, y: number, h: number) => { // comm mast w/ guy wires + beacon
+    g.moveTo(x, y - h).lineTo(x - 8, y).stroke({ color: wall, width: 0.7, alpha: 0.5 });
+    g.moveTo(x, y - h).lineTo(x + 8, y).stroke({ color: wall, width: 0.7, alpha: 0.5 });
+    g.rect(x - 0.9, y - h, 1.8, h).fill(lit);
+    g.circle(x, y - h, 1.8).fill({ color: 0xff5d5d, alpha: 0.45 + 0.55 * pulse });
+  };
+  const helipad = (x: number, y: number) => {
+    g.ellipse(x, y, BW * 0.95, BH * 0.95).fill(0x222830);
+    g.ellipse(x, y, BW * 0.95, BH * 0.95).stroke({ color: tint(team, 0.2), width: 1.5, alpha: 0.6 });
+    g.rect(x - 5, y - 5, 1.8, 10).fill(lit); g.rect(x + 3.2, y - 5, 1.8, 10).fill(lit); g.rect(x - 5, y - 0.9, 8.2, 1.8).fill(lit); // "H"
+    for (const [hx, hy] of [[-BW * 0.82, 0], [BW * 0.82, 0], [0, -BH * 0.82], [0, BH * 0.82]] as [number, number][]) g.circle(x + hx, y + hy, 1.2).fill({ color: team, alpha: 0.45 + 0.55 * pulse });
+  };
+
+  // ---- shadow + team energy field ----
+  g.ellipse(cx, cy + BH * 1.5, BW * 3.7, BH * 2.5).fill({ color: 0x000000, alpha: 0.34 });
+  g.ellipse(cx, cy + BH * 1.3, BW * 4.3, BH * 3.0).fill({ color: team, alpha: 0.10 });
+
+  // ---- compound deck ----
+  isoBox(g, cx, cy + BH * 1.7, BW * 3.0, BH * 3.0, BH * 0.7, steel);
+
+  // ---- back row (up-screen, drawn first) ----
+  dish(cx - BW * 1.6, cy - BH * 0.4);
+  antenna(cx + BW * 1.9, cy - BH * 0.7, BH * 4.2);
+  dome(cx + BW * 0.6, cy - BH * 1.0, BW * 0.85); // radar dome
+  tower(cx - BW * 2.1, cy - BH * 0.2, BH * 3.2);
+  tower(cx + BW * 2.1, cy - BH * 0.2, BH * 3.2);
+
+  // ---- central command keep (tall, lit windows, flag) ----
+  const keepH = BH * 5.0, keepY = cy + BH * 0.5;
+  isoBox(g, cx, keepY, BW * 1.05, BH * 1.05, keepH, team);
+  const top = keepY - keepH;
+  for (let r = 0; r < 4; r++) { g.rect(cx - BW * 0.62, top + BH * 0.9 + r * BH * 0.95, 4.5, 5.5).fill({ color: lit, alpha: 0.85 }); g.rect(cx + BW * 0.22, top + BH * 0.9 + r * BH * 0.95, 4.5, 5.5).fill({ color: lit, alpha: 0.85 }); }
+  g.rect(cx - 1.1, top - 22, 2.2, 22).fill(0xcfd8e3); // flag pole
+  g.poly([cx + 1, top - 22, cx + 17, top - 16.5, cx + 1, top - 11]).fill(tint(team, 0.4)); // banner
+  g.circle(cx, top - 1, 2.2).fill({ color: team, alpha: 0.6 + 0.4 * pulse }); // rooftop beacon
+
+  // ---- front row (down-screen, drawn last so it overlaps) ----
+  dome(cx + BW * 1.7, cy + BH * 1.1, BW * 0.7); // lab dome
+  helipad(cx - BW * 1.5, cy + BH * 1.2);
+  tower(cx - BW * 2.0, cy + BH * 1.0, BH * 2.9);
+  tower(cx + BW * 2.0, cy + BH * 1.0, BH * 2.9);
+
+  // ---- hp bar above the keep ----
+  g.rect(cx - BW, top - 34, BW * 2, 4).fill({ color: 0x000000, alpha: 0.4 });
+  g.rect(cx - BW, top - 34, (b.hp / b.maxHp) * BW * 2, 4).fill(team);
   g.zIndex = b.x + b.y;
   return g;
 }

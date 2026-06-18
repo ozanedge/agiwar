@@ -130,7 +130,11 @@
       .mmskip:hover:not(:disabled) { background: rgba(0,255,209,.18); box-shadow: 0 0 14px rgba(0,255,209,.3); }
       /* army doctrine picker (match start) */
       #doctrine { position: absolute; inset: 0; z-index: 46; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(2,6,10,.72), rgba(2,6,10,.92)); backdrop-filter: blur(3px); }
-      .dpanel { width: min(880px, 92%); border: 1px solid var(--edge); border-radius: 10px; background: var(--bg-panel); padding: 18px; box-shadow: 0 0 40px rgba(0,255,209,.12); }
+      .dpanel { position: relative; width: min(880px, 92%); border: 1px solid var(--edge); border-radius: 10px; background: var(--bg-panel); padding: 18px; box-shadow: 0 0 40px rgba(0,255,209,.12); }
+      .dtimer { position: absolute; top: 16px; right: 18px; width: 48px; height: 48px; }
+      .dtimer .trk { fill: none; stroke: rgba(0,255,209,.14); stroke-width: 3; }
+      .dtimer .ring { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; filter: drop-shadow(0 0 4px rgba(0,255,209,.6)); }
+      .dtimer text { fill: var(--text); font: 700 14px "JetBrains Mono", monospace; text-anchor: middle; }
       .dpanel h3 { margin: 0 0 2px; color: var(--accent); letter-spacing: .14em; text-transform: uppercase; font-size: 15px; text-shadow: 0 0 10px rgba(0,255,209,.5); }
       .dsub { color: rgba(0,255,209,.5); font-size: 11px; margin-bottom: 14px; }
       .dcards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
