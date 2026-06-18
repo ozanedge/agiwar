@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, BlurFilter, Container, Graphics, Sprite, Text } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -42,20 +42,26 @@ app.stage.addChild(world);
 // independent VISION-MASK overlay: unexplored = stage bg shows through · explored = dim terrain
 // (expMask) · currently visible = bright terrain (visMask) drawn on top.
 const terrainDim = new Sprite(); // baked terrain, darkened — shown where ever-explored
-const terrainBright = new Sprite(); // baked terrain, full — shown where currently visible
 terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
 const expMask = new Graphics(); // union of all explored vision (persists across the match)
-const visMask = new Graphics(); // union of current vision (rebuilt every frame from eased positions)
-// Blur the masks → their alpha edge feathers into a gradient, so visibility fades softly at the
-// limit of sight (a blurred solid ellipse stays opaque in the middle, so no blackout risk).
-visMask.filters = [new BlurFilter({ strength: 18, quality: 4 })];
-expMask.filters = [new BlurFilter({ strength: 14, quality: 3 })];
 terrainDim.mask = expMask;
-terrainBright.mask = visMask;
-world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
+// VISION FEATHER: stacked terrain layers from inner-bright → outer-dim, each masked by a plain
+// (binary) ellipse at an increasing radius. The brightness steps make the sight edge fade as a soft
+// gradient — using only binary masks, which reliably stay visible (no alpha-mask blackout).
+const VIS_STEPS: { tint: number; rf: number }[] = [
+  { tint: 0x5b636e, rf: 1.0 }, // outermost / dimmest (just above explored)
+  { tint: 0x868d97, rf: 0.86 },
+  { tint: 0xc2c6cc, rf: 0.72 },
+  { tint: 0xffffff, rf: 0.55 }, // innermost / full bright
+];
+const visLayers = VIS_STEPS.map((st) => { const sp = new Sprite(); sp.tint = st.tint; const m = new Graphics(); sp.mask = m; return { sp, m, rf: st.rf }; });
+world.addChild(terrainDim); // explored (bottom)
+for (const l of visLayers) world.addChild(l.sp); // outer→inner (array order), inner ends up on top
+world.addChild(entityLayer, fxLayer, expMask);
+for (const l of visLayers) world.addChild(l.m); // masks (not rendered visibly)
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -126,13 +132,14 @@ function bakeTerrain(seed: number, W: number, H: number) {
   const b = g.getLocalBounds();
   if (terrainTex) terrainTex.destroy(true);
   terrainTex = app.renderer.generateTexture({ target: g, resolution: 1 });
-  for (const sp of [terrainDim, terrainBright]) { sp.texture = terrainTex; sp.position.set(b.minX, b.minY); }
+  for (const sp of [terrainDim, ...visLayers.map((l) => l.sp)]) { sp.texture = terrainTex; sp.position.set(b.minX, b.minY); }
   g.destroy();
 }
 
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
-  expMask.clear(); visMask.clear();
+  expMask.clear();
+  for (const l of visLayers) l.m.clear();
   bakeTerrain(seed, W, H);
   terrainKey = `${seed}:${W}:${H}`;
 }
@@ -152,9 +159,12 @@ function unitSight(u: StateMsg["units"][number], s: StateMsg): number {
 function rebuildVisionMask() {
   if (!latestState) return;
   const s = latestState;
-  visMask.clear();
-  for (const b of s.bases) if (b.owner === s.you) visionMark(visMask, b.x, b.y, BASE_VISION * modsFor(s.armyDoctrine).visionMult);
-  for (const e of unitViews.values()) if (e.u.owner === s.you) visionMark(visMask, e.gx, e.gy, e.vr);
+  const vm = modsFor(s.armyDoctrine).visionMult;
+  for (const l of visLayers) {
+    l.m.clear();
+    for (const b of s.bases) if (b.owner === s.you) visionMark(l.m, b.x, b.y, BASE_VISION * vm * l.rf);
+    for (const e of unitViews.values()) if (e.u.owner === s.you) visionMark(l.m, e.gx, e.gy, e.vr * l.rf);
+  }
 }
 
 // Explored "memory" mask — grows discretely as you scout (a coarse stamp per new cell).
