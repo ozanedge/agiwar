@@ -1,5 +1,5 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Filter, GlProgram, Graphics, Sprite, Text, UniformGroup } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
@@ -46,66 +46,40 @@ terrainDim.tint = 0x44505c; // explored "memory" shading
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
 const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
-const expMask = new Graphics(); // union of all explored vision (persists across the match)
+const terrainBright = new Sprite(); // full-bright terrain, revealed (+ feathered) where currently seen
+// SOFT FOG: vision is an ALPHA mask built from radial-gradient sprites (opaque core → transparent
+// edge), so terrain fades elegantly toward the limit of sight instead of a hard cut. The current-
+// vision mask GLIDES: it's rebuilt every frame from the units' EASED positions/radii (pooled sprites,
+// no GC churn) — beautiful soft fade AND smooth motion together.
+const SOFT_PX = 128;
+const softTex = (() => {
+  const c = document.createElement("canvas"); c.width = c.height = SOFT_PX;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(SOFT_PX / 2, SOFT_PX / 2, SOFT_PX * 0.12, SOFT_PX / 2, SOFT_PX / 2, SOFT_PX / 2);
+  g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.62, "rgba(255,255,255,0.96)"); g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, SOFT_PX, SOFT_PX);
+  return Texture.from(c);
+})();
+const FADE = 1.32; // oversize the soft sprite so full vision reaches ~R, then fades beyond
+const expMask = new Container(); // union of all explored vision (persists; soft sprites)
+const visMask = new Container(); // union of current vision (rebuilt every FRAME from eased positions)
 terrainDim.mask = expMask;
-// VISION FADE: one full-brightness terrain sprite drawn over the dim "memory" terrain, with a
-// custom fragment shader that computes, per pixel, a smooth distance-based opacity toward every
-// vision source's edge — a genuine continuous gradient (no stepped layers, no alpha-mask blackout).
-// The shader outputs terrainColor·visibility; where visibility→0 the dim terrain shows through.
-const terrainBright = new Sprite(); // full-bright terrain, faded at the sight edges by the fog shader
-const FOG_MAX_SRC = 64; // max simultaneous on-screen vision sources fed to the shader
-const fogFrag = `
-in vec2 vTextureCoord;
-out vec4 finalColor;
-uniform sampler2D uTexture;
-uniform vec4 uInputSize;
-uniform vec4 uOutputFrame;
-uniform vec4 uSources[${FOG_MAX_SRC}]; // xy = center (logical screen px), zw = ellipse radii (px)
-uniform float uCount;
-uniform float uInner;                  // fraction of the radius that stays full-bright
-void main(void) {
-  vec4 col = texture(uTexture, vTextureCoord);
-  vec2 p = uOutputFrame.xy + vTextureCoord * uInputSize.xy; // this pixel in logical screen space
-  float vis = 0.0;
-  int n = int(uCount);
-  for (int i = 0; i < ${FOG_MAX_SRC}; i++) {
-    if (i >= n) break;
-    vec4 s = uSources[i];
-    vec2 d = (p - s.xy) / max(s.zw, vec2(0.5)); // normalize to this source's ellipse (1.0 at edge)
-    vis = max(vis, 1.0 - smoothstep(uInner, 1.0, length(d)));
-  }
-  finalColor = col * vis; // premultiplied alpha → scaling rgb+alpha together fades to the dim layer
-}`;
-const fogVert = `
-in vec2 aPosition;
-out vec2 vTextureCoord;
-uniform vec4 uInputSize;
-uniform vec4 uOutputFrame;
-uniform vec4 uOutputTexture;
-vec4 filterVertexPosition(void) {
-  vec2 position = aPosition * uOutputFrame.zw + uOutputFrame.xy;
-  position.x = position.x * (2.0 / uOutputTexture.x) - 1.0;
-  position.y = position.y * (2.0 * uOutputTexture.z / uOutputTexture.y) - uOutputTexture.z;
-  return vec4(position, 0.0, 1.0);
+terrainBright.mask = visMask;
+world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask, visMask);
+function softScale(sp: Sprite, gx: number, gy: number, R: number) {
+  sp.position.set(isoX(gx, gy), isoY(gx, gy));
+  sp.scale.set((R * TILE_W * 2 * FADE) / SOFT_PX, (R * TILE_H * 2 * FADE) / SOFT_PX); // iso-squashed disc
 }
-void main(void) {
-  gl_Position = filterVertexPosition();
-  vTextureCoord = aPosition * (uOutputFrame.zw * uInputSize.zw);
-}`;
-const fogSources = new Float32Array(FOG_MAX_SRC * 4);
-// explicit UniformGroup (mirrors Pixi's own DisplacementFilter) so per-frame writes upload reliably
-const fogUniforms = new UniformGroup({
-  uSources: { value: fogSources, type: "vec4<f32>", size: FOG_MAX_SRC },
-  uCount: { value: 0, type: "f32" },
-  uInner: { value: 0.55, type: "f32" },
-});
-const fogFilter = new Filter({
-  glProgram: GlProgram.from({ vertex: fogVert, fragment: fogFrag }),
-  resources: { fogUniforms },
-  clipToViewport: true, // clip the (map-sized) sprite's filter pass to the screen — bounded RT
-});
-terrainBright.filters = [fogFilter];
-world.addChild(terrainDim, terrainBright, entityLayer, fxLayer, expMask);
+function softVision(gx: number, gy: number, R: number): Sprite {
+  const sp = new Sprite(softTex); sp.anchor.set(0.5); softScale(sp, gx, gy, R); return sp;
+}
+// reusable pool for the per-frame current-vision mask (gliding) — avoids allocating sprites at 60fps
+const visPool: Sprite[] = [];
+function setVisSprite(i: number, gx: number, gy: number, R: number) {
+  let sp = visPool[i];
+  if (!sp) { sp = new Sprite(softTex); sp.anchor.set(0.5); visPool[i] = sp; visMask.addChild(sp); }
+  sp.visible = true; softScale(sp, gx, gy, R);
+}
 
 const isoX = (gx: number, gy: number) => (gx - gy) * (TILE_W / 2);
 const isoY = (gx: number, gy: number) => (gx + gy) * (TILE_H / 2);
@@ -182,45 +156,28 @@ function bakeTerrain(seed: number, W: number, H: number) {
 
 function resetFog(seed: number, W: number, H: number) {
   exploredCoarse.clear();
-  expMask.clear();
-  fogUniforms.uniforms.uCount = 0; fogUniforms.update();
+  for (const c of expMask.removeChildren()) c.destroy();
+  for (const sp of visPool) sp.visible = false;
   bakeTerrain(seed, W, H);
   terrainKey = `${seed}:${W}:${H}`;
 }
 
-// Vision footprint: an iso-squashed ellipse (a circle on the tilted ground).
-function visionMark(g: Graphics, gx: number, gy: number, R: number) {
-  const cx = isoX(gx, gy), cy = isoY(gx, gy);
-  g.ellipse(cx, cy, R * TILE_W, R * TILE_H).fill(0xffffff);
-}
 // a unit's sight = base range + HIGH-GROUND bonus (matches server), capped, ×doctrine
 function unitSight(u: StateMsg["units"][number], s: StateMsg): number {
   return Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + highGroundBonus(heightAt(u.x, u.y, s.seed, s.gridW, s.gridH))) * VISION_MULT) * modsFor(s.armyDoctrine).visionMult;
 }
 
-// Bright vision fade — recomputed EVERY FRAME from the units' EASED (glide) positions + eased radii,
-// so the shroud glides smoothly with the units instead of snapping at the 5Hz server rate. Each
-// source is fed to the fog shader in LOGICAL SCREEN px (center + iso-ellipse radii), and the shader
-// does the smooth per-pixel falloff. Off-screen sources are culled so the per-pixel loop stays short.
+// Current-vision soft mask — rebuilt EVERY FRAME from the units' EASED (glide) positions + eased
+// radii (pooled radial-gradient sprites), so the soft shroud glides smoothly with the units instead
+// of snapping at the 5Hz server rate.
 function rebuildVisionMask() {
   if (!latestState) return;
   const s = latestState;
   const vm = modsFor(s.armyDoctrine).visionMult;
-  const sw = app.screen.width, sh = app.screen.height, sc = cam.scale;
-  let n = 0;
-  const add = (gx: number, gy: number, R: number) => {
-    if (n >= FOG_MAX_SRC) return;
-    const sx = world.x + isoX(gx, gy) * sc, sy = world.y + isoY(gx, gy) * sc;
-    const rx = R * TILE_W * sc, ry = R * TILE_H * sc;
-    if (sx + rx < 0 || sx - rx > sw || sy + ry < 0 || sy - ry > sh) return; // off-screen → skip
-    const o = n * 4;
-    fogSources[o] = sx; fogSources[o + 1] = sy; fogSources[o + 2] = rx; fogSources[o + 3] = ry;
-    n++;
-  };
-  for (const b of s.bases) if (b.owner === s.you) add(b.x, b.y, BASE_VISION * vm);
-  for (const e of unitViews.values()) if (e.u.owner === s.you) add(e.gx, e.gy, e.vr);
-  fogUniforms.uniforms.uCount = n;
-  fogUniforms.update();
+  let i = 0;
+  for (const b of s.bases) if (b.owner === s.you) { setVisSprite(i, b.x, b.y, BASE_VISION * vm); i++; }
+  for (const e of unitViews.values()) if (e.u.owner === s.you) { setVisSprite(i, e.gx, e.gy, e.vr); i++; }
+  for (let j = i; j < visPool.length; j++) visPool[j].visible = false;
 }
 
 // Explored "memory" mask — grows discretely as you scout (a coarse stamp per new cell).
@@ -230,7 +187,7 @@ function renderFog(s: StateMsg) {
     const key = (gx >> 5) * 100003 + (gy >> 5);
     if (exploredCoarse.has(key)) return;
     exploredCoarse.add(key);
-    visionMark(expMask, gx, gy, R);
+    expMask.addChild(softVision(gx, gy, R));
   };
   for (const b of s.bases) if (b.owner === s.you) stamp(b.x, b.y, BASE_VISION * vm);
   for (const u of s.units) if (u.owner === s.you) stamp(u.x, u.y, unitSight(u, s));
