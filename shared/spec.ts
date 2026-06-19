@@ -26,7 +26,7 @@ export function clampSpec(raw: Partial<BehaviorSpec> | null | undefined): Behavi
 export const PRESET_SPECS: Record<DoctrineId, BehaviorSpec> = {
   aggressive: { aggression: 0.95, engageRange: 30, retreatHealthPct: 0.05, explorationBias: 0.1, defendRadius: null },
   recon: { aggression: 0.1, engageRange: 3, retreatHealthPct: 0.6, explorationBias: 0.95, defendRadius: null },
-  defensive: { aggression: 0.5, engageRange: 8, retreatHealthPct: 0.25, explorationBias: 0.0, defendRadius: 6 },
+  defensive: { aggression: 0.5, engageRange: 8, retreatHealthPct: 0.25, explorationBias: 0.0, defendRadius: 15 },
   builder: { aggression: 0.1, engageRange: 2, retreatHealthPct: 0.5, explorationBias: 0.9, defendRadius: null },
 };
 
@@ -55,7 +55,7 @@ export function stubCompile(prompt: string): BehaviorSpec {
     spec = { ...spec, aggression: 0.1, engageRange: 3, retreatHealthPct: 0.6, explorationBias: 0.95, defendRadius: null };
   }
   if (has("defens", "defend", "guard", "protect", "perimeter", "hold", "fortif", "turtle", "wall", "garrison")) {
-    spec = { ...spec, aggression: 0.5, engageRange: 8, retreatHealthPct: 0.25, explorationBias: 0.0, defendRadius: 6 };
+    spec = { ...spec, aggression: 0.5, engageRange: 8, retreatHealthPct: 0.25, explorationBias: 0.0, defendRadius: 15 };
   }
   // fine-grained nudges
   if (has("never retreat", "fight to the death", "no retreat")) spec.retreatHealthPct = 0;

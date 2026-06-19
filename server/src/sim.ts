@@ -510,7 +510,7 @@ function decide(g: GameState, u: UnitState) {
       // it. Each defender takes a slightly different angle across the frontal arc → a spread picket
       // line. Falls back to walking out there; the occupancy spacing keeps them from stacking.
       const foe = g.bases.find((b) => b.owner !== u.owner);
-      const guardR = Math.max(2 * GRID_SCALE, Math.round(leash * 0.55));
+      const guardR = Math.max(4 * GRID_SCALE, Math.round(leash * 0.62)); // hold a wide perimeter, not hugging the base
       const ang = (foe ? Math.atan2(foe.y - myBase.y, foe.x - myBase.x) : 0) + (hash01(u.id, 7) - 0.5) * 1.5;
       const gx = Math.max(0, Math.min(GRID_W - 1, Math.round(myBase.x + Math.cos(ang) * guardR)));
       const gy = Math.max(0, Math.min(GRID_H - 1, Math.round(myBase.y + Math.sin(ang) * guardR)));
@@ -757,7 +757,7 @@ export function applyFieldOrder(g: GameState, owner: number, kind: "rally" | "de
   const ovr: BehaviorSpec =
     kind === "push"
       ? clampSpec({ aggression: 1, engageRange: 30, retreatHealthPct: 0, explorationBias: 0, defendRadius: null })
-      : clampSpec({ aggression: 0.4, engageRange: 8, retreatHealthPct: 0.1, explorationBias: 0, defendRadius: 5 });
+      : clampSpec({ aggression: 0.4, engageRange: 8, retreatHealthPct: 0.1, explorationBias: 0, defendRadius: 13 });
   for (const u of g.units) {
     if (u.owner !== owner) continue;
     if (target !== "all" && u.camp !== target) continue;

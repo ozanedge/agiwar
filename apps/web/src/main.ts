@@ -494,7 +494,23 @@ function addLog(text: string, tick: number) {
 
 // ---- upgrades panel (player-driven: click to QUEUE; all other spending pauses to save up) ----
 const investEl = document.getElementById("invest")!;
-const UP_ICON: Record<string, string> = { damage: "◆", hp: "✚", armor: "⛨", range: "◎", speed: "»", income: "⛃" };
+// crisp themed line-art icons (inherit `currentColor`), drawn large for clarity instead of tiny glyphs
+const svgIcon = (inner: string, cls = "svgico") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
+const UP_SVG: Record<string, string> = {
+  damage: `<path d="M12 2.5 L15.5 8 V15 H8.5 V8 Z" fill="currentColor" fill-opacity=".22" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><rect x="8.5" y="15" width="7" height="5.2" rx="1" fill="currentColor" fill-opacity=".55"/>`,
+  hp: `<rect x="4" y="4" width="16" height="16" rx="4.5" fill="currentColor" fill-opacity=".15" stroke="currentColor" stroke-width="1.5"/><path d="M12 8 V16 M8 12 H16" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>`,
+  armor: `<path d="M12 2.8 L19 5.6 V11 C19 16.2 12 20.9 12 20.9 C12 20.9 5 16.2 5 11 V5.6 Z" fill="currentColor" fill-opacity=".18" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.8 11.6 L11.2 14 L15.4 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
+  range: `<circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="2.3" fill="currentColor"/><g stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="2.4" x2="12" y2="5.6"/><line x1="12" y1="18.4" x2="12" y2="21.6"/><line x1="2.4" y1="12" x2="5.6" y2="12"/><line x1="18.4" y1="12" x2="21.6" y2="12"/></g>`,
+  speed: `<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6 L10 12 L4 18"/><path d="M11 6 L17 12 L11 18" opacity=".65"/></g>`,
+  income: `<circle cx="12" cy="12" r="3.4" fill="currentColor"/><g stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="12" y1="2.6" x2="12" y2="5.4"/><line x1="12" y1="18.6" x2="12" y2="21.4"/><line x1="2.6" y1="12" x2="5.4" y2="12"/><line x1="18.6" y1="12" x2="21.4" y2="12"/><line x1="5.6" y1="5.6" x2="7.6" y2="7.6"/><line x1="16.4" y1="16.4" x2="18.4" y2="18.4"/><line x1="16.4" y1="5.6" x2="18.4" y2="7.6"/><line x1="5.6" y1="18.4" x2="7.6" y2="16.4"/></g>`,
+};
+const upIconSVG = (kind: string) => svgIcon(UP_SVG[kind] ?? "");
+// a stack-of-coins money icon for the resource readout
+const MONEY_SVG =
+  `<ellipse cx="12" cy="16.4" rx="8" ry="3.2" fill="currentColor" fill-opacity=".22" stroke="currentColor" stroke-width="1.3"/>` +
+  `<ellipse cx="12" cy="13" rx="8" ry="3.2" fill="currentColor" fill-opacity=".34" stroke="currentColor" stroke-width="1.3"/>` +
+  `<ellipse cx="12" cy="9.4" rx="8" ry="3.2" fill="currentColor" fill-opacity=".6" stroke="currentColor" stroke-width="1.5"/>` +
+  `<ellipse cx="9.6" cy="8.7" rx="2.6" ry="0.9" fill="#eafffb" fill-opacity=".55"/>`;
 const UP_PIPS = 6;
 let upgradesBuilt = false;
 function syncInvest(s: StateMsg) {
@@ -505,7 +521,7 @@ function syncInvest(s: StateMsg) {
       row.id = `up-row-${inv.kind}`;
       row.title = "Click to queue — all other spending pauses while we save up. Click again to cancel.";
       row.innerHTML =
-        `<span class="ico">${UP_ICON[inv.kind]}</span>` +
+        `<span class="ico">${upIconSVG(inv.kind)}</span>` +
         `<span class="nm">${inv.label}<small>${inv.effect} per level</small></span>` +
         `<span class="meter" id="up-m-${inv.kind}">${Array.from({ length: UP_PIPS }, () => "<i></i>").join("")}</span>` +
         `<span class="lv" id="up-lv-${inv.kind}"></span>` +
@@ -554,7 +570,10 @@ function render(s: StateMsg) {
   const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
   const b = s.bonuses;
   const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`, b.armor && `−${b.armor}dmg⛨`, b.speed && `+${b.speed * 10}%spd`].filter(Boolean).join(" ");
-  econEl.textContent = `⛃ ${s.resources}   ·   +${s.incomePerSec}/s   ·   spend ~${spend}/s   ·   save ${Math.max(0, 100 - allocPct)}%${bonusBits ? "   ·   ⬡ " + bonusBits : ""}`;
+  econEl.innerHTML =
+    `<span class="econ-ico">${svgIcon(MONEY_SVG)}</span>` +
+    `<span class="econ-amt">${s.resources}</span>` +
+    `<span class="econ-sub">+${s.incomePerSec}/s · spend ~${spend}/s · save ${Math.max(0, 100 - allocPct)}%${bonusBits ? " · ⬡ " + bonusBits : ""}</span>`;
   syncInvest(s);
   syncMorale(s);
 }
@@ -1113,7 +1132,7 @@ function updateReadout() {
   };
   const upRows = INVESTMENTS.map((inv) => {
     const level = lv(inv.kind), on = level > 0 && inv.kind !== "income";
-    return `<div class="uc-up${on ? "" : " off"}"><span class="uc-upi">${UP_ICON[inv.kind]}</span>` +
+    return `<div class="uc-up${on ? "" : " off"}"><span class="uc-upi">${upIconSVG(inv.kind)}</span>` +
       `<span class="uc-upn">${inv.label}</span><span class="uc-uplv">Lv${level}</span>` +
       `<span class="uc-upe">${on ? upEffect[inv.kind] : level > 0 ? upEffect[inv.kind] : "—"}</span></div>`;
   }).join("");
