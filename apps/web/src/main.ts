@@ -26,6 +26,7 @@ let latestCamps: Camp[] = [];
 let latestTurretBudget = 0;
 let latestField: FieldGeneral | null = null;
 let latestAdvisor: FieldGeneral | null = null;
+let latestActiveOrder: string | null = null; // the field general's active tactic label (cancellable), or null
 let hovered: UnitState | null = null;
 let pinned: UnitState | null = null; // click-to-inspect: persists until you click elsewhere
 let unitTapped = false; // set when a unit was just clicked, so the map click-handler doesn't unpin
@@ -272,7 +273,7 @@ function connect() {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state" || msg.type === "camps") hideMatchmaking(); // a room exists → matched
     if (msg.type === "state") { if (awaitingStart) { awaitingStart = false; document.getElementById("standby")?.remove(); } latestState = msg; render(msg); spawnShots(msg); }
-    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; syncCommanders(); }
+    else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; latestActiveOrder = msg.activeOrder ?? null; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
     else if (msg.type === "gameover") { showEndscreen(msg.won); }
@@ -1182,12 +1183,12 @@ function updateReadout() {
 //      a message box; sending a message appends to that commander's memory (server-side). ----
 const controlsEl = document.getElementById("controls")!;
 const COMMANDERS: { id: string; kind: "advisor" | "camp" | "field"; cls: string }[] = [
+  { id: "field", kind: "field", cls: "" }, // leftmost — has the active-tactic control (cancellable)
   { id: "advisor", kind: "advisor", cls: "" },
   { id: "aggressive", kind: "camp", cls: "agg" },
   { id: "recon", kind: "camp", cls: "rec" },
   { id: "defensive", kind: "camp", cls: "def" },
   { id: "builder", kind: "camp", cls: "bld" },
-  { id: "field", kind: "field", cls: "" },
 ];
 let cmdBuilt = false;
 const setText = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t; };
@@ -1280,6 +1281,7 @@ function buildCommanders() {
     div.className = "cmd";
     div.innerHTML =
       `<div class="cmdhd">${avatarSVG(c.id)}<h4 class="${c.cls}" id="lbl-${c.id}">…</h4></div>` +
+      (c.kind === "field" ? `<div class="fgactive" id="fgactive"></div>` : "") + // active tactic chip (cancellable)
       `<div class="mem" id="mem-${c.id}"></div>` +
       (c.kind === "camp" ? `<div class="spec" id="spec-${c.id}"></div><span class="cool" id="cool-${c.id}"></span>` : "");
     controlsEl.appendChild(div);
@@ -1295,6 +1297,14 @@ function syncCommanders() {
     setText(`cool-${c.id}`, c.compiling ? "compiling…" : remain > 0 ? `recompiles in ${remain}s` : "");
   }
   if (latestField) { setText("lbl-field", latestField.label); setText("mem-field", latestField.prompt); }
+  const fa = document.getElementById("fgactive");
+  if (fa) {
+    if (latestActiveOrder) {
+      fa.className = "fgactive on";
+      fa.innerHTML = `<span class="fgtag">⚡ ${latestActiveOrder}</span><button class="fgx" title="Cancel tactic — revert to doctrine">✕</button>`;
+      (fa.querySelector(".fgx") as HTMLButtonElement).onclick = () => sendCmd({ type: "cancelFieldOrder" });
+    } else { fa.className = "fgactive"; fa.innerHTML = `<span class="fgnone">no active tactic</span>`; }
+  }
   if (latestAdvisor) { setText("lbl-advisor", latestAdvisor.label); setText("mem-advisor", latestAdvisor.prompt); }
   if (!dragId()) renderSankey();
 }

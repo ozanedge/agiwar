@@ -34,7 +34,7 @@ export function createDecisionRunner(player: number): DecisionRunner {
     const opt = pending.opts[key] ?? pending.opts[pending.defaultKey];
     opt?.run();
     log(`▸ ${opt?.label ?? "Hold"}${auto ? " (auto)" : ""}`);
-    if (opt?.refreshCamps) refresh();
+    refresh(); // surface any new active field tactic (and camp changes) in the commander cards
     pending = null;
   };
 

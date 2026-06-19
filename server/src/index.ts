@@ -3,7 +3,7 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { Camp, ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, clearFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
@@ -62,7 +62,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number, includeShots = f
   });
 };
 const sendOwnCamps = (ws: WebSocket, g: GameState, player: number) =>
-  send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral, advisor: g.players[player].advisor, turretBudget: g.players[player].turretBudget });
+  send(ws, { type: "camps", camps: g.players[player].camps, fieldGeneral: g.players[player].fieldGeneral, advisor: g.players[player].advisor, turretBudget: g.players[player].turretBudget, activeOrder: g.players[player].fieldOrder?.label ?? null });
 
 // every user message APPENDS to a commander's memory (kept to the last ~14 lines)
 const appendMemory = (cur: string, msg: string): string => {
@@ -341,7 +341,15 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   if (msg.type === "fieldOrder") {
     const o = msg.order;
     applyFieldOrder(g, player, o.kind, o.target, o.durationTicks, o.label);
+    sendOwnCamps(ws, g, player); // surface the active tactic in the field general's card
     send(ws, { type: "notice", level: "info", text: `Field order: ${o.label}` });
+    return;
+  }
+
+  if (msg.type === "cancelFieldOrder") {
+    clearFieldOrder(g, player);
+    sendOwnCamps(ws, g, player);
+    send(ws, { type: "notice", level: "info", text: `${g.players[player].fieldGeneral.label}: tactic cancelled — back to doctrine.` });
     return;
   }
 

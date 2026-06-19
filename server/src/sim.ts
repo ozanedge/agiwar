@@ -63,6 +63,7 @@ export interface PlayerState {
   advisor: FieldGeneral; // investment advisor (label + editable economic doctrine)
   armyDoctrine: string; // once-per-match build identity (id from shared/doctrine.ts)
   rally: { x: number; y: number; until: number } | null; // commitment point: forward units concentrate here until `until` tick
+  fieldOrder: { kind: "defend" | "push"; target: DoctrineId | "all"; label: string; ovr: BehaviorSpec } | null; // the field general's ACTIVE tactic — overrides doctrine until the player cancels it
   queuedInvest: ArtifactBonusKind | null; // a player-queued upgrade — pauses all other spending to save for it
   morale: number; // 0..1 team morale (degrades speed + accuracy when low); recomputed each tick
   recentLosses: number; // decaying tally of recent unit deaths (drags morale down)
@@ -157,6 +158,7 @@ function makePlayer(): PlayerState {
     advisor: { label: "Advisor Holt", prompt: DEFAULT_ADVISOR_PROMPT },
     armyDoctrine: "balanced", // neutral until the player chooses
     rally: null,
+    fieldOrder: null,
     queuedInvest: null,
     morale: 0.7,
     recentLosses: 0,
@@ -313,7 +315,8 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
 /** Effective spec for a unit this tick: an active field-override wins over native
  *  doctrine; otherwise the unit runs its camp's compiled doctrine. */
 function effectiveSpec(g: GameState, u: UnitState): BehaviorSpec {
-  if (u.overrideUntil > g.tick && (u as any)._ovr) return (u as any)._ovr as BehaviorSpec;
+  const fo = g.players[u.owner]?.fieldOrder; // active field tactic overrides native doctrine (until cancelled)
+  if (fo && (fo.target === "all" || u.camp === fo.target)) return fo.ovr;
   if (!u.camp) return PRESET_SPECS.defensive; // building fallback (buildings never reach here)
   const camp = g.players[u.owner]?.camps.find((c) => c.id === u.camp);
   return camp ? camp.spec : PRESET_SPECS[u.camp];
@@ -599,13 +602,13 @@ function attack(g: GameState, u: UnitState, target: Target) {
 
 export function step(g: GameState) {
   g.tick++;
-  // clear expired field-general overrides -> units revert to native doctrine
+  // mirror each player's ACTIVE field tactic onto its units (for the client's override ring/label).
+  // Persists while fieldOrder is set — incl. units trained later; clears the instant it's cancelled.
   for (const u of g.units) {
-    if (u.overrideUntil && u.overrideUntil <= g.tick) {
-      u.overrideUntil = 0;
-      u.overrideLabel = "";
-      delete (u as any)._ovr;
-    }
+    if (UNIT_STATS[u.unit].building) continue;
+    const fo = g.players[u.owner]?.fieldOrder;
+    if (fo && (fo.target === "all" || u.camp === fo.target)) { u.overrideUntil = g.tick + 2; u.overrideLabel = fo.label; }
+    else if (u.overrideUntil) { u.overrideUntil = 0; u.overrideLabel = ""; }
   }
   g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult + playerBonus(g, i).income / TICK_HZ)); // income (doctrine-scaled) + artifact bonus
   if (g.tick % ARTIFACT_EVERY === 0 && g.artifacts.length < ARTIFACT_CAP) spawnArtifact(g);
@@ -711,7 +714,7 @@ function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } |
   return null; // all rings full
 }
 
-/** Public (wire) shape of a unit — drops the internal `_ovr` spec so it never leaks. */
+/** Public (wire) shape of a unit. */
 function pub(u: UnitState): UnitState {
   return {
     id: u.id, owner: u.owner, camp: u.camp, unit: u.unit, dx: u.dx, dy: u.dy, x: u.x, y: u.y,
@@ -753,16 +756,15 @@ export function visibleShots(g: GameState, player: number): Shot[] {
 }
 
 /** Apply a field-general order as a time-boxed override on the targeted units. */
-export function applyFieldOrder(g: GameState, owner: number, kind: "rally" | "defend" | "push", target: DoctrineId | "all", durationTicks: number, label: string) {
+// Set the player's ACTIVE field tactic — it overrides doctrine for every matching unit (incl. units
+// trained later) and PERSISTS until the player cancels it (clearFieldOrder). `rally`/`hold` map to
+// the defensive override; `push` to the all-out attack override.
+export function applyFieldOrder(g: GameState, owner: number, kind: "rally" | "defend" | "push", target: DoctrineId | "all", _durationTicks: number, label: string) {
+  const k: "defend" | "push" = kind === "push" ? "push" : "defend";
   const ovr: BehaviorSpec =
-    kind === "push"
+    k === "push"
       ? clampSpec({ aggression: 1, engageRange: 30, retreatHealthPct: 0, explorationBias: 0, defendRadius: null })
       : clampSpec({ aggression: 0.4, engageRange: 8, retreatHealthPct: 0.1, explorationBias: 0, defendRadius: 13 });
-  for (const u of g.units) {
-    if (u.owner !== owner) continue;
-    if (target !== "all" && u.camp !== target) continue;
-    u.overrideUntil = g.tick + durationTicks;
-    u.overrideLabel = label;
-    (u as any)._ovr = ovr;
-  }
+  g.players[owner].fieldOrder = { kind: k, target, label, ovr };
 }
+export function clearFieldOrder(g: GameState, owner: number) { g.players[owner].fieldOrder = null; }

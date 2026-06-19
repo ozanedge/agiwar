@@ -131,6 +131,7 @@ export interface CampsMsg {
   fieldGeneral: FieldGeneral;
   advisor: FieldGeneral; // investment advisor (same {label,prompt} shape)
   turretBudget: number; // % of income spent auto-building turrets (separate from savings)
+  activeOrder: string | null; // the field general's active tactic label (persists until cancelled), or null
 }
 
 /** server -> client one-off notices (cooldown rejection, compile result, field order, etc). */
@@ -196,7 +197,8 @@ export type ClientMsg =
   | { type: "invest"; kind: ArtifactBonusKind } // buy the next level of a permanent army upgrade (immediate)
   | { type: "queueInvest"; kind: ArtifactBonusKind } // queue an upgrade — pause other spending and save up for it
   | { type: "cancelInvest" } // clear the queued upgrade and resume normal spending
-  | { type: "fieldOrder"; order: FieldOrder } // manual time-boxed override (debug/UI)
+  | { type: "fieldOrder"; order: FieldOrder } // manual override (debug/UI)
+  | { type: "cancelFieldOrder" } // clear the field general's active tactic — units revert to native doctrine
   | { type: "chooseArmyDoctrine"; id: string } // pick the once-per-match build identity
   | { type: "decide"; id: number; key: string } // answer a commander's strategic fork
   | { type: "setRally"; x: number; y: number } // set a rally/commitment point (double-click the map)
