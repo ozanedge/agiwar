@@ -184,7 +184,10 @@
       .dpanel h3 { margin: 0 0 2px; color: var(--accent); letter-spacing: .14em; text-transform: uppercase; font-size: 15px; text-shadow: 0 0 10px rgba(0,255,209,.5); }
       .dsub { color: rgba(0,255,209,.5); font-size: 11px; margin-bottom: 14px; }
       .dcards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-      .dcard { text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 11px 12px; border: 1px solid rgba(0,255,209,.2); border-radius: 8px; background: rgba(0,255,209,.04); cursor: pointer; transition: background .12s, box-shadow .12s, transform .08s; }
+      .dcard { text-align: left; display: grid; grid-template-columns: 64px 1fr; grid-template-rows: auto auto auto; column-gap: 13px; row-gap: 3px; align-items: center; padding: 13px 14px; border: 1px solid rgba(0,255,209,.2); border-radius: 8px; background: rgba(0,255,209,.04); cursor: pointer; transition: background .12s, box-shadow .12s, transform .08s; }
+      .dcard .dicon { grid-column: 1; grid-row: 1 / 4; width: 64px; height: 64px; color: var(--accent); filter: drop-shadow(0 0 9px rgba(0,255,209,.45)); }
+      .dcard .dico-svg { width: 100%; height: 100%; display: block; }
+      .dcard .dl, .dcard .dh, .dcard .db { grid-column: 2; }
       .dcard:hover { background: rgba(0,255,209,.12); box-shadow: 0 0 16px rgba(0,255,209,.25); transform: translateY(-2px); }
       .dcard.cur { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,255,209,.3); }
       .dcard .dl { color: #eafffb; font-weight: 700; font-size: 13px; letter-spacing: .04em; }

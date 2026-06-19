@@ -391,6 +391,22 @@ function restart(solo: boolean) {
 
 // ---- army doctrine picker (once per match, #4): your build identity ----
 const DOCTRINE_SECONDS = 15;
+// HUGE per-doctrine icons so each build identity reads instantly (line-art, inherits currentColor)
+const DOCTRINE_SVG: Record<string, string> = {
+  // Combined Arms — shield + star: all-around, no weakness
+  balanced: `<path d="M32 5 L55 14 V30 C55 47 32 60 32 60 C32 60 9 47 9 30 V14 Z" fill="currentColor" fill-opacity=".1" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M32 17 L36.5 27.5 L48 29 L39.5 37 L42 48.5 L32 42.5 L22 48.5 L24.5 37 L16 29 L27.5 27.5 Z" fill="currentColor" fill-opacity=".55"/>`,
+  // Vanguard — three racing chevrons: fast blitz
+  vanguard: `<g fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 19 L27 32 L11 45"/><path d="M26 19 L42 32 L26 45" opacity=".7"/><path d="M41 19 L53 32 L41 45" opacity=".42"/></g>`,
+  // Bastion — crenellated fortress + gate: turtle/turrets
+  bastion: `<path d="M11 27 H18 V22 H25 V27 H32 V22 H39 V27 H46 V22 H53 V27 H53 V53 H11 Z" fill="currentColor" fill-opacity=".12" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M27 53 V42 a5 5 0 0 1 10 0 V53 Z" fill="currentColor" fill-opacity=".5"/>`,
+  // Phantom — eye + crosshair: see first, strike, fade
+  phantom: `<path d="M6 32 C20 17 44 17 58 32 C44 47 20 47 6 32 Z" fill="currentColor" fill-opacity=".1" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><circle cx="32" cy="32" r="7.5" fill="currentColor" fill-opacity=".6"/><g stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="32" y1="12" x2="32" y2="18"/><line x1="32" y1="46" x2="32" y2="52"/></g>`,
+  // Highland — mountain peaks + summit flag: own the heights
+  highland: `<path d="M5 53 L23 21 L34 39 L44 17 L59 53 Z" fill="currentColor" fill-opacity=".12" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M19 29 L23 21 L27 29 Z" fill="#eafffb" fill-opacity=".55"/><line x1="44" y1="17" x2="44" y2="6" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M44 6 L55 9.5 L44 13 Z" fill="currentColor" fill-opacity=".7"/>`,
+  // Industry — cog + core: eco/tech engine
+  industry: `<g stroke="currentColor" stroke-width="4.5" stroke-linecap="round"><line x1="46" y1="32" x2="53" y2="32"/><line x1="42" y1="42" x2="47" y2="47"/><line x1="32" y1="46" x2="32" y2="53"/><line x1="22" y1="42" x2="17" y2="47"/><line x1="18" y1="32" x2="11" y2="32"/><line x1="22" y1="22" x2="17" y2="17"/><line x1="32" y1="18" x2="32" y2="11"/><line x1="42" y1="22" x2="47" y2="17"/></g><circle cx="32" cy="32" r="14" fill="currentColor" fill-opacity=".12" stroke="currentColor" stroke-width="3"/><circle cx="32" cy="32" r="6" fill="currentColor" fill-opacity=".55"/>`,
+};
+const doctrineIconSVG = (id: string) => `<svg class="dico-svg" viewBox="0 0 64 64" aria-hidden="true">${DOCTRINE_SVG[id] ?? DOCTRINE_SVG.balanced}</svg>`;
 let doctrineTimer: number | undefined;
 let awaitingStart = false; // picked a doctrine, waiting for the (paused) sim to begin — dismissed on the first live state
 function pickDoctrine(id: string) {
@@ -423,7 +439,7 @@ function showDoctrinePicker(current: string) {
   for (const d of ARMY_DOCTRINES) {
     const c = document.createElement("button");
     c.className = "dcard" + (d.id === current ? " cur" : "");
-    c.innerHTML = `<div class="dl">${d.label}</div><div class="dh">${d.hint}</div><div class="db">${d.blurb}</div>`;
+    c.innerHTML = `<div class="dicon">${doctrineIconSVG(d.id)}</div><div class="dl">${d.label}</div><div class="dh">${d.hint}</div><div class="db">${d.blurb}</div>`;
     c.onclick = () => pickDoctrine(d.id);
     cards.appendChild(c);
   }
