@@ -1010,62 +1010,81 @@ function drawSilhouette(g: Graphics, type: UnitType, side: number, t: number) {
 }
 const UNIT_HEIGHT: Record<string, number> = { tank: 11, turret: 14, humvee: 9, gunner: 11, drone: 3 };
 
-// Build a unit's visual art at the ORIGIN (no world position). A persistent per-unit holder carries
-// the position, which the render ticker eases between cells so units glide instead of snapping.
-function unitArt(u: StateMsg["units"][number], s: StateMsg): Container {
+// per-unit-type dimensions (footprint scale, ring radius, hover lift, z-stack height)
+const FOOT: Record<string, { x: number; y: number }> = { tank: { x: 1.6, y: 1.55 }, humvee: { x: 1.5, y: 1.48 } };
+function unitDims(u: StateMsg["units"][number]) {
+  const fp = FOOT[u.unit] ?? { x: 1, y: 1 };
+  const rad = Math.round((u.unit === "tank" || u.unit === "turret" ? 10 : 8) * (fp.x + fp.y) / 2);
+  return { fp, rad, lift: u.unit === "drone" ? 14 : 2, H: UNIT_HEIGHT[u.unit] };
+}
+const UNIT_LN = { color: 0x05080b, width: 1, alpha: 0.55 };
+
+// CHEAP per-tick bits (cleared + redrawn each state — a handful of shapes). The expensive z-stack
+// geometry below is built ONCE and only rotated, so we don't churn thousands of Graphics per second.
+function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
+  g.clear();
+  const { fp, rad } = unitDims(u);
+  const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
+  g.ellipse(0, 3, 11 * fp.x, 4.5 * fp.y).fill({ color: 0x000000, alpha: 0.3 }); // shadow
+  g.ellipse(0, 1, rad + 11, (rad + 11) * 0.5).fill({ color: side, alpha: 0.12 });
+  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.14 }); // team glow
+  if (u.unit === "turret") g.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(UNIT_LN);
+  if (pinned && pinned.id === u.id) g.ellipse(0, 1, rad + 9, (rad + 9) * 0.5).stroke({ color: 0xffffff, width: 1.5, alpha: 0.85 }); // selection ring
+}
+function drawUnitTop(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
+  g.clear();
+  const { rad, lift, H } = unitDims(u);
+  const topY = lift + H * 1.3 + rad * 0.4;
+  const frac = Math.max(0, u.hp / u.maxHp); // hp bar persists on every unit, green→yellow→orange→red
+  g.rect(-rad, -topY - 6.5, rad * 2, 2.6).fill({ color: 0x05080b, alpha: 0.6 }); // track
+  g.rect(-rad, -topY - 6.5, frac * rad * 2, 2.6).fill(hpColor(frac)); // spectrum fill
+  if (u.overrideUntil > s.tick) g.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+}
+
+// Build a unit's STATIC art once (z-stack volume geometry + base/top placeholders). Returns the root
+// container plus the rotatable layer graphics so the per-tick update can spin them to face heading
+// without rebuilding geometry. A persistent holder carries the (eased) world position.
+function unitArt(u: StateMsg["units"][number], s: StateMsg): { root: Container; rotors: Graphics[]; baseG: Graphics; topG: Graphics } {
   const cont = new Container();
   const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
   const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
-  const ln = { color: 0x05080b, width: 1, alpha: 0.55 };
-  // footprint scale (length×width, applied to the rotated chassis) — tanks/humvees are much bigger
-  // on the ground; height (the z-stack) is unchanged. Matches their larger gameplay footprint.
-  const FOOT: Record<string, { x: number; y: number }> = { tank: { x: 1.6, y: 1.55 }, humvee: { x: 1.5, y: 1.48 } };
-  const fp = FOOT[u.unit] ?? { x: 1, y: 1 };
-  const rad = Math.round((u.unit === "tank" || u.unit === "turret" ? 10 : 8) * (fp.x + fp.y) / 2);
-  const lift = u.unit === "drone" ? 14 : 2; // ground units sit on the deck; drone hovers
+  const { fp, lift, H } = unitDims(u);
+  const baseG = new Graphics(); drawUnitBase(baseG, u, s); cont.addChild(baseG);
 
-  const base = new Graphics(); // never rotates: shadow, glow, (turret ground ring)
-  base.ellipse(0, 3, 11 * fp.x, 4.5 * fp.y).fill({ color: 0x000000, alpha: 0.3 });
-  base.ellipse(0, 1, rad + 11, (rad + 11) * 0.5).fill({ color: side, alpha: 0.12 });
-  base.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.14 });
-  if (u.unit === "turret") base.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(ln);
-  if (pinned && pinned.id === u.id) base.ellipse(0, 1, rad + 9, (rad + 9) * 0.5).stroke({ color: 0xffffff, width: 1.5, alpha: 0.85 }); // selection ring
-  cont.addChild(base);
-
-  // Volume via z-stacking: the iso-projected footprint is drawn many times, each ~1px higher
-  // in screen space (dark base → lit top), with the detailed sprite as the top face. The
-  // peeking rims of the lower layers read as the unit's sides — real iso height, no assets.
-  const heading = Math.atan2(u.dy, u.dx) + Math.PI / 4; // grid heading rotated into iso space
-  const H = UNIT_HEIGHT[u.unit], SP = 1.25;
+  // Volume via z-stacking: the iso footprint drawn many times, each ~1px higher (dark base → lit
+  // top). Geometry is built ONCE; `rotors` are spun to heading each tick (no rebuild).
+  const rotors: Graphics[] = [];
+  const SP = 1.25;
   for (let i = 0; i <= H; i++) {
-    const t = i / H; // height fraction: 0 = ground, 1 = apex
+    const t = i / H;
     const wrap = new Container();
-    // each layer rises in true screen-vertical, with a slight rightward lean so one lit
-    // side face is exposed (fakes a directional sun, like the reference's top-lit models)
-    wrap.position.set(t * 1.6, -(lift + i * SP));
+    wrap.position.set(t * 1.6, -(lift + i * SP)); // screen-vertical rise + slight lit-side lean
     wrap.scale.set(1, 0.62); // iso ground squash
     const g = new Graphics();
-    g.scale.set(fp.x, fp.y); // widen/lengthen the chassis (scale in local space, then rotate to heading)
-    g.rotation = heading;
-    if (i === H) drawBody(g, u.unit, side, ln, acc); // lit, detailed top cap
-    else drawSilhouette(g, u.unit, side, t); // sculpted volume, dark base → lit top
+    g.scale.set(fp.x, fp.y); // widen/lengthen the chassis (scaled in local space, then rotated to heading)
+    if (i === H) drawBody(g, u.unit, side, UNIT_LN, acc); // lit, detailed top cap
+    else drawSilhouette(g, u.unit, side, t); // sculpted volume
     if (u.unit === "gunner" && i === Math.round(H * 0.6)) drawGunnerWeapon(g, side); // carbine at chest height
+    rotors.push(g);
     wrap.addChild(g);
     cont.addChild(wrap);
   }
 
-  const top = new Graphics(); // never rotates: hp bar + override ring, above the stacked volume
-  const topY = lift + H * 1.3 + rad * 0.4;
-  const frac = Math.max(0, u.hp / u.maxHp); // hp bar persists on every unit, green→yellow→orange→red
-  top.rect(-rad, -topY - 6.5, rad * 2, 2.6).fill({ color: 0x05080b, alpha: 0.6 }); // track
-  top.rect(-rad, -topY - 6.5, frac * rad * 2, 2.6).fill(hpColor(frac)); // spectrum fill
-  if (u.overrideUntil > s.tick) top.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
-  cont.addChild(top);
-  return cont;
+  const topG = new Graphics(); drawUnitTop(topG, u, s); cont.addChild(topG); // hp bar + override ring
+  return { root: cont, rotors, baseG, topG };
+}
+
+// Cheap per-state refresh of an existing unit's art: rotate the prebuilt layers to the new heading
+// and redraw only the small base/top graphics. No geometry rebuild → no per-frame allocation churn.
+function updateUnitArt(v: UnitView, u: StateMsg["units"][number], s: StateMsg) {
+  const heading = Math.atan2(u.dy, u.dx) + Math.PI / 4;
+  for (const r of v.rotors) r.rotation = heading;
+  if (v.baseG) drawUnitBase(v.baseG, u, s);
+  if (v.topG) drawUnitTop(v.topG, u, s);
 }
 
 // ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
-interface UnitView { holder: Container; art: Container | null; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
+interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
 const unitViews = new Map<number, UnitView>();
 const transientFx: Container[] = []; // bases/artifacts/rally — rebuilt each state (no interpolation)
 
@@ -1083,7 +1102,7 @@ function reconcileUnits(s: StateMsg) {
     if (!e) {
       const holder = new Container();
       holder.eventMode = "static"; holder.cursor = "pointer";
-      e = { holder, art: null, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
+      e = { holder, art: null, rotors: [], baseG: null, topG: null, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
       const ev = e;
       holder.on("pointerover", () => { hovered = ev.u; updateReadout(); });
       holder.on("pointerout", () => { if (hovered?.id === ev.u.id) { hovered = null; updateReadout(); } });
@@ -1093,9 +1112,8 @@ function reconcileUnits(s: StateMsg) {
       placeHolder(e, s); // place new units immediately (no glide from origin)
     }
     e.u = u; e.tgx = u.x; e.tgy = u.y; // server position is the glide target
-    if (e.art) e.art.destroy({ children: true });
-    e.art = unitArt(u, s);
-    e.holder.addChild(e.art);
+    if (!e.art) { const a = unitArt(u, s); e.art = a.root; e.rotors = a.rotors; e.baseG = a.baseG; e.topG = a.topG; e.holder.addChild(a.root); } // build geometry ONCE
+    updateUnitArt(e, u, s); // cheap per-state refresh: rotate to heading + redraw hp/ring (no rebuild)
   }
   for (const [id, e] of unitViews) if (!live.has(id)) { e.holder.destroy({ children: true }); unitViews.delete(id); }
 }
