@@ -143,7 +143,8 @@
       .uc .hi { color: #ffd76b; }
       /* top-left HUD stack: title → resource chip → notice, each clearly below the last (no overlap) */
       #title { flex: 0 0 auto; font-size: 16px; font-weight: 700; letter-spacing: .22em; color: var(--accent); text-shadow: 0 0 12px rgba(0,255,209,.6); line-height: 1; }
-      #econ { left: 16px; top: 56px; padding: 7px 12px; color: var(--accent); font-size: 14px; letter-spacing: .04em; text-shadow: 0 0 8px rgba(0,255,209,.45); border-color: rgba(0,255,209,.35); }
+      /* resource readout — a header card at the top of the left panel */
+      #econ { flex: 0 0 auto; padding: 8px 10px; border: 1px solid rgba(0,255,209,.32); border-radius: 6px; background: rgba(0,255,209,.05); color: var(--accent); font-size: 12px; letter-spacing: .03em; line-height: 1.5; text-shadow: 0 0 8px rgba(0,255,209,.4); box-shadow: inset 0 0 18px rgba(0,255,209,.05); }
       #notice { left: 16px; top: 96px; padding: 7px 11px; color: var(--accent); max-width: 340px; }
       #notice:empty { display: none; } /* no stray empty bordered box when there's nothing to show */
       #endscreen { position: fixed; inset: 0; z-index: 60; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; pointer-events: none; background: radial-gradient(circle at center, rgba(2,6,10,.45), rgba(2,6,10,.82)); }
@@ -217,6 +218,7 @@
         <span id="mpct" class="sub"></span>
       </div>
       <div id="left">
+        <div id="econ">⛃ —</div>
         <div class="lscroll">
           <h4>Budget flow</h4>
           <svg id="sankey"></svg>
@@ -229,7 +231,6 @@
       </div>
       <div id="stage">
         <div id="notice" class="panel-overlay"></div>
-        <div id="econ" class="panel-overlay">⛃ —</div>
         <div id="readout" class="panel-overlay">hover a unit to inspect it</div>
         <div id="endscreen"></div>
       </div>
