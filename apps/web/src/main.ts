@@ -450,7 +450,7 @@ function showDecision(d: DecisionMsg) {
   document.getElementById("decision")?.remove();
   const el = document.createElement("div");
   el.id = "decision";
-  el.innerHTML = `<div class="dq"><span class="dfrom">${d.fromLabel}</span>${d.question}</div><div class="dopts"></div><div class="dcd"><i></i></div>`;
+  el.innerHTML = `<div class="dtitle">${d.fromLabel}</div><div class="dquestion">${d.question}</div><div class="dopts"></div><div class="dcd"><i></i></div>`;
   const opts = el.querySelector(".dopts")!;
   const choose = (key: string) => { sendCmd({ type: "decide", id: d.id, key }); el.remove(); clearTimeout(decisionTimer); };
   for (const o of d.options) {

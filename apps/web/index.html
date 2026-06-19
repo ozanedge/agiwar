@@ -186,9 +186,10 @@
       .dcard .db { color: #9db8b2; font-size: 10.5px; line-height: 1.4; }
       /* strategic fork banner (a commander asks for a decision) */
       #decision { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 44; width: min(560px, 78%); border: 1px solid var(--accent); border-radius: 9px; background: var(--bg-panel); backdrop-filter: blur(6px); padding: 11px 13px 9px; box-shadow: 0 0 26px rgba(0,255,209,.22); animation: endfade .25s ease both; }
-      #decision .dq { font-size: 12.5px; color: #eafffb; line-height: 1.4; margin-bottom: 9px; }
-      #decision .dfrom { color: var(--accent); font-weight: 700; margin-right: 6px; text-shadow: 0 0 8px rgba(0,255,209,.5); }
-      #decision .dopts { display: flex; gap: 8px; }
+      /* three clear bands: big title, then the situation, then the choices */
+      #decision .dtitle { font-size: 17px; font-weight: 700; letter-spacing: .02em; color: var(--accent); text-shadow: 0 0 10px rgba(0,255,209,.5); text-align: center; }
+      #decision .dquestion { font-size: 14px; color: #eafffb; line-height: 1.45; text-align: center; margin: 7px auto 12px; max-width: 90%; }
+      #decision .dopts { display: flex; gap: 8px; align-items: stretch; }
       #decision .dopt { flex: 1; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 6px; }
       #decision .dopt b { font-size: 11.5px; color: #eafffb; }
       #decision .dopt small { font-size: 9.5px; color: #9db8b2; line-height: 1.3; }
