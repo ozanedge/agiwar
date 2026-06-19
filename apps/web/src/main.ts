@@ -567,21 +567,46 @@ function syncMorale(s: StateMsg) {
   mboost.disabled = (s.resources ?? 0) < (s.boosterCost ?? Infinity);
 }
 
-// the player's rally/commitment marker — a flat GROUND reticle (expanding rings + target ticks),
-// no vertical pole, so it never looks like a beam over the spot.
+// the player's rally/commitment marker — a HEAVENLY ORDER: a towering pillar of light descending
+// from the sky onto the spot, with a radiant apex, drifting light chevrons, and holy ground rings.
+// All FILLED shapes (no moveTo/lineTo) so no stray line leaks to the world origin.
 function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(p.x, p.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(p.x, p.y), cy = isoY(p.x, p.y) - elev + 2;
-  for (let i = 0; i < 2; i++) { const t = (((s.tick % 30) / 30) + i * 0.5) % 1; const r = 7 + t * 18; g.ellipse(cx, cy, r, r * 0.5).stroke({ color: OWN_COLOR, width: 1.6, alpha: 0.5 * (1 - t) }); } // sonar pulse
-  g.ellipse(cx, cy, 11, 5.5).stroke({ color: OWN_COLOR, width: 1.5, alpha: 0.7 }); // target ring
-  // reticle ticks as FILLED rects (no moveTo/lineTo — those leaked a stray line to world-origin)
-  g.rect(cx + 9, cy - 0.8, 7, 1.6).fill({ color: OWN_COLOR, alpha: 0.65 });
-  g.rect(cx - 16, cy - 0.8, 7, 1.6).fill({ color: OWN_COLOR, alpha: 0.65 });
-  g.rect(cx - 0.8, cy + 4.5, 1.6, 4).fill({ color: OWN_COLOR, alpha: 0.65 });
-  g.rect(cx - 0.8, cy - 8.5, 1.6, 4).fill({ color: OWN_COLOR, alpha: 0.65 });
-  g.circle(cx, cy, 2.2).fill({ color: OWN_COLOR, alpha: 0.95 });
-  g.zIndex = p.x + p.y;
+  const C = OWN_COLOR, W = 0xffffff;
+  const H = 104, topY = cy - H; // beam rises this many screen-px into the sky
+
+  // 1) the light pillar — stacked trapezoids (wide at the base, tapering up), low alpha → a volumetric
+  //    glowing column; a bright near-white core down the middle.
+  const beam = (hb: number, ht: number, color: number, a: number) =>
+    g.poly([cx - ht, topY, cx + ht, topY, cx + hb, cy, cx - hb, cy]).fill({ color, alpha: a });
+  beam(30, 11, C, 0.05); beam(22, 8, C, 0.09); beam(15, 5.5, C, 0.14); beam(9, 3.5, C, 0.22);
+  beam(5, 2, W, 0.30); beam(2.4, 1, W, 0.6);
+
+  // 2) radiant apex — a slowly rotating starburst + glowing source orb high in the sky
+  const spin = (s.tick % 240) / 240 * Math.PI * 2;
+  for (let i = 0; i < 12; i++) {
+    const a = spin + (i / 12) * Math.PI * 2, rl = i % 2 === 0 ? 26 : 14, w = 1.8;
+    g.poly([cx + Math.cos(a + 1.57) * w, topY + Math.sin(a + 1.57) * w, cx + Math.cos(a) * rl, topY + Math.sin(a) * rl, cx + Math.cos(a - 1.57) * w, topY + Math.sin(a - 1.57) * w]).fill({ color: C, alpha: 0.18 });
+  }
+  g.circle(cx, topY, 13).fill({ color: C, alpha: 0.14 });
+  g.circle(cx, topY, 7).fill({ color: C, alpha: 0.4 });
+  g.circle(cx, topY, 3.4).fill({ color: W, alpha: 0.95 });
+
+  // 3) light chevrons descending the beam (animated drift toward the ground)
+  for (let i = 0; i < 4; i++) {
+    const t = ((s.tick / 26) + i / 4) % 1, yy = topY + 14 + t * (H - 26), w = 2 + t * 6;
+    g.poly([cx - w, yy, cx, yy + 5.5, cx + w, yy]).fill({ color: C, alpha: 0.55 * Math.sin(t * Math.PI) });
+  }
+
+  // 4) holy ground impact — expanding rings on the deck + a bright landing flare
+  for (let i = 0; i < 3; i++) { const t = (((s.tick % 36) / 36) + i / 3) % 1, r = 9 + t * 34; g.ellipse(cx, cy, r, r * 0.5).stroke({ color: C, width: 2.2 - t * 1.6, alpha: 0.6 * (1 - t) }); }
+  g.ellipse(cx, cy, 18, 9).fill({ color: C, alpha: 0.12 });
+  g.ellipse(cx, cy, 10, 5).stroke({ color: C, width: 1.8, alpha: 0.9 });
+  g.ellipse(cx, cy, 4, 2).fill({ color: W, alpha: 0.95 });
+
+  g.zIndex = 1 << 20; // a divine order draws above all units/buildings
   return g;
 }
 
