@@ -452,13 +452,20 @@ function showDecision(d: DecisionMsg) {
   el.id = "decision";
   el.innerHTML = `<div class="dq"><span class="dfrom">${d.fromLabel}</span>${d.question}</div><div class="dopts"></div><div class="dcd"><i></i></div>`;
   const opts = el.querySelector(".dopts")!;
+  const choose = (key: string) => { sendCmd({ type: "decide", id: d.id, key }); el.remove(); clearTimeout(decisionTimer); };
   for (const o of d.options) {
     const b = document.createElement("button");
     b.className = "dopt";
     b.innerHTML = `<b>${o.label}</b><small>${o.detail}</small>`;
-    b.onclick = () => { sendCmd({ type: "decide", id: d.id, key: o.key }); el.remove(); clearTimeout(decisionTimer); };
+    b.onclick = () => choose(o.key);
     opts.appendChild(b);
   }
+  // explicit opt-out — dismiss the fork and take NO action (won't auto-resolve to a default)
+  const skip = document.createElement("button");
+  skip.className = "dopt dopt-skip";
+  skip.innerHTML = `<b>Stand by</b><small>No action — dismiss</small>`;
+  skip.onclick = () => choose("dismiss");
+  opts.appendChild(skip);
   stage.appendChild(el);
   const bar = el.querySelector(".dcd i") as HTMLElement; // countdown drains over the answer window
   bar.style.transition = `width ${d.expiresInSec}s linear`;

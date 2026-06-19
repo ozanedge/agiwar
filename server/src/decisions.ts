@@ -40,7 +40,9 @@ export function createDecisionRunner(player: number): DecisionRunner {
 
   return {
     answer(g, id, key, log, refresh) {
-      if (!pending || pending.id !== id || !pending.opts[key]) return false;
+      if (!pending || pending.id !== id) return false;
+      if (key === "dismiss") { log("▸ Stand by — no action"); pending = null; return true; } // explicit "do nothing": drop the fork, don't auto-resolve
+      if (!pending.opts[key]) return false;
       resolve(g, key, false, log, refresh);
       return true;
     },
