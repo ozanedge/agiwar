@@ -567,44 +567,56 @@ function syncMorale(s: StateMsg) {
   mboost.disabled = (s.resources ?? 0) < (s.boosterCost ?? Infinity);
 }
 
-// the player's rally/commitment marker — a HEAVENLY ORDER: a towering pillar of light descending
-// from the sky onto the spot, with a radiant apex, drifting light chevrons, and holy ground rings.
-// All FILLED shapes (no moveTo/lineTo) so no stray line leaks to the world origin.
+// the player's rally/commitment marker — a HEAVENLY ORDER cast as a large glowing magic circle:
+// a wide iso ring (≈ the rally gather radius) whose entire interior is a soft, shimmering magical
+// haze, ringed by slow-rotating runes, with expanding pulses and rising motes. All FILLED shapes
+// (no moveTo/lineTo) so no stray line leaks to the world origin.
 function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(p.x, p.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(p.x, p.y), cy = isoY(p.x, p.y) - elev + 2;
-  const C = OWN_COLOR, W = 0xffffff;
-  const H = 104, topY = cy - H; // beam rises this many screen-px into the sky
+  const C = OWN_COLOR, W = 0xffffff, TAU = Math.PI * 2;
+  const Rc = 3.4 * GRID_SCALE; // gather-zone radius in fine cells (~where forces converge)
+  const rx = Rc * TILE_W, ry = Rc * TILE_H; // iso-squashed disc
 
-  // 1) the light pillar — stacked trapezoids (wide at the base, tapering up), low alpha → a volumetric
-  //    glowing column; a bright near-white core down the middle.
-  const beam = (hb: number, ht: number, color: number, a: number) =>
-    g.poly([cx - ht, topY, cx + ht, topY, cx + hb, cy, cx - hb, cy]).fill({ color, alpha: a });
-  beam(30, 11, C, 0.05); beam(22, 8, C, 0.09); beam(15, 5.5, C, 0.14); beam(9, 3.5, C, 0.22);
-  beam(5, 2, W, 0.30); beam(2.4, 1, W, 0.6);
-
-  // 2) radiant apex — a slowly rotating starburst + glowing source orb high in the sky
-  const spin = (s.tick % 240) / 240 * Math.PI * 2;
-  for (let i = 0; i < 12; i++) {
-    const a = spin + (i / 12) * Math.PI * 2, rl = i % 2 === 0 ? 26 : 14, w = 1.8;
-    g.poly([cx + Math.cos(a + 1.57) * w, topY + Math.sin(a + 1.57) * w, cx + Math.cos(a) * rl, topY + Math.sin(a) * rl, cx + Math.cos(a - 1.57) * w, topY + Math.sin(a - 1.57) * w]).fill({ color: C, alpha: 0.18 });
+  // 1) the magical haze — many concentric ellipses, denser toward the center, with an outward
+  //    shimmer wave so the whole interior glows and breathes.
+  const N = 14;
+  for (let i = N; i >= 1; i--) {
+    const f = i / N; // 1 = ring edge, →0 = center
+    const shimmer = 0.6 + 0.4 * Math.sin(s.tick / 7 - i * 0.5);
+    g.ellipse(cx, cy, rx * f, ry * f).fill({ color: C, alpha: (0.018 + 0.05 * (1 - f)) * shimmer });
   }
-  g.circle(cx, topY, 13).fill({ color: C, alpha: 0.14 });
-  g.circle(cx, topY, 7).fill({ color: C, alpha: 0.4 });
-  g.circle(cx, topY, 3.4).fill({ color: W, alpha: 0.95 });
-
-  // 3) light chevrons descending the beam (animated drift toward the ground)
-  for (let i = 0; i < 4; i++) {
-    const t = ((s.tick / 26) + i / 4) % 1, yy = topY + 14 + t * (H - 26), w = 2 + t * 6;
-    g.poly([cx - w, yy, cx, yy + 5.5, cx + w, yy]).fill({ color: C, alpha: 0.55 * Math.sin(t * Math.PI) });
+  // soft wisps swirling inside (a few offset blobs orbiting the center)
+  for (let i = 0; i < 5; i++) {
+    const a = s.tick / 30 + (i / 5) * TAU, rr = 0.55 * (0.6 + 0.3 * Math.sin(s.tick / 13 + i));
+    g.ellipse(cx + Math.cos(a) * rx * rr, cy + Math.sin(a) * ry * rr, rx * 0.16, ry * 0.16).fill({ color: W, alpha: 0.05 });
   }
 
-  // 4) holy ground impact — expanding rings on the deck + a bright landing flare
-  for (let i = 0; i < 3; i++) { const t = (((s.tick % 36) / 36) + i / 3) % 1, r = 9 + t * 34; g.ellipse(cx, cy, r, r * 0.5).stroke({ color: C, width: 2.2 - t * 1.6, alpha: 0.6 * (1 - t) }); }
-  g.ellipse(cx, cy, 18, 9).fill({ color: C, alpha: 0.12 });
-  g.ellipse(cx, cy, 10, 5).stroke({ color: C, width: 1.8, alpha: 0.9 });
-  g.ellipse(cx, cy, 4, 2).fill({ color: W, alpha: 0.95 });
+  // 2) the ring(s) + slow-rotating runes around the rim
+  const spin = (s.tick % 360) / 360 * TAU;
+  g.ellipse(cx, cy, rx, ry).stroke({ color: C, width: 2.6, alpha: 0.85 });
+  g.ellipse(cx, cy, rx * 0.86, ry * 0.86).stroke({ color: C, width: 1.1, alpha: 0.35 });
+  for (let i = 0; i < 16; i++) {
+    const a = spin + (i / 16) * TAU, big = i % 4 === 0;
+    g.circle(cx + Math.cos(a) * rx, cy + Math.sin(a) * ry, big ? 3 : 1.6).fill({ color: big ? W : C, alpha: big ? 0.9 : 0.7 });
+  }
+
+  // 3) expanding holy pulses sweeping outward to the rim
+  for (let i = 0; i < 2; i++) {
+    const t = (((s.tick % 44) / 44) + i * 0.5) % 1, k = 0.45 + t * 0.55;
+    g.ellipse(cx, cy, rx * k, ry * k).stroke({ color: W, width: 2 * (1 - t), alpha: 0.5 * (1 - t) });
+  }
+
+  // 4) rising motes — little sparks drifting up out of the haze (magic ascending)
+  for (let i = 0; i < 10; i++) {
+    const t = ((s.tick / 22) + i / 10) % 1, a = (i / 10) * TAU;
+    g.circle(cx + Math.cos(a) * rx * 0.66, cy + Math.sin(a) * ry * 0.66 - t * 30, 1.6 * (1 - t)).fill({ color: W, alpha: 0.6 * (1 - t) });
+  }
+
+  // 5) a calm bright heart (not a tall beam) marking the exact point
+  g.ellipse(cx, cy, rx * 0.16, ry * 0.16).fill({ color: W, alpha: 0.1 });
+  g.ellipse(cx, cy, 5, 2.5).fill({ color: W, alpha: 0.7 });
 
   g.zIndex = 1 << 20; // a divine order draws above all units/buildings
   return g;
