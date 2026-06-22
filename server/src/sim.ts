@@ -5,7 +5,7 @@ import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, Doctri
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
-import { modsFor, type ArmyMods } from "../../shared/doctrine.js";
+import { modsFor, budgetFor, type ArmyMods } from "../../shared/doctrine.js";
 
 const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
 const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 150); // ticks between spawns (~15s)
@@ -81,6 +81,17 @@ export interface PlayerState {
 
 /** This player's army-wide modifiers, derived from their chosen doctrine. */
 export const playerMods = (g: GameState, owner: number): ArmyMods => modsFor(g.players[owner]?.armyDoctrine);
+
+/** Lock in a player's once-per-match army doctrine: set the build identity AND seed the opening budget
+ *  (camp %s + turret ring) to match the strategy. The player can retune the Sankey live afterward. */
+export function applyArmyDoctrine(g: GameState, owner: number, id: string): void {
+  const p = g.players[owner];
+  if (!p) return;
+  p.armyDoctrine = id;
+  const b = budgetFor(id);
+  for (const camp of p.camps) camp.production.budgetPct = b[camp.id];
+  p.turretBudget = b.turret;
+}
 
 // ---- Morale ----------------------------------------------------------------------------------
 // Team morale (0..1). UP with a larger force (strength in numbers); DOWN the further the army is

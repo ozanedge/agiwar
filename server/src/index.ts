@@ -3,7 +3,7 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { Camp, ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyFieldOrder, clearFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyArmyDoctrine, applyFieldOrder, clearFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
 import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
@@ -359,8 +359,9 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   if (msg.type === "chooseArmyDoctrine") {
     const d = ARMY_DOCTRINES.find((x) => x.id === msg.id);
     if (!d) return;
-    g.players[player].armyDoctrine = d.id;
+    applyArmyDoctrine(g, player, d.id); // sets build identity AND seeds the opening budget to match
     sendState(ws, g, player);
+    sendOwnCamps(ws, g, player); // push the doctrine-aligned camp budgets so the Sankey reflects them
     send(ws, { type: "notice", level: "info", text: `Army doctrine: ${d.label} — ${d.hint}.` });
     // gate: the match only begins once EVERY human has locked a doctrine (solo → just this player;
     // PvP → both). Until then the sim stays paused in tickRoom.
