@@ -113,6 +113,7 @@ export interface StateMsg {
   boosterCost: number; // current cost to buy a morale booster (scales with army size)
   armyDoctrine: string; // recipient's chosen build identity (id from shared/doctrine.ts); "balanced" until chosen
   rally: { x: number; y: number } | null; // recipient's active rally/commitment point (units concentrate here)
+  sandstorm: { progress: number; secsLeft: number } | null; // active board-clearing storm: 0..1 intensity + countdown
   you: number; // which player index this client controls
 }
 

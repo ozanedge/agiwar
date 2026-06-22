@@ -57,6 +57,9 @@ const sendState = (ws: WebSocket, g: GameState, player: number, includeShots = f
     morale: g.players[player].morale, boosterCost: boosterCost(g, player),
     armyDoctrine: g.players[player].armyDoctrine,
     rally: g.players[player].rally ? { x: g.players[player].rally!.x, y: g.players[player].rally!.y } : null,
+    sandstorm: g.sandstorm
+      ? { progress: Math.min(1, (g.tick - g.sandstorm.from) / Math.max(1, g.sandstorm.until - g.sandstorm.from)), secsLeft: Math.ceil((g.sandstorm.until - g.tick) / TICK_HZ) }
+      : null,
     shots: includeShots ? visibleShots(g, player) : [],
     ...computeVisibleState(g, player), you: player,
   });

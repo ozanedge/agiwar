@@ -47,6 +47,15 @@ const PACK_RADIUS = 14 * GRID_SCALE; // friendly combatants within this many cel
 const PACK_KEEP = 4 * GRID_SCALE; // a straggler farther than this from the pack center rejoins it
 const SUPPORT_RADIUS = 8 * GRID_SCALE; // a unit rushes to help only allies being attacked THIS close
 const SUPPORT_MEMORY = 14; // ticks an "ally under attack" beacon stays hot after the last shot at it
+// SANDSTORM: a stalemate-breaker. When the map is choked with units (both armies summed), a storm
+// rolls in and scours EVERY unit off the field over SANDSTORM_SECS — production halts, the board
+// clears, both sides rebuild. Bases are untouched. Stops armies ballooning without bound (which also
+// used to choke the renderer) while giving the wipe real in-world drama instead of a silent cap.
+export const SANDSTORM_TRIGGER = Number(process.env.SANDSTORM_TRIGGER ?? 400); // total units that summon the storm
+export const SANDSTORM_SECS = Number(process.env.SANDSTORM_SECS ?? 30);
+const SANDSTORM_TICKS = Math.max(1, Math.round(SANDSTORM_SECS * TICK_HZ));
+const SANDSTORM_KILL_TICKS = Math.max(1, Math.round(SANDSTORM_TICKS * 0.85)); // all units dead by ~85% in, leaving a few seconds of empty howling storm
+const SANDSTORM_COOLDOWN_TICKS = Math.round(20 * TICK_HZ); // breather after a storm before it can recur
 // last tick each unit was fired upon (by an enemy) — lets nearby allies rally to a unit in a fight.
 const underAttack = new Map<number, number>();
 const groundHeight = (g: GameState, x: number, y: number) => heightAt(x, y, g.seed, GRID_W, GRID_H);
@@ -113,6 +122,8 @@ export interface GameState {
   dynFlow: Map<number, { tick: number; dist: Int32Array }>; // cached flow fields toward dynamic goals
   nextUnitId: number;
   nextArtifactId: number;
+  sandstorm: { from: number; until: number } | null; // active board-clearing storm (null = clear skies)
+  sandstormCooldownUntil: number; // tick before which a new storm can't trigger (post-storm breather)
 }
 
 /** Sum of bonuses from artifacts a player currently controls. */
@@ -177,7 +188,7 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: GRID_W >> 1, y: GRID_H - 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W >> 1, y: 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextArtifactId: 1 };
+  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextArtifactId: 1, sandstorm: null, sandstormCooldownUntil: 0 };
   // precompute passability ONCE (terrain w/ cliff slope is costly) — movement + flow read this grid
   const grid = new Uint8Array(GRID_W * GRID_H);
   for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) grid[y * GRID_W + x] = terrainAt(x, y, g.seed, GRID_W, GRID_H).passable ? 1 : 0;
@@ -612,8 +623,20 @@ export function step(g: GameState) {
   }
   g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult + playerBonus(g, i).income / TICK_HZ)); // income (doctrine-scaled) + artifact bonus
   if (g.tick % ARTIFACT_EVERY === 0 && g.artifacts.length < ARTIFACT_CAP) spawnArtifact(g);
+  // SANDSTORM — stalemate-breaker. Once the field is choked with units (both armies summed), a storm
+  // rolls in and scours EVERY unit away over ~SANDSTORM_SECS; production halts until skies clear, then
+  // both sides rebuild from nothing. Each unit bleeds a fixed fraction of its OWN max hp per tick, so
+  // big and small alike are gone by ~85% through (the rest is empty howling wind). Bases are untouched.
+  if (!g.sandstorm && g.tick >= g.sandstormCooldownUntil && g.units.length >= SANDSTORM_TRIGGER) {
+    g.sandstorm = { from: g.tick, until: g.tick + SANDSTORM_TICKS };
+  }
+  if (g.sandstorm) {
+    for (const u of g.units) u.hp -= u.maxHp / SANDSTORM_KILL_TICKS;
+    if (g.tick >= g.sandstorm.until) { g.sandstorm = null; g.sandstormCooldownUntil = g.tick + SANDSTORM_COOLDOWN_TICKS; }
+  }
   // continuous production: each camp trains its unit at its rate (deterministic cadence)
   for (let pi = 0; pi < g.players.length; pi++) {
+    if (g.sandstorm) break; // no reinforcements deploy into the storm
     const player = g.players[pi];
     const mods = playerMods(g, pi);
     // QUEUED UPGRADE: pause ALL other spending and bank income until we can afford it, then buy.
@@ -668,8 +691,9 @@ export function step(g: GameState) {
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   occ = null;
-  // tally casualties this tick → recent losses (drags morale)
-  for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
+  // tally casualties this tick → recent losses (drags morale). The sandstorm is an act of nature, not
+  // a defeat — units lost to it don't crater morale (else both armies would rebuild demoralized).
+  if (!g.sandstorm) for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
   for (const u of g.units) if (u.hp <= 0) underAttack.delete(u.id); // drop dead units from the support beacons
   g.units = g.units.filter((u) => u.hp > 0);
   // a sieged artifact reverts to neutral (recapturable) rather than being destroyed

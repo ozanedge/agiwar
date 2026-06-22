@@ -272,7 +272,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state" || msg.type === "camps") hideMatchmaking(); // a room exists → matched
-    if (msg.type === "state") { if (awaitingStart) { awaitingStart = false; document.getElementById("standby")?.remove(); } latestState = msg; render(msg); spawnShots(msg); }
+    if (msg.type === "state") { if (awaitingStart) { awaitingStart = false; document.getElementById("standby")?.remove(); } latestState = msg; render(msg); spawnShots(msg); updateSandstorm(msg); }
     else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; latestActiveOrder = msg.activeOrder ?? null; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
@@ -282,6 +282,35 @@ function connect() {
   };
   ws.onclose = () => setTimeout(connect, 1000);
 }
+// ---- SANDSTORM overlay: a drifting sand veil + countdown while the board-clearing storm scours the field ----
+let sandstormEl: HTMLDivElement | null = null;
+function updateSandstorm(s: StateMsg) {
+  const st = s.sandstorm;
+  if (!st) { if (sandstormEl) sandstormEl.style.opacity = "0"; return; }
+  if (!sandstormEl) {
+    const style = document.createElement("style");
+    style.textContent = "@keyframes sand-drift{0%{background-position:0 0,0 0}100%{background-position:240px -90px,-160px 60px}}";
+    document.head.appendChild(style);
+    sandstormEl = document.createElement("div");
+    sandstormEl.id = "sandstorm";
+    sandstormEl.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:50;opacity:0;transition:opacity .5s ease;" +
+      "background:" +
+      "repeating-linear-gradient(108deg,rgba(222,188,120,0) 0,rgba(222,188,120,.14) 7px,rgba(166,126,66,.07) 17px)," +
+      "radial-gradient(ellipse at 50% 38%,rgba(206,166,104,.18),rgba(150,108,54,.6));" +
+      "background-size:300px 300px,cover;animation:sand-drift 1.1s linear infinite;";
+    const banner = document.createElement("div");
+    banner.id = "sandstorm-banner";
+    banner.style.cssText = "position:absolute;top:13%;left:50%;transform:translateX(-50%);text-align:center;" +
+      "color:#2e2008;text-shadow:0 1px 0 rgba(255,232,182,.7);letter-spacing:.18em;font-weight:700;white-space:nowrap;";
+    sandstormEl.appendChild(banner);
+    document.body.appendChild(sandstormEl);
+  }
+  sandstormEl.style.opacity = String(0.3 + 0.55 * st.progress); // veil thickens as the storm peaks
+  (sandstormEl.firstChild as HTMLDivElement).innerHTML =
+    `<div style="font-size:32px">⛈ SANDSTORM</div>` +
+    `<div style="font-size:13px;font-weight:500;opacity:.9;letter-spacing:.12em">the field is being scoured — all units perish · ${st.secsLeft}s</div>`;
+}
+
 function sendCmd(cmd: unknown) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 connect();
 
