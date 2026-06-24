@@ -60,11 +60,14 @@ export function baseSpots(W: number, H: number) {
 export function heightAt(gx: number, gy: number, seed: number, W: number, H: number): number {
   let h = fbm(gx / NOISE_SCALE, gy / NOISE_SCALE, seed); // rolling continent (water ↔ land)
   // mountain ranges: ridged spine gated by a low-frequency belt mask → tall, coherent chains
-  const belt = Math.max(0, fbm(gx / (NOISE_SCALE * 2.6), gy / (NOISE_SCALE * 2.6), seed + 4096) - 0.45) * 3;
+  // mountain ranges: rarer (higher belt threshold) and lower (smaller gain + cap) so most of the
+  // field stays traversable — ranges are an accent, not a maze.
+  const belt = Math.max(0, fbm(gx / (NOISE_SCALE * 2.6), gy / (NOISE_SCALE * 2.6), seed + 4096) - 0.56) * 2.2;
   const spine = ridgeNoise(gx / (NOISE_SCALE * 1.0), gy / (NOISE_SCALE * 1.0), seed + 313);
-  h += Math.min(0.95, belt * spine); // prominent, towering ranges
-  // medium-frequency roughness everywhere → hills, dips, knolls (variability)
-  h += (fbm(gx / (NOISE_SCALE * 0.42), gy / (NOISE_SCALE * 0.42), seed + 71) - 0.5) * 0.34;
+  h += Math.min(0.72, belt * spine); // fewer, lower ranges (less impassable terrain)
+  // medium-frequency roughness everywhere → hills, dips, knolls (variability). Gentler now so local
+  // slopes rarely steepen into impassable cliffs.
+  h += (fbm(gx / (NOISE_SCALE * 0.42), gy / (NOISE_SCALE * 0.42), seed + 71) - 0.5) * 0.24;
   // base region: a flat home plateau on HIGH GROUND (commanding position), blended out over a wide
   // apron to natural terrain so the descent never steepens into a cliff ring that would trap the base.
   const PLATEAU = 0.78; // highland (passable, well above the high-ground bonus threshold)
@@ -116,5 +119,7 @@ export const isPassable = (gx: number, gy: number, seed: number, W: number, H: n
 
 /** Extra attack range / sight (in fine cells) granted by standing on high ground — a big edge. */
 export function highGroundBonus(height: number): number {
-  return Math.round(Math.max(0, height - 0.55) * 70); // 0 on low ground → ~+19 cells on the highest passable ground
+  // a positional EDGE, not a reach multiplier: 0 on low ground → ~+9 cells on the highest passable
+  // ground (softened from ×70 so reach doesn't collapse 3×→1× when a unit steps off a rise).
+  return Math.round(Math.max(0, height - 0.55) * 35);
 }

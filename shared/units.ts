@@ -1,6 +1,6 @@
 // Unit types — orthogonal to doctrine. A unit's TYPE sets its stats (hp/speed/damage/cost/range);
 // its CAMP (doctrine) sets its behavior. You pick both when you create a troop.
-import type { ArtifactBonusKind } from "./types.js";
+import type { OutpostBonusKind } from "./types.js";
 export type UnitType = "gunner" | "tank" | "humvee" | "drone" | "turret";
 
 // Spatial resolution multiplier (cells per axis vs. the original coarse grid). 4 → 16× cells
@@ -43,8 +43,8 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
 export const UNIT_TYPES: UnitType[] = ["gunner", "tank", "humvee", "drone", "turret"];
 
 // Permanent, repeatable investments — each level adds to that player's army-wide bonus.
-// (kind matches the artifact bonus pool, so they stack.) Cost escalates per level.
-export const INVESTMENTS: { kind: ArtifactBonusKind; label: string; amount: number; base: number; effect: string }[] = [
+// (kind matches the outpost bonus pool, so they stack.) Cost escalates per level.
+export const INVESTMENTS: { kind: OutpostBonusKind; label: string; amount: number; base: number; effect: string }[] = [
   { kind: "damage", label: "Munitions", amount: 1, base: 120, effect: "+1 dmg" },
   { kind: "hp", label: "Health", amount: 5, base: 120, effect: "+5 hp" },
   { kind: "armor", label: "Armor", amount: 1, base: 150, effect: "−1 dmg taken" },

@@ -120,6 +120,12 @@ function tint(hex: number, f: number): number {
 // darker, desaturated/teal-shifted terrain so neon units + cyan HUD pop on top
 const KIND_COLOR: Record<TerrainKind, number> = { water: 0x06303d, sand: 0x5b5638, grass: 0x163a2a, highland: 0x2b3a28, rock: 0x5c564d }; // rock = warm stone-grey (was bluish)
 const elevAt = elevationAt; // cheap render-lift lookup (no cliff slope sampling)
+// Decorative landscape continued BEYOND the playable grid: the terrain extends EDGE_MARGIN fine cells
+// past every edge and ramps up into an encircling mountain range (EDGE_RISE added to height at the
+// rim), so there's no hard diamond cutoff. Units never reach it; it stays permanently under the
+// shroud, hazing into the background instead of stopping at a crisp line.
+const EDGE_MARGIN = 56;
+const EDGE_RISE = 1.2;
 
 let terrainKey = "";
 let terrainTex: import("pixi.js").Texture | null = null;
@@ -131,16 +137,25 @@ const exploredCoarse = new Set<number>(); // coarse cells whose vision is alread
 // sprites then just sample this texture (cheap), masked by vision — no per-tick tile redraw.
 function bakeTerrain(seed: number, W: number, H: number) {
   const g = new Graphics();
-  // precompute height + smooth elevation once; the draw loop reads neighbors from these arrays
-  const N = W * H, Hh = new Float32Array(N), E = new Float32Array(N);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const h = heightAt(x, y, seed, W, H); const i = y * W + x; Hh[i] = h; E[i] = elevFromHeight(h); }
+  // precompute height + smooth elevation once over the playable grid PLUS an EDGE_MARGIN rim. Cells
+  // outside the grid ramp up into an encircling range (the noise is continuous, so it joins seamlessly).
+  const M = EDGE_MARGIN, WX = W + 2 * M, HX = H + 2 * M, N = WX * HX, Hh = new Float32Array(N), E = new Float32Array(N);
+  const outset = (x: number, y: number) => Math.max(x < 0 ? -x : x >= W ? x - (W - 1) : 0, y < 0 ? -y : y >= H ? y - (H - 1) : 0);
+  for (let ly = 0; ly < HX; ly++) for (let lx = 0; lx < WX; lx++) {
+    const x = lx - M, y = ly - M;
+    let h = heightAt(x, y, seed, W, H);
+    const o = outset(x, y);
+    if (o > 0) { const t = Math.min(1, o / M); h += t * t * EDGE_RISE; } // rise into the rim range
+    const i = ly * WX + lx; Hh[i] = h; E[i] = elevFromHeight(h);
+  }
   const half = TILE_W / 2, hh = TILE_H / 2, D = GRID_SCALE;
-  const ix = (x: number, y: number) => (x < 0 ? 0 : x >= W ? W - 1 : x) + (y < 0 ? 0 : y >= H ? H - 1 : y) * W;
-  const eAt = (x: number, y: number) => E[ix(x, y)];
-  const hgt = (x: number, y: number) => Hh[ix(x, y)];
-  for (let d = 0; d <= W - 1 + (H - 1); d++) {
-    for (let gx = Math.max(0, d - (H - 1)); gx <= Math.min(W - 1, d); gx++) {
-      const gy = d - gx, i = gy * W + gx, h = Hh[i], e = E[i];
+  // index by WORLD cell (x,y), clamped into the [-M, W-1+M] × [-M, H-1+M] extended range
+  const li = (x: number, y: number) => { const lx = x + M, ly = y + M; return (lx < 0 ? 0 : lx >= WX ? WX - 1 : lx) + (ly < 0 ? 0 : ly >= HX ? HX - 1 : ly) * WX; };
+  const eAt = (x: number, y: number) => E[li(x, y)];
+  const hgt = (x: number, y: number) => Hh[li(x, y)];
+  for (let d = 0; d <= (WX - 1) + (HX - 1); d++) {
+    for (let lx = Math.max(0, d - (HX - 1)); lx <= Math.min(WX - 1, d); lx++) {
+      const ly = d - lx, gx = lx - M, gy = ly - M, i = ly * WX + lx, h = Hh[i], e = E[i];
       const kind = kindOf(h);
       // steep land = impassable cliff → render as bare rock
       const slope = Math.max(Math.abs(hgt(gx + D, gy) - hgt(gx - D, gy)), Math.abs(hgt(gx, gy + D) - hgt(gx, gy - D))) / (2 * D);
@@ -148,7 +163,11 @@ function bakeTerrain(seed: number, W: number, H: number) {
       const baseCol = blocked ? KIND_COLOR.rock : KIND_COLOR[kind];
       // smooth hill-shade: surface descending toward the camera catches light, up-slopes shade (gentle)
       const shade = Math.max(-0.16, Math.min(0.16, ((eAt(gx - 1, gy) + eAt(gx, gy - 1)) / 2 - e) * 0.13));
-      const col = tint(baseCol, shade);
+      let col = tint(baseCol, shade);
+      // RIM SHROUD: bake the fade into the decorative margin so it hazes into the background no matter
+      // what live vision does (the dynamic fog can't darken this thin a band — sight bleeds across it).
+      const o = outset(gx, gy);
+      if (o > 0) { const t = Math.min(1, o / M); col = lerpColor(col, FOG_TINT, t * t * (3 - 2 * t)); }
       const cx = isoX(gx, gy), cy = isoY(gx, gy) - e, baseY = isoY(gx, gy);
       // side faces fill ONLY the drop to the downhill front neighbors — seamless on gentle slopes,
       // tall on steep ground (no stair-step columns to a flat baseline).
@@ -314,54 +333,100 @@ function updateSandstorm(s: StateMsg) {
 function sendCmd(cmd: unknown) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 connect();
 
-// ---- projectiles: each shot from the server flies as a tracer, with an impact flash (hit) or a
-//      wide whiff (miss). Animated on the render ticker (60fps); purely cosmetic. ----
-interface Proj { ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; color: number; big: boolean; ox: number; oy: number; }
+// ---- projectiles: each shot from the server flies with a WEAPON-SPECIFIC look (per firing unit),
+//      then resolves to an impact (hit) or a wide whiff (miss). Animated on the render ticker; cosmetic.
+//   • gunner  — white straight dashed tracer, near-hitscan, tiny spark on hit
+//   • humvee  — rapid warm-amber dashed tracer (light autocannon)
+//   • tank    — slow arcing shell with an ember trail that EXPLODES on impact (fireball + shockwave + debris)
+//   • turret  — smaller explosive autocannon round
+interface ShotStyle { arc: number; travelMult: number; dashed: boolean; core: number; mid: number; glow: number; width: number; explode: boolean; scale: number; dash?: number; gap?: number; alpha?: number; }
+const SHOT_STYLES: Record<string, ShotStyle> = {
+  gunner: { arc: 0, travelMult: 0.5, dashed: true, core: 0xc8ced6, mid: 0xeaf2ff, glow: 0xdfeaff, width: 0.8, explode: false, scale: 0.85, dash: 13, gap: 9, alpha: 0.62 },
+  humvee: { arc: 0, travelMult: 0.45, dashed: true, core: 0xfff0c0, mid: 0xffd070, glow: 0xffae3a, width: 0.9, explode: false, scale: 0.8, dash: 7, gap: 6 },
+  tank: { arc: 5, travelMult: 1.5, dashed: false, core: 0xffe39a, mid: 0xff7a1a, glow: 0xff2d00, width: 3.2, explode: true, scale: 1.75 },
+  turret: { arc: 2.5, travelMult: 1.1, dashed: false, core: 0xffe39a, mid: 0xff9a2a, glow: 0xff4d10, width: 2.4, explode: true, scale: 1.2 },
+};
+interface Proj { ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; st: ShotStyle; seed: number; ox: number; oy: number; }
 const projectiles: Proj[] = [];
+const TAU = Math.PI * 2;
+// dashed straight line A→B (Pixi has no native dash) — short segments, used for rifle/MG tracers
+function dashLine(x1: number, y1: number, x2: number, y2: number, dash: number, gap: number, style: { color: number; width: number; alpha: number }) {
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+  if (len < 0.001) return;
+  const ux = dx / len, uy = dy / len;
+  for (let d = 0; d < len; d += dash + gap) {
+    const e = Math.min(len, d + dash);
+    fxLayer.moveTo(x1 + ux * d, y1 + uy * d).lineTo(x1 + ux * e, y1 + uy * e).stroke(style);
+  }
+}
 function spawnShots(s: StateMsg) {
   for (const sh of s.shots ?? []) {
     if (projectiles.length > 400) break;
     const cells = Math.max(Math.abs(sh.ax - sh.bx), Math.abs(sh.ay - sh.by));
-    const big = sh.kind === "tank" || sh.kind === "turret";
+    const st = SHOT_STYLES[sh.kind] ?? SHOT_STYLES.gunner;
     // a miss veers wide of the target by a few px in a random direction
     const a = Math.random() * Math.PI * 2, r = 7 + Math.random() * 8;
     projectiles.push({
       ax: sh.ax, ay: sh.ay, bx: sh.bx, by: sh.by, t0: performance.now(),
-      travel: Math.min(360, 90 + cells * 6), hit: sh.hit, big,
-      color: sh.owner === s.you ? OWN_COLOR : ENEMY_COLOR,
+      travel: Math.max(40, Math.min(360, 90 + cells * 6) * st.travelMult), hit: sh.hit, st, seed: Math.random() * TAU,
       ox: sh.hit ? 0 : Math.cos(a) * r, oy: sh.hit ? 0 : Math.sin(a) * r * 0.6,
     });
   }
 }
-const IMPACT_MS = 120;
-// red-orange ember gradient: red glow → orange streak → hot yellow-white core
-const TRACER_GLOW = 0xff2d00, TRACER_MID = 0xff7a1a, TRACER_CORE = 0xffe39a;
 app.ticker.add(() => {
   if (!projectiles.length || !latestState) { if (!projectiles.length) fxLayer.clear(); return; }
   const s = latestState, now = performance.now();
   fxLayer.clear();
   for (let i = projectiles.length - 1; i >= 0; i--) {
-    const p = projectiles[i];
+    const p = projectiles[i], st = p.st;
     const el = now - p.t0;
-    if (el >= p.travel + IMPACT_MS) { projectiles.splice(i, 1); continue; }
+    const impactMs = st.explode ? 380 : 130;
+    if (el >= p.travel + impactMs) { projectiles.splice(i, 1); continue; }
     const sx = isoX(p.ax, p.ay), sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - 9;
     const ex = isoX(p.bx, p.by) + p.ox, ey = isoY(p.bx, p.by) - elevAt(p.bx, p.by, s.seed, s.gridW, s.gridH) - 6 + p.oy;
-    const lift = 2.5 + (p.big ? 1.5 : 0); // gentle, near-flat trajectory
     if (el < p.travel) {
       const t = el / p.travel, tt = Math.max(0, t - 0.16);
-      const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * lift;
-      const px = sx + (ex - sx) * tt, py = sy + (ey - sy) * tt - Math.sin(tt * Math.PI) * lift;
-      fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: TRACER_GLOW, width: p.big ? 4 : 2.6, alpha: 0.35 }); // red glow trail
-      fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: TRACER_MID, width: p.big ? 2.2 : 1.3, alpha: 0.9 }); // orange streak
-      fxLayer.circle(cx, cy, p.big ? 2.4 : 1.5).fill({ color: TRACER_CORE, alpha: 0.95 }); // hot core
-      fxLayer.circle(cx, cy, p.big ? 4.2 : 2.8).fill({ color: TRACER_GLOW, alpha: 0.28 }); // bloom
-    } else {
-      const k = (el - p.travel) / IMPACT_MS; // 0→1 impact progress
-      if (p.hit) {
-        fxLayer.circle(ex, ey, (p.big ? 5 : 3) + k * (p.big ? 15 : 9)).stroke({ color: TRACER_GLOW, width: p.big ? 2 : 1.3, alpha: 0.85 * (1 - k) });
-        fxLayer.circle(ex, ey, (p.big ? 4 : 2.5) * (1 - k)).fill({ color: TRACER_CORE, alpha: 0.9 * (1 - k) }); // flash
+      const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * st.arc;
+      if (st.dashed) {
+        // skinny long-dashed straight tracer streaking out from the muzzle to the current head
+        const dash = st.dash ?? 12, gap = st.gap ?? 8, a = st.alpha ?? 0.95;
+        dashLine(sx, sy, cx, cy, dash, gap, { color: st.glow, width: st.width + 0.7, alpha: a * 0.15 }); // faint glow
+        dashLine(sx, sy, cx, cy, dash, gap, { color: st.core, width: st.width, alpha: a }); // crisp skinny dashes
+        fxLayer.circle(cx, cy, st.width * 1.1).fill({ color: st.core, alpha: a }); // small head
       } else {
-        fxLayer.circle(ex, ey, (p.big ? 4 : 3) + k * 5).stroke({ color: TRACER_MID, width: 1, alpha: 0.35 * (1 - k) }); // faint puff
+        // arcing shell with a fiery ember trail
+        const px = sx + (ex - sx) * tt, py = sy + (ey - sy) * tt - Math.sin(tt * Math.PI) * st.arc;
+        fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: st.glow, width: st.width * 1.5, alpha: 0.35 });
+        fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: st.mid, width: st.width, alpha: 0.9 });
+        fxLayer.circle(cx, cy, st.scale * 1.7).fill({ color: st.core, alpha: 0.95 }); // hot round
+        fxLayer.circle(cx, cy, st.scale * 3).fill({ color: st.glow, alpha: 0.26 }); // bloom
+      }
+    } else {
+      const k = (el - p.travel) / impactMs; // 0→1 impact progress
+      if (st.explode) {
+        if (p.hit) {
+          // EXPLOSION: shockwave rings + fireball + flung embers + lingering smoke
+          fxLayer.circle(ex, ey, st.scale * 4 + k * st.scale * 22).stroke({ color: st.glow, width: 3 * (1 - k), alpha: 0.8 * (1 - k) });
+          fxLayer.circle(ex, ey, st.scale * 2 + k * st.scale * 13).stroke({ color: st.mid, width: 2 * (1 - k), alpha: 0.7 * (1 - k) });
+          const cf = Math.max(0, 1 - k * 2.2); // fireball flashes then dies fast
+          fxLayer.circle(ex, ey, st.scale * 9 * cf).fill({ color: st.mid, alpha: 0.6 * cf });
+          fxLayer.circle(ex, ey, st.scale * 6 * cf).fill({ color: st.core, alpha: 0.95 * cf });
+          for (let e = 0; e < 9; e++) { // ember debris
+            const ang = (e / 9) * TAU + p.seed, dist = k * st.scale * 21;
+            fxLayer.circle(ex + Math.cos(ang) * dist, ey + Math.sin(ang) * dist * 0.6, (1 - k) * st.scale * 1.5).fill({ color: e % 2 ? st.core : st.mid, alpha: 0.9 * (1 - k) });
+          }
+          fxLayer.circle(ex, ey - k * 4, st.scale * 5 + k * st.scale * 12).fill({ color: 0x141210, alpha: 0.16 * (1 - k) }); // smoke
+        } else {
+          fxLayer.circle(ex, ey, st.scale * 3 + k * 9).stroke({ color: st.mid, width: 1.4 * (1 - k), alpha: 0.4 * (1 - k) }); // ground burst
+          fxLayer.circle(ex, ey, st.scale * 3 + k * 11).fill({ color: 0x141210, alpha: 0.12 * (1 - k) }); // dust
+        }
+      } else if (p.hit) {
+        // bullet hit: small bright spark + a few flung sparks
+        fxLayer.circle(ex, ey, 2 + k * 7).stroke({ color: st.core, width: 1.2 * (1 - k), alpha: 0.8 * (1 - k) });
+        fxLayer.circle(ex, ey, 2.5 * (1 - k)).fill({ color: st.core, alpha: 0.95 * (1 - k) });
+        for (let e = 0; e < 4; e++) { const ang = (e / 4) * TAU + p.seed, len = (1 - k) * 7; fxLayer.moveTo(ex, ey).lineTo(ex + Math.cos(ang) * len, ey + Math.sin(ang) * len * 0.6).stroke({ color: st.core, width: 1, alpha: 0.7 * (1 - k) }); }
+      } else {
+        fxLayer.circle(ex, ey, 3 + k * 5).stroke({ color: st.mid, width: 1, alpha: 0.3 * (1 - k) }); // whiff puff
       }
     }
   }
@@ -599,6 +664,7 @@ function render(s: StateMsg) {
     resetFog(s.seed, s.gridW, s.gridH); centerOnBase(s);
     for (const e of unitViews.values()) e.holder.destroy({ children: true }); // new match → drop stale holders
     unitViews.clear();
+    fglogEl.replaceChildren(); // new match → wipe the previous game's command log
   }
   renderFog(s); // unexplored = black · explored = dim memory · visible = bright
   // transient entities (rebuilt each state); units are persistent + interpolated, so don't wipe them
@@ -606,7 +672,7 @@ function render(s: StateMsg) {
   transientFx.length = 0;
   const addT = (g: Container) => { entityLayer.addChild(g); transientFx.push(g); };
   if (s.rally) addT(makeRally(s.rally, s));
-  for (const a of s.artifacts) addT(makeArtifact(a, s));
+  for (const a of s.outposts) addT(makeOutpost(a, s));
   for (const b of s.bases) addT(makeBase(b, s));
   reconcileUnits(s); // create/update/remove persistent unit holders; the ticker glides them
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
@@ -694,7 +760,7 @@ function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
   return g;
 }
 
-function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {
+function makeOutpost(a: StateMsg["outposts"][number], s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(a.x, a.y, s.seed, s.gridW, s.gridH);
   const cx = isoX(a.x, a.y), cy = isoY(a.x, a.y) - elev;
@@ -742,7 +808,7 @@ function makeArtifact(a: StateMsg["artifacts"][number], s: StateMsg): Graphics {
   g.zIndex = a.x + a.y; // sits with terrain depth
   if (neutral) { // click to direct forces to capture it
     g.eventMode = "static"; g.cursor = "pointer";
-    g.on("pointertap", () => sendCmd({ type: "captureArtifact", id: a.id }));
+    g.on("pointertap", () => sendCmd({ type: "captureOutpost", id: a.id }));
   }
   return g;
 }
@@ -999,7 +1065,7 @@ function drawGunnerWeapon(g: Graphics, side: number) {
 // with t SCULPTS a real 3D volume out of the stack: a tank rises tracks → hull → angular turret,
 // a soldier rises legs → plate-carrier torso → helmet, a turret tapers tower → head. forward = +x.
 function drawSilhouette(g: Graphics, type: UnitType, side: number, t: number) {
-  const lvl = -0.5 + t * 0.62; // dark at the base, lit toward the apex
+  const lvl = -0.62 + Math.pow(t, 0.8) * 0.92; // ambient-occluded base → bright key-lit apex (eased) for a stronger sculpted volume
   const m = unitPalette(side);
   const body = tint(m.steel, lvl);
   const trk = tint(m.rubber, lvl * 0.45);
@@ -1054,9 +1120,14 @@ function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
   g.clear();
   const { fp, rad } = unitDims(u);
   const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
-  g.ellipse(0, 3, 11 * fp.x, 4.5 * fp.y).fill({ color: 0x000000, alpha: 0.3 }); // shadow
-  g.ellipse(0, 1, rad + 11, (rad + 11) * 0.5).fill({ color: side, alpha: 0.12 });
-  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.14 }); // team glow
+  // soft DIRECTIONAL contact shadow (key light upper-left → shadow falls down-right), layered for a
+  // blurred penumbra → tight contact core, so the unit reads as grounded rather than a flat disc.
+  g.ellipse(2.4, 5, 13 * fp.x, 5.2 * fp.y).fill({ color: 0x000000, alpha: 0.14 }); // outer penumbra
+  g.ellipse(1.4, 4, 10 * fp.x, 4.2 * fp.y).fill({ color: 0x000000, alpha: 0.2 });
+  g.ellipse(0.6, 3, 7.5 * fp.x, 3.2 * fp.y).fill({ color: 0x000000, alpha: 0.26 }); // contact core
+  // team-colored ground glow — tighter + a touch stronger so the side reads at a glance
+  g.ellipse(0, 1, rad + 12, (rad + 12) * 0.5).fill({ color: side, alpha: 0.1 });
+  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.16 }); // team glow
   if (u.unit === "turret") g.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(UNIT_LN);
   if (pinned && pinned.id === u.id) g.ellipse(0, 1, rad + 9, (rad + 9) * 0.5).stroke({ color: 0xffffff, width: 1.5, alpha: 0.85 }); // selection ring
 }
@@ -1115,7 +1186,7 @@ function updateUnitArt(v: UnitView, u: StateMsg["units"][number], s: StateMsg) {
 // ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
 interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
 const unitViews = new Map<number, UnitView>();
-const transientFx: Container[] = []; // bases/artifacts/rally — rebuilt each state (no interpolation)
+const transientFx: Container[] = []; // bases/outposts/rally — rebuilt each state (no interpolation)
 
 function placeHolder(e: UnitView, s: StateMsg) {
   e.holder.x = isoX(e.gx, e.gy);

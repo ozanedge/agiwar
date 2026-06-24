@@ -38,7 +38,7 @@ export const PRESET_PROMPTS: Record<DoctrineId, string> = {
   defensive:
     "Train troops to defend the home base. Hold a tight perimeter and only engage enemies that come close to base. Do not chase or wander.",
   builder:
-    "Send engineers out to find resources and artifacts across the map and claim them for our side. Avoid combat — secure territory, not kills.",
+    "Send engineers out to find resources and outposts across the map and claim them for our side. Avoid combat — secure territory, not kills.",
 };
 
 /** Deterministic keyword fallback compiler. Used when Bedrock is unreachable so the
@@ -79,7 +79,7 @@ export function stubMix(prompt: string): Record<string, number> {
 /** Deterministic fallback ADVISOR (used when Bedrock is down): maps the player's MOST RECENT order
  *  to a budget split + per-camp unit mix, so an executive order still visibly moves the economy
  *  offline. Reads only the latest order line so it overrides the standing doctrine. */
-export function stubAdvise(prompt: string): {
+export function stubAdvise(prompt: string, base?: { attack: number; intel: number; defense: number; builder: number; turret: number }): {
   attack: number; intel: number; defense: number; builder: number; turret: number;
   mixes: Record<string, Record<string, number>>; reason: string;
 } {
@@ -87,15 +87,16 @@ export function stubAdvise(prompt: string): {
   const latest = (lines[lines.length - 1] ?? "").toLowerCase();
   const has = (...ws: string[]) => ws.some((w) => latest.includes(w));
   const hard = has("all ", "only", "everything", "100%", "full", "max", "pure", "nothing but", "!!"); // "go all-in" intent
-  // budget split — pick the dominant doctrine in the order, then bias hard or moderate.
-  let b = { attack: 30, intel: 12, defense: 15, builder: 10, turret: 10 };
+  // budget split — start from the chosen ARMY DOCTRINE's profile (so each doctrine yields a drastically
+  // different economy even offline), then let an explicit player order below override it.
+  let b = base ? { ...base } : { attack: 30, intel: 12, defense: 15, builder: 10, turret: 10 };
   if (has("defens", "defend", "turtle", "fortif", "hold the", "protect", "guard", "wall", "garrison")) {
     b = hard ? { attack: 0, intel: 0, defense: 85, builder: 0, turret: 15 } : { attack: 12, intel: 8, defense: 52, builder: 8, turret: 20 };
   } else if (has("attack", "aggress", "offens", "rush", "assault", "push", "strike", "siege", "overwhelm", "blitz")) {
     b = hard ? { attack: 90, intel: 8, defense: 2, builder: 0, turret: 0 } : { attack: 58, intel: 10, defense: 12, builder: 10, turret: 10 };
   } else if (has("recon", "scout", "intel", "spot", "surveil", "vision", "eyes", "map")) {
     b = hard ? { attack: 12, intel: 73, defense: 5, builder: 10, turret: 0 } : { attack: 25, intel: 40, defense: 10, builder: 15, turret: 10 };
-  } else if (has("eco", "econom", "expand", "artifact", "boom", "greed", "engineer", "income", "build up")) {
+  } else if (has("eco", "econom", "expand", "outpost", "boom", "greed", "engineer", "income", "build up")) {
     b = hard ? { attack: 8, intel: 8, defense: 6, builder: 68, turret: 10 } : { attack: 20, intel: 12, defense: 12, builder: 45, turret: 11 };
   }
   // unit mix — if the order names a unit type, set EVERY camp to it (covers "ALL DEFENSE TANKS").

@@ -1,15 +1,15 @@
 // Deterministic, server-authoritative fixed-tick simulation.
 // No Math.random / Date.now inside the tick: all "randomness" is a pure hash of
 // (unitId, tick) so a match is fully reproducible and replayable.
-import type { Artifact, ArtifactBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, UnitState } from "../../shared/types.js";
+import type { Outpost, OutpostBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, UnitState } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
 import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
 import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
 import { modsFor, budgetFor, type ArmyMods } from "../../shared/doctrine.js";
 
-const ARTIFACT_CAP = Number(process.env.ARTIFACT_CAP ?? 9);
-const ARTIFACT_EVERY = Number(process.env.ARTIFACT_EVERY ?? 150); // ticks between spawns (~15s)
-const ARTIFACT_HP = 120;
+const OUTPOST_CAP = Number(process.env.OUTPOST_CAP ?? 9);
+const OUTPOST_EVERY = Number(process.env.OUTPOST_EVERY ?? 150); // ticks between spawns (~15s)
+const OUTPOST_HP = 120;
 export type Bonus = { income: number; range: number; hp: number; damage: number; armor: number; speed: number };
 
 // Pacing knobs (env-tunable so we can dial feel without code edits).
@@ -28,11 +28,11 @@ const DEFAULT_PROD: Record<DoctrineId, { budgetPct: number; mix: Partial<Record<
   aggressive: { budgetPct: 30, mix: { gunner: 100 } }, // Attack budget
   recon: { budgetPct: 12, mix: { drone: 100 } }, // Intelligence budget — drones are our eyes
   defensive: { budgetPct: 15, mix: { tank: 100 } }, // Defense budget
-  builder: { budgetPct: 10, mix: { humvee: 100 } }, // Builder budget — units hunt artifacts
+  builder: { budgetPct: 10, mix: { humvee: 100 } }, // Builder budget — units hunt outposts
 };
 const DEFAULT_TURRET_BUDGET = 10; // 30+10+15+10 camps + 10 turret = 75 → 25% savings
 const CAPTURE_COST = Number(process.env.CAPTURE_COST ?? 180); // drawn from the bank when a capture completes
-const CAPTURE_TICKS = Number(process.env.CAPTURE_TICKS ?? 60); // ~6s of channeling to claim a neutral artifact
+const CAPTURE_TICKS = Number(process.env.CAPTURE_TICKS ?? 60); // ~6s of channeling to claim a neutral outpost
 // Movement/attack cadence and HP/damage are now PER UNIT TYPE (see shared/units.ts):
 // gunner = balanced, tank = strong+slow, humvee = fast+weak. A global SPEED_MULT scales
 // all cadences if we want to slow/speed everything uniformly without touching per-type feel.
@@ -73,7 +73,7 @@ export interface PlayerState {
   armyDoctrine: string; // once-per-match build identity (id from shared/doctrine.ts)
   rally: { x: number; y: number; until: number } | null; // commitment point: forward units concentrate here until `until` tick
   fieldOrder: { kind: "defend" | "push"; target: DoctrineId | "all"; label: string; ovr: BehaviorSpec } | null; // the field general's ACTIVE tactic — overrides doctrine until the player cancels it
-  queuedInvest: ArtifactBonusKind | null; // a player-queued upgrade — pauses all other spending to save for it
+  queuedInvest: OutpostBonusKind | null; // a player-queued upgrade — pauses all other spending to save for it
   morale: number; // 0..1 team morale (degrades speed + accuracy when low); recomputed each tick
   recentLosses: number; // decaying tally of recent unit deaths (drags morale down)
   moraleBoost: number; // temporary morale lift from a purchased booster (decays over time)
@@ -95,14 +95,14 @@ export function applyArmyDoctrine(g: GameState, owner: number, id: string): void
 
 // ---- Morale ----------------------------------------------------------------------------------
 // Team morale (0..1). UP with a larger force (strength in numbers); DOWN the further the army is
-// from its nearest supply point (base/owned artifact — overextension) and the more units it has
+// from its nearest supply point (base/owned outpost — overextension) and the more units it has
 // lost recently. Low morale degrades movement speed and accuracy. Boosters lift it temporarily.
 const MORALE_BASE = 0.7;
 export function computeMorale(g: GameState, pi: number): number {
   const p = g.players[pi];
   const own = g.units.filter((u) => u.owner === pi && !UNIT_STATS[u.unit].building);
   const n = own.length;
-  const supply = [g.bases[pi], ...g.artifacts.filter((a) => a.owner === pi)].filter(Boolean);
+  const supply = [g.bases[pi], ...g.outposts.filter((a) => a.owner === pi)].filter(Boolean);
   let avgDist = 0;
   if (n && supply.length) {
     let s = 0;
@@ -125,23 +125,23 @@ export interface GameState {
   seed: number; // map seed (cosmetic terrain); fixed per match
   units: UnitState[];
   bases: BaseState[];
-  artifacts: Artifact[];
+  outposts: Outpost[];
   shots: Shot[]; // transient weapon-fire events accumulated since the last broadcast (cosmetic)
   players: PlayerState[]; // index = player/owner
   flow: Int32Array[]; // BFS distance-to-base field per base, for obstacle-routed movement
   passGrid: Uint8Array; // 1 = passable, 0 = blocked (water/rock/cliff) — precomputed once per match
   dynFlow: Map<number, { tick: number; dist: Int32Array }>; // cached flow fields toward dynamic goals
   nextUnitId: number;
-  nextArtifactId: number;
+  nextOutpostId: number;
   sandstorm: { from: number; until: number } | null; // active board-clearing storm (null = clear skies)
   sandstormCooldownUntil: number; // tick before which a new storm can't trigger (post-storm breather)
 }
 
-/** Sum of bonuses from artifacts a player currently controls. */
+/** Sum of bonuses from outposts a player currently controls. */
 export function playerBonus(g: GameState, player: number): Bonus {
   const b: Bonus = { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 };
-  for (const a of g.artifacts) if (a.owner === player) b[a.bonus.kind] += a.bonus.amount;
-  const inv = g.players[player].invest; // permanent investments stack with artifacts
+  for (const a of g.outposts) if (a.owner === player) b[a.bonus.kind] += a.bonus.amount;
+  const inv = g.players[player].invest; // permanent investments stack with outposts
   for (const i of INVESTMENTS) b[i.kind] += inv[i.kind] * i.amount;
   return b;
 }
@@ -190,7 +190,7 @@ function makePlayer(): PlayerState {
 
 export const DEFAULT_ADVISOR_PROMPT =
   "Run a balanced war economy. Fund attack and defense steadily, keep some income flowing to the " +
-  "builder so we grab artifacts, and bank a little savings. Invest gradually in munitions and plating. " +
+  "builder so we grab outposts, and bank a little savings. Invest gradually in munitions and plating. " +
   "If our base comes under pressure, shift toward defense and turrets.";
 
 export function newGame(seed = 1): GameState {
@@ -199,13 +199,84 @@ export function newGame(seed = 1): GameState {
     { owner: 0, x: GRID_W >> 1, y: GRID_H - 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
     { owner: 1, x: GRID_W >> 1, y: 5 * GRID_SCALE, hp: BASE_HP, maxHp: BASE_HP },
   ];
-  const g: GameState = { tick: 0, seed: seed >>> 0, units: [], bases, artifacts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextArtifactId: 1, sandstorm: null, sandstormCooldownUntil: 0 };
+  // pick a terrain seed that keeps the two bases well-connected (no long range/lake walling the field)
+  const mapSeed = pickMapSeed(seed >>> 0, bases);
+  const g: GameState = { tick: 0, seed: mapSeed, units: [], bases, outposts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextOutpostId: 1, sandstorm: null, sandstormCooldownUntil: 0 };
   // precompute passability ONCE (terrain w/ cliff slope is costly) — movement + flow read this grid
   const grid = new Uint8Array(GRID_W * GRID_H);
   for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) grid[y * GRID_W + x] = terrainAt(x, y, g.seed, GRID_W, GRID_H).passable ? 1 : 0;
   g.passGrid = grid;
+  // final safety net: the coarse vet samples every few cells, so a thin cliff line could still split
+  // the field at full resolution. If the bases are truly disconnected, carve a march lane between them.
+  if (bfsFrom(g, bases[0].x, bases[0].y)[bases[1].y * GRID_W + bases[1].x] >= 1e9) carveCorridor(grid, bases);
   g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
   return g;
+}
+
+// ---- MAP VETTING ----------------------------------------------------------------------------------
+// Auto-generated terrain must never wall the field into a stalemate. We score candidate seeds on a
+// COARSE sample (every COARSE_STEP fine cells) — cheap enough to try many — and take the first that is
+// open: bases connected, the base→base path no more than MAX_DETOUR× the straight line (so no long
+// mountain range/lake forces a huge march), and at least MIN_PASSABLE of the field traversable.
+const COARSE_STEP = 2 * GRID_SCALE; // sample terrain every 8 fine cells when vetting
+const MAP_TRIES = 40; // candidate seeds to try before settling for the most-open one found
+// These gates run on the COARSE sample, which understates thin passable necks (so it reads as more
+// obstructed than the real grid). Kept deliberately loose — a coarse-acceptable map is comfortably
+// open at full resolution — so vetting usually accepts an early candidate instead of scanning all 40.
+const MAX_DETOUR = 1.7; // coarse base→base route at most 70% longer than the straight line
+const MIN_PASSABLE = 0.45; // at least ~45% of the coarse field traversable
+
+function coarseMobility(seed: number, bases: BaseState[]): { connected: boolean; detour: number; passFrac: number; score: number } {
+  const CW = Math.ceil(GRID_W / COARSE_STEP), CH = Math.ceil(GRID_H / COARSE_STEP), N = CW * CH;
+  const pass = new Uint8Array(N);
+  let passN = 0;
+  for (let cy = 0; cy < CH; cy++) for (let cx = 0; cx < CW; cx++) {
+    const p = terrainAt(Math.min(GRID_W - 1, cx * COARSE_STEP), Math.min(GRID_H - 1, cy * COARSE_STEP), seed, GRID_W, GRID_H).passable ? 1 : 0;
+    pass[cy * CW + cx] = p; passN += p;
+  }
+  const cc = (b: BaseState) => ((b.y / COARSE_STEP) | 0) * CW + ((b.x / COARSE_STEP) | 0);
+  const start = cc(bases[0]), goal = cc(bases[1]);
+  const INF = 1e9, dist = new Int32Array(N).fill(INF), q = [start];
+  dist[start] = 0;
+  for (let head = 0; head < q.length; head++) {
+    const k = q[head], cx = k % CW, cy = (k / CW) | 0, nd = dist[k] + 1;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= CW || ny >= CH) continue;
+      const nk = ny * CW + nx;
+      if (dist[nk] <= nd || pass[nk] === 0) continue;
+      dist[nk] = nd; q.push(nk);
+    }
+  }
+  const straight = Math.max(1, Math.max(Math.abs((start % CW) - (goal % CW)), Math.abs(((start / CW) | 0) - ((goal / CW) | 0))));
+  const connected = dist[goal] < INF;
+  const detour = connected ? dist[goal] / straight : Infinity;
+  const passFrac = passN / N;
+  const score = connected ? passFrac - 0.4 * Math.max(0, detour - 1) : -1 + passFrac * 0.01; // prefer open + direct
+  return { connected, detour, passFrac, score };
+}
+
+function pickMapSeed(startSeed: number, bases: BaseState[]): number {
+  let s = startSeed >>> 0, bestSeed = s, bestScore = -Infinity;
+  for (let t = 0; t < MAP_TRIES; t++) {
+    const m = coarseMobility(s, bases);
+    if (m.connected && m.detour <= MAX_DETOUR && m.passFrac >= MIN_PASSABLE) return s; // open field — take it
+    if (m.score > bestScore) { bestScore = m.score; bestSeed = s; }
+    s = (Math.imul(s, 1103515245) + 12345) >>> 0; // next candidate seed (LCG)
+  }
+  return bestSeed; // none ideal in MAP_TRIES — use the most open one we saw
+}
+
+// Last-resort guarantee: force-open a straight vertical march lane between the bases so land units can
+// always cross. Only invoked when the bases are genuinely disconnected at full resolution (very rare).
+function carveCorridor(grid: Uint8Array, bases: BaseState[]): void {
+  const x0 = GRID_W >> 1, HW = 2 * GRID_SCALE;
+  const y0 = Math.min(bases[0].y, bases[1].y), y1 = Math.max(bases[0].y, bases[1].y);
+  for (let y = y0; y <= y1; y++) for (let dx = -HW; dx <= HW; dx++) {
+    const x = x0 + dx;
+    if (x >= 0 && x < GRID_W) grid[y * GRID_W + x] = 1;
+  }
 }
 
 /** BFS distance (in 8-dir steps) from cell (sx,sy) to every passable cell. Unreachable = INF.
@@ -231,7 +302,7 @@ function bfsFrom(g: GameState, sx: number, sy: number): Int32Array {
 }
 const computeFlow = (g: GameState, owner: number): Int32Array => bfsFrom(g, g.bases[owner].x, g.bases[owner].y);
 
-// On-demand flow fields toward DYNAMIC goals (rally, chased enemy, artifacts). Quantized + TTL'd +
+// On-demand flow fields toward DYNAMIC goals (rally, chased enemy, outposts). Quantized + TTL'd +
 // budget-capped per tick + LRU-evicted so global pathing for moving targets stays cheap.
 const FLOW_Q = 6, FLOW_TTL = 30, FLOW_CACHE_MAX = 16, FLOW_PER_TICK = 3;
 let flowComputes = 0; // reset each step before the decide loop
@@ -290,7 +361,7 @@ function stepToBase(g: GameState, u: UnitState, owner: number) {
   if (bx !== u.x || by !== u.y) { u.dx = sign(bx - u.x); u.dy = sign(by - u.y); placeUnit(u, bx, by); } // heading + move (else wait)
 }
 
-const ARTIFACT_BONUSES: { kind: ArtifactBonusKind; amount: number; label: string }[] = [
+const OUTPOST_BONUSES: { kind: OutpostBonusKind; amount: number; label: string }[] = [
   { kind: "income", amount: 3, label: "+3 ⛃/s" },
   { kind: "income", amount: 2, label: "+2 ⛃/s" },
   { kind: "range", amount: GRID_SCALE, label: "+1 unit range" },
@@ -298,16 +369,16 @@ const ARTIFACT_BONUSES: { kind: ArtifactBonusKind; amount: number; label: string
   { kind: "damage", amount: 2, label: "+2 attack dmg" },
 ];
 
-function spawnArtifact(g: GameState) {
+function spawnOutpost(g: GameState) {
   for (let attempt = 0; attempt < 24; attempt++) {
-    const r = hash01(g.seed ^ 0x5a17, g.nextArtifactId * 31 + attempt);
-    const r2 = hash01(g.nextArtifactId * 97 + attempt, g.seed ^ 0xa11);
+    const r = hash01(g.seed ^ 0x5a17, g.nextOutpostId * 31 + attempt);
+    const r2 = hash01(g.nextOutpostId * 97 + attempt, g.seed ^ 0xa11);
     const x = Math.round(GRID_W * (0.22 + 0.56 * r)); // mid-map band, away from the bases
     const y = Math.round(GRID_H * (0.12 + 0.76 * r2));
     if (!passable(g, x, y)) continue;
-    if (g.artifacts.some((a) => cheb(a.x, a.y, x, y) < 14 * GRID_SCALE)) continue; // spread them out
-    const bonus = ARTIFACT_BONUSES[Math.floor(hash01(g.nextArtifactId * 7, g.seed) * ARTIFACT_BONUSES.length)];
-    g.artifacts.push({ id: g.nextArtifactId++, x, y, owner: -1, hp: ARTIFACT_HP, maxHp: ARTIFACT_HP, bonus, capProgress: 0, capOwner: -1 });
+    if (g.outposts.some((a) => cheb(a.x, a.y, x, y) < 14 * GRID_SCALE)) continue; // spread them out
+    const bonus = OUTPOST_BONUSES[Math.floor(hash01(g.nextOutpostId * 7, g.seed) * OUTPOST_BONUSES.length)];
+    g.outposts.push({ id: g.nextOutpostId++, x, y, owner: -1, hp: OUTPOST_HP, maxHp: OUTPOST_HP, bonus, capProgress: 0, capOwner: -1 });
     return;
   }
 }
@@ -354,7 +425,7 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
   };
   for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e.owner, e, e);
   for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b.owner, b);
-  for (const a of g.artifacts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy artifacts
+  for (const a of g.outposts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy outposts
   return best;
 }
 
@@ -398,7 +469,7 @@ const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
   u.dx = dx; u.dy = dy; moveUnit(u, nx, ny); return true; // record heading + occupancy
 };
 
-// Local stepper for DYNAMIC targets (chasing a unit, sieging an artifact): pick the passable
+// Local stepper for DYNAMIC targets (chasing a unit, sieging an outpost): pick the passable
 // neighbor that gets closest to the target; if none improves, slide laterally to skirt walls.
 function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
   const cur = cheb(u.x, u.y, tx, ty);
@@ -484,7 +555,7 @@ function decide(g: GameState, u: UnitState) {
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
-  const range = stats.range + bonus.range + hgBonus(g, u.x, u.y); // artifact range + HIGH-GROUND reach
+  const range = stats.range + bonus.range + hgBonus(g, u.x, u.y); // outpost range + HIGH-GROUND reach
   const isScout = stats.dmg <= 0; // drones: never engage, just scout
   const atk = (t: Target) => { if (canAttack) attack(g, u, t); };
 
@@ -505,10 +576,19 @@ function decide(g: GameState, u: UnitState) {
   const toBase = (owner: number) => { if (canMove) for (let i = 0; i < stepBoost; i++) (fly ? moveToward(g, u, g.bases[owner].x, g.bases[owner].y) : stepToBase(g, u, owner)); };
   const roam = () => { if (canMove) for (let i = 0; i < stepBoost; i++) explore(g, u); };
 
-  // Builder doctrine: roam to the nearest neutral artifact and claim it (engineers, not fighters)
+  // Builder doctrine: roam to the nearest neutral outpost and claim it (engineers, not fighters)
   if (u.camp === "builder") {
-    let target: Artifact | null = null, td = Infinity;
-    for (const a of g.artifacts) if (a.owner < 0) { const d = cheb(u.x, u.y, a.x, a.y); if (d < td) { td = d; target = a; } }
+    // engineers, not pacifists: if an enemy is contesting LOCALLY (e.g. another builder fighting over
+    // the same outpost, or a threat closing in), break off and ENGAGE it — close to range and fire —
+    // instead of passively channeling across the outpost from an enemy. Clear it, then resume capturing.
+    const foe = nearestEnemy(g, u);
+    const foeDist = foe ? cheb(u.x, u.y, foe.x, foe.y) : Infinity;
+    if (!isScout && foe && foeDist <= 12 * GRID_SCALE) {
+      if (foeDist <= range) atk(foe); else mv(foe.x, foe.y);
+      return;
+    }
+    let target: Outpost | null = null, td = Infinity;
+    for (const a of g.outposts) if (a.owner < 0) { const d = cheb(u.x, u.y, a.x, a.y); if (d < td) { td = d; target = a; } }
     if (!target) { roam(); return; } // none known → scout for more
     if (td > 2 * GRID_SCALE) mv(target.x, target.y); // else: hold and channel — the capture pass in step() advances progress
     return;
@@ -612,7 +692,7 @@ function attack(g: GameState, u: UnitState, target: Target) {
   const hit = hash01(u.id + 91, g.tick) < hitChance; // decorrelated from movement/engage rolls
   if (target.unit) underAttack.set(target.unit.id, g.tick); // beacon: this ally is in a fight (hit or not)
   if (hit) {
-    const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult); // artifact/investment + doctrine
+    const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult); // outpost/investment + doctrine
     // high-ground rule: scale damage by elevation delta, clamped; Highland doctrine amplifies it.
     const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
     const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
@@ -632,8 +712,8 @@ export function step(g: GameState) {
     if (fo && (fo.target === "all" || u.camp === fo.target)) { u.overrideUntil = g.tick + 2; u.overrideLabel = fo.label; }
     else if (u.overrideUntil) { u.overrideUntil = 0; u.overrideLabel = ""; }
   }
-  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult + playerBonus(g, i).income / TICK_HZ)); // income (doctrine-scaled) + artifact bonus
-  if (g.tick % ARTIFACT_EVERY === 0 && g.artifacts.length < ARTIFACT_CAP) spawnArtifact(g);
+  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult + playerBonus(g, i).income / TICK_HZ)); // income (doctrine-scaled) + outpost bonus
+  if (g.tick % OUTPOST_EVERY === 0 && g.outposts.length < OUTPOST_CAP) spawnOutpost(g);
   // SANDSTORM — stalemate-breaker. Once the field is choked with units (both armies summed), a storm
   // rolls in and scours EVERY unit away over ~SANDSTORM_SECS; production halts until skies clear, then
   // both sides rebuild from nothing. Each unit bleeds a fixed fraction of its OWN max hp per tick, so
@@ -707,11 +787,11 @@ export function step(g: GameState) {
   if (!g.sandstorm) for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
   for (const u of g.units) if (u.hp <= 0) underAttack.delete(u.id); // drop dead units from the support beacons
   g.units = g.units.filter((u) => u.hp > 0);
-  // a sieged artifact reverts to neutral (recapturable) rather than being destroyed
-  for (const a of g.artifacts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; a.capProgress = 0; a.capOwner = -1; }
-  // TIMED CAPTURE: a neutral artifact is claimed over CAPTURE_TICKS while exactly one player's
+  // a sieged outpost reverts to neutral (recapturable) rather than being destroyed
+  for (const a of g.outposts) if (a.owner >= 0 && a.hp <= 0) { a.owner = -1; a.hp = a.maxHp; a.capProgress = 0; a.capOwner = -1; }
+  // TIMED CAPTURE: a neutral outpost is claimed over CAPTURE_TICKS while exactly one player's
   // builder channels on it (and can afford the cost); progress decays when unattended/contested.
-  for (const a of g.artifacts) {
+  for (const a of g.outposts) {
     if (a.owner >= 0) continue;
     let chan = -1; // -1 none, -2 contested
     for (let pi = 0; pi < g.players.length && chan !== -2; pi++) {
@@ -729,9 +809,9 @@ export function step(g: GameState) {
   }
 }
 
-/** Next open turret-ring slot around any of a player's anchors (base + owned artifacts). */
+/** Next open turret-ring slot around any of a player's anchors (base + owned outposts). */
 function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } | null {
-  const anchors = [{ x: g.bases[owner].x, y: g.bases[owner].y }, ...g.artifacts.filter((a) => a.owner === owner)];
+  const anchors = [{ x: g.bases[owner].x, y: g.bases[owner].y }, ...g.outposts.filter((a) => a.owner === owner)];
   for (const anchor of anchors) {
     for (const R of [5 * GRID_SCALE, 8 * GRID_SCALE]) {
       const n = Math.round(R * 1.4);
@@ -773,13 +853,13 @@ function visionSources(g: GameState, player: number): { x: number; y: number; r:
   return out;
 }
 
-export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[]; artifacts: Artifact[] } {
+export function computeVisibleState(g: GameState, player: number): { units: UnitState[]; bases: BaseState[]; outposts: Outpost[] } {
   const src = visionSources(g, player);
   const visible = (x: number, y: number) => src.some((s) => cheb(s.x, s.y, x, y) <= s.r);
   return {
     units: g.units.filter((u) => u.owner === player || visible(u.x, u.y)).map(pub),
     bases: g.bases.filter((b) => b.owner === player || visible(b.x, b.y)),
-    artifacts: g.artifacts.filter((a) => a.owner === player || visible(a.x, a.y)), // neutral/enemy artifacts fog-gated
+    outposts: g.outposts.filter((a) => a.owner === player || visible(a.x, a.y)), // neutral/enemy outposts fog-gated
   };
 }
 

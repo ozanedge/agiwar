@@ -4,7 +4,12 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { INVESTMENTS, TRAINABLE, UnitType } from "../../shared/units.js";
 import { stubAdvise } from "../../shared/spec.js";
-import { GameState, INCOME_PER_TICK, playerBonus } from "./sim.js";
+import { budgetFor } from "../../shared/doctrine.js";
+import { GameState, INCOME_PER_TICK, playerBonus, DEFAULT_ADVISOR_PROMPT } from "./sim.js";
+
+// the chosen army doctrine's opening allocation, mapped to the advisor's camp keys — the economy's
+// default stance, so each doctrine drives a drastically different budget (even with the LLM offline).
+const docBudget = (id: string) => { const b = budgetFor(id); return { attack: b.aggressive, intel: b.recon, defense: b.defensive, builder: b.builder, turret: b.turret }; };
 import { latestOrder } from "./compiler.js";
 
 const ENABLED = (process.env.ADVISOR ?? "on") !== "off";
@@ -26,7 +31,7 @@ economy AND set the army's production. Faithfully follow the player's doctrine. 
 }
 where UNITS = { "gunner": int, "tank": int, "humvee": int, "drone": int } (relative weights).
 Each budget is a CAMP (a behavior doctrine) that can train ANY unit type — they are independent. \
-"attack"=aggressive doctrine, "intel"=recon doctrine, "defense"=defensive doctrine, "builder"=engineers (claim artifacts), "turret"=auto-built defenses.
+"attack"=aggressive doctrine, "intel"=recon doctrine, "defense"=defensive doctrine, "builder"=engineers (claim outposts), "turret"=auto-built defenses.
 "mix" sets each camp's unit composition SEPARATELY. Obey composition orders precisely:
  - "tanks only" => set EVERY camp to {"tank":100}
  - "attack tanks, intel humvees, defense gunners" => {"attack":{"tank":100},"intel":{"humvee":100},"defense":{"gunner":100}}
@@ -41,8 +46,8 @@ function summarize(g: GameState, player: number): Summary {
   const own = g.units.filter((u) => u.owner === player);
   const base = g.bases[player];
   const baseHp = Math.round((base.hp / base.maxHp) * 100);
-  const arts = g.artifacts.filter((a) => a.owner === player).length;
-  const neutralArts = g.artifacts.filter((a) => a.owner < 0).length;
+  const arts = g.outposts.filter((a) => a.owner === player).length;
+  const neutralArts = g.outposts.filter((a) => a.owner < 0).length;
   const incomeS = INCOME_PER_TICK * TICK_HZ + playerBonus(g, player).income;
   const camp = (id: string) => p.camps.find((c) => c.id === id)!.production.budgetPct;
   const budgets = `attack ${camp("aggressive")}% intel ${camp("recon")}% defense ${camp("defensive")}% builder ${camp("builder")}% turret ${p.turretBudget}%`;
@@ -51,7 +56,7 @@ function summarize(g: GameState, player: number): Summary {
   const mixStr = (id: string) => { const m = p.camps.find((c) => c.id === id)!.production.mix; const parts = TRAINABLE.filter((u) => m[u]).map((u) => `${u}${m[u]}`); return parts.length ? parts.join("/") : "—"; };
   const text =
     `Banked resources: ${Math.floor(p.resources)}. Income ~${incomeS}/s. Army: ${own.length} units (${comp}). ` +
-    `Home base hp: ${baseHp}%. Artifacts held: ${arts} (${neutralArts} unclaimed on map). ` +
+    `Home base hp: ${baseHp}%. Outposts held: ${arts} (${neutralArts} unclaimed on map). ` +
     `Current budgets: ${budgets}. Current camp production — attack:${mixStr("aggressive")} intel:${mixStr("recon")} defense:${mixStr("defensive")} builder:${mixStr("builder")}. Upgrades: ${inv}.`;
   const sig = [Math.round(p.resources / 200), Math.round(own.length / 4), Math.round(baseHp / 25), arts, Math.min(3, neutralArts)].join("/");
   return { text, sig };
@@ -61,13 +66,13 @@ const clampPct = (n: any) => Math.max(0, Math.min(100, Math.round(Number(n) || 0
 
 interface Allocation { attack: number; intel: number; defense: number; builder: number; turret: number; mixes: Record<string, Record<string, number>>; reason: string; }
 
-async function decide(summaryText: string, doctrine: string): Promise<Allocation> {
+async function decide(summaryText: string, doctrine: string, armyDoctrine: string): Promise<Allocation> {
   try {
     const body = {
       anthropic_version: "bedrock-2023-05-31",
       max_tokens: 200,
       system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: `Economic doctrine (chronological):\n"""${doctrine}"""\n\nThe player's MOST RECENT directive — weight it heavily; it overrides earlier notes on conflict:\n"${latestOrder(doctrine)}"\n\nEconomic report:\n${summaryText}\n\nYour allocation (JSON only):` }],
+      messages: [{ role: "user", content: `Army doctrine for this match: "${armyDoctrine}" — its opening budget stance is ${JSON.stringify(docBudget(armyDoctrine))}; honor it unless the player's orders say otherwise.\n\nEconomic doctrine (chronological):\n"""${doctrine}"""\n\nThe player's MOST RECENT directive — weight it heavily; it overrides earlier notes on conflict:\n"${latestOrder(doctrine)}"\n\nEconomic report:\n${summaryText}\n\nYour allocation (JSON only):` }],
     };
     const res = await bedrock().send(
       new InvokeModelCommand({ modelId: MODEL_ID, contentType: "application/json", accept: "application/json", body: JSON.stringify(body) })
@@ -93,9 +98,13 @@ async function decide(summaryText: string, doctrine: string): Promise<Allocation
       reason: typeof raw.reason === "string" ? raw.reason.slice(0, 60) : "",
     };
   } catch (err) {
-    // Bedrock down (e.g. no AWS creds) → deterministic offline advisor so orders still move the economy
+    // Bedrock down (e.g. no AWS creds) → deterministic offline advisor so orders still move the economy.
+    // Defaults to the army doctrine's profile, so doctrine choice drives the economy even with no LLM.
     console.warn(`[advisor] Bedrock unavailable, using stub: ${(err as Error).message}`);
-    return stubAdvise(doctrine);
+    // only keyword-match a REAL player order; with just the default prompt, follow the doctrine base
+    // (the default prompt's own words like "attack"/"defense" must not masquerade as a player directive).
+    const order = doctrine.trim() === DEFAULT_ADVISOR_PROMPT.trim() ? "" : latestOrder(doctrine);
+    return stubAdvise(order, docBudget(armyDoctrine));
   }
 }
 
@@ -115,7 +124,7 @@ export function createAdvisor(player: number): AdvisorRunner {
       if (sum.sig === lastSig) return; // event-gated: no material economic change -> no call
       if (now - lastCallMs < MIN_INTERVAL_MS) return;
       lastCallMs = now; lastSig = sum.sig; inFlight = true;
-      decide(sum.text, g.players[player].advisor.prompt)
+      decide(sum.text, g.players[player].advisor.prompt, g.players[player].armyDoctrine)
         .then((d) => {
           const p = g.players[player];
           // scale so total allocation never exceeds 100 (remainder = savings)

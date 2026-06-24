@@ -102,7 +102,7 @@ function seed(g: GameState, player: number, bot: boolean) {
 }
 
 function createRoom(humans: WebSocket[], bot: boolean) {
-  const mapSeed = ((roomSeq + 1) * 2654435761) >>> 0; // varied per match, stable within it
+  const mapSeed = (Math.floor(Math.random() * 0x100000000) ^ ((roomSeq + 1) * 2654435761)) >>> 0; // fresh per match (random + room counter), stable within it
   const game = newGame(mapSeed);
   seed(game, 0, false);
   seed(game, 1, bot);
@@ -315,8 +315,8 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     return;
   }
 
-  if (msg.type === "captureArtifact") {
-    const a = g.artifacts.find((a) => a.id === msg.id);
+  if (msg.type === "captureOutpost") {
+    const a = g.outposts.find((a) => a.id === msg.id);
     if (!a || a.owner !== -1) return; // neutral only
     g.players[player].rally = { x: a.x, y: a.y, until: g.tick + 40 * TICK_HZ }; // send forces to channel the capture
     send(ws, { type: "notice", level: "info", text: `Capturing ${a.bonus.label} — a builder must channel on it for a few seconds.` });

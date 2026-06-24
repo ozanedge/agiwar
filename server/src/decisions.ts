@@ -28,6 +28,7 @@ export function createDecisionRunner(player: number): DecisionRunner {
   let lastTick = -1e9;
   let nextId = 1;
   let lastTag = "";
+  let seenContact = false; // has the battle ever been joined? the stalemate fork needs a prior fight
 
   const resolve = (g: GameState, key: string, auto: boolean, log: (t: string) => void, refresh: () => void) => {
     if (!pending) return;
@@ -60,6 +61,10 @@ export function createDecisionRunner(player: number): DecisionRunner {
       const setRally = (x: number, y: number, sec: number) => { g.players[player].rally = { x, y, until: g.tick + sec * TICK_HZ }; };
       const fromLabel = g.players[player].fieldGeneral.label;
 
+      // enemies any of our units can currently see; once it's ever > 0, the front has been "joined"
+      const contacts = g.units.filter((e) => e.owner !== player && own.some((u) => cheb(u.x, u.y, e.x, e.y) <= visionOf(u.unit))).length;
+      if (contacts > 0) seenContact = true;
+
       let built: { question: string; opts: Opt[]; defaultKey: string; tag: string } | null = null;
 
       // (1) BASE THREAT — enemies massing on home, or the base taking damage.
@@ -78,19 +83,19 @@ export function createDecisionRunner(player: number): DecisionRunner {
         };
       }
 
-      // (2) OBJECTIVE LIVE — a neutral relay is up; commit, scout, or ignore. (the commitment call, #5)
+      // (2) OBJECTIVE LIVE — a neutral outpost is up; commit, scout, or ignore. (the commitment call, #5)
       if (!built) {
-        const neutral = g.artifacts.filter((a) => a.owner < 0);
+        const neutral = g.outposts.filter((a) => a.owner < 0);
         if (neutral.length && lastTag !== "objective") {
           // pick the most valuable, then nearest-to-us as tiebreak
           neutral.sort((a, b) => b.bonus.amount - a.bonus.amount || cheb(a.x, a.y, base.x, base.y) - cheb(b.x, b.y, base.x, base.y));
           const a = neutral[0];
           built = {
             tag: "objective",
-            question: `A ${a.bonus.label} relay is live to the ${dirLabel(base.x, base.y, a.x, a.y)}. Commit?`,
+            question: `A ${a.bonus.label} outpost is live to the ${dirLabel(base.x, base.y, a.x, a.y)}. Commit?`,
             defaultKey: "scout",
             opts: [
-              { key: "commit", label: "Commit the main force", detail: "Concentrate the army on it", run: () => { setRally(a.x, a.y, 30); applyFieldOrder(g, player, "push", "all", 24 * TICK_HZ, "take the relay"); } },
+              { key: "commit", label: "Commit the main force", detail: "Concentrate the army on it", run: () => { setRally(a.x, a.y, 30); applyFieldOrder(g, player, "push", "all", 24 * TICK_HZ, "take the outpost"); } },
               { key: "scout", label: "Send scouts only", detail: "Let recon & builders handle it", run: () => { g.players[player].rally = null; } },
               { key: "ignore", label: "Ignore — push their base", detail: "Race for the enemy base instead", run: () => { setRally(enemyBase.x, enemyBase.y, 26); applyFieldOrder(g, player, "push", "all", 24 * TICK_HZ, "all-in push"); } },
             ],
@@ -98,17 +103,17 @@ export function createDecisionRunner(player: number): DecisionRunner {
         }
       }
 
-      // (3) STALEMATE — quiet front, even-ish; press, scout, or bank.
+      // (3) STALEMATE — quiet front, even-ish; press, scout, or bank. Only after the battle has been
+      // joined at least once (seenContact) — never at the opening, when forces just haven't met yet.
       if (!built) {
-        const contacts = g.units.filter((e) => e.owner !== player && own.some((u) => cheb(u.x, u.y, e.x, e.y) <= visionOf(u.unit))).length;
-        if (contacts === 0 && own.length >= 4 && lastTag !== "quiet") {
+        if (seenContact && contacts === 0 && own.length >= 4 && lastTag !== "quiet") {
           built = {
             tag: "quiet",
             question: `The front's gone quiet — ${own.length} units idle. Your call, commander.`,
             defaultKey: "scout",
             opts: [
               { key: "press", label: "Press the attack", detail: "March on the enemy base", run: () => { setRally(enemyBase.x, enemyBase.y, 26); applyFieldOrder(g, player, "push", "all", 22 * TICK_HZ, "press the attack"); } },
-              { key: "scout", label: "Scout wide", detail: "Find their forces & relays", run: () => { g.players[player].rally = null; } },
+              { key: "scout", label: "Scout wide", detail: "Find their forces & outposts", run: () => { g.players[player].rally = null; } },
               { key: "bank", label: "Bank & upgrade", detail: "Shift to savings + turrets", refreshCamps: true, run: () => { const p = g.players[player]; const agg = p.camps.find((c) => c.id === "aggressive"); if (agg) agg.production.budgetPct = Math.max(0, agg.production.budgetPct - 10); p.turretBudget = Math.min(60, p.turretBudget + 10); } },
             ],
           };

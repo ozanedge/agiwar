@@ -29,7 +29,7 @@ export interface ArmyBudget {
   aggressive: number; // Attack camp
   recon: number; // Intel camp
   defensive: number; // Defense camp
-  builder: number; // Builder camp (artifact capture)
+  builder: number; // Builder camp (outpost capture)
   turret: number; // auto-built turret ring
 }
 export const DEFAULT_BUDGET: ArmyBudget = { aggressive: 30, recon: 12, defensive: 15, builder: 10, turret: 10 }; // → 23% savings
@@ -66,7 +66,7 @@ export const ARMY_DOCTRINES: ArmyDoctrine[] = [
   { id: "industry", label: "Industry", hint: "Eco · Tech",
     blurb: "Economist doctrine. Surging income to out-produce and out-tech the enemy over time.",
     mods: { incomeMult: 1.4 },
-    budget: { aggressive: 18, recon: 8, defensive: 10, builder: 18, turret: 4 } }, // → 42% savings: bank for upgrades + grab artifacts
+    budget: { aggressive: 18, recon: 8, defensive: 10, builder: 18, turret: 4 } }, // → 42% savings: bank for upgrades + grab outposts
 ];
 
 export function modsFor(id: string | null | undefined): ArmyMods {

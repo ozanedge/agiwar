@@ -75,18 +75,18 @@ export interface BaseState {
   maxHp: number;
 }
 
-export type ArtifactBonusKind = "income" | "range" | "hp" | "damage" | "armor" | "speed";
+export type OutpostBonusKind = "income" | "range" | "hp" | "damage" | "armor" | "speed";
 
 /** A capturable map resource. Neutral (owner -1) until a player invests to claim it;
  *  then it grants a passive bonus + acts as a turret-build anchor, and can be attacked. */
-export interface Artifact {
+export interface Outpost {
   id: number;
   x: number;
   y: number;
   owner: number; // -1 = neutral
   hp: number;
   maxHp: number;
-  bonus: { kind: ArtifactBonusKind; amount: number; label: string };
+  bonus: { kind: OutpostBonusKind; amount: number; label: string };
   capProgress: number; // 0..1 capture channel progress while neutral (client shows a spindown)
   capOwner: number; // player currently channeling the capture (-1 = none)
 }
@@ -101,14 +101,14 @@ export interface StateMsg {
   gridH: number;
   seed: number; // per-match map seed -> deterministic shared terrain
   resources: number; // this client's resource total (floored)
-  incomePerSec: number; // income rate incl. artifact bonuses
+  incomePerSec: number; // income rate incl. outpost bonuses
   units: UnitState[];
   bases: BaseState[];
   shots: Shot[]; // weapon fire since the last broadcast (fog-gated) — client animates projectiles
-  artifacts: Artifact[]; // visible artifacts (fog-gated)
-  bonuses: { income: number; range: number; hp: number; damage: number; armor: number; speed: number }; // recipient's total bonuses (artifacts + investments)
-  invest: Record<ArtifactBonusKind, number>; // recipient's purchased investment levels
-  queuedInvest: ArtifactBonusKind | null; // an upgrade the player has queued — all other spending pauses to save for it
+  outposts: Outpost[]; // visible outposts (fog-gated)
+  bonuses: { income: number; range: number; hp: number; damage: number; armor: number; speed: number }; // recipient's total bonuses (outposts + investments)
+  invest: Record<OutpostBonusKind, number>; // recipient's purchased investment levels
+  queuedInvest: OutpostBonusKind | null; // an upgrade the player has queued — all other spending pauses to save for it
   morale: number; // 0..1 team morale — low morale degrades unit speed + accuracy
   boosterCost: number; // current cost to buy a morale booster (scales with army size)
   armyDoctrine: string; // recipient's chosen build identity (id from shared/doctrine.ts); "balanced" until chosen
@@ -194,9 +194,9 @@ export type ClientMsg =
   | { type: "setTurretBudget"; budgetPct: number } // set the % of income spent on turrets
   | { type: "setMix"; camp: DoctrineId; unit: UnitType; weight: number } // set a unit type's weight within a camp
   | { type: "build"; unit: UnitType; x: number; y: number } // place a building at a map tile
-  | { type: "captureArtifact"; id: number } // invest to claim a neutral artifact
-  | { type: "invest"; kind: ArtifactBonusKind } // buy the next level of a permanent army upgrade (immediate)
-  | { type: "queueInvest"; kind: ArtifactBonusKind } // queue an upgrade — pause other spending and save up for it
+  | { type: "captureOutpost"; id: number } // invest to claim a neutral outpost
+  | { type: "invest"; kind: OutpostBonusKind } // buy the next level of a permanent army upgrade (immediate)
+  | { type: "queueInvest"; kind: OutpostBonusKind } // queue an upgrade — pause other spending and save up for it
   | { type: "cancelInvest" } // clear the queued upgrade and resume normal spending
   | { type: "fieldOrder"; order: FieldOrder } // manual override (debug/UI)
   | { type: "cancelFieldOrder" } // clear the field general's active tactic — units revert to native doctrine
