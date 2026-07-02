@@ -1,9 +1,10 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics, RenderTexture, Sprite, Text, Texture } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType, type Faction, FACTIONS, FACTION_META, FACTION_ROLE_UNIT, ultUnitFor } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
 import { heightAt, elevationAt, elevFromHeight, kindOf, highGroundBonus, CLIFF_SLOPE, type TerrainKind } from "../../../shared/terrain.js";
+import { ARTIFACTS, ULTIMATES, ultimateFor } from "../../../shared/ultimates.js";
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
 const MM_SECONDS = 60; // how long we look for a live opponent before single-player (matches server)
@@ -291,12 +292,12 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg: ServerMsg = JSON.parse(ev.data);
     if (msg.type === "state" || msg.type === "camps") hideMatchmaking(); // a room exists → matched
-    if (msg.type === "state") { if (awaitingStart) { awaitingStart = false; document.getElementById("standby")?.remove(); } latestState = msg; render(msg); spawnShots(msg); updateSandstorm(msg); }
+    if (msg.type === "state") { if (awaitingStart) { awaitingStart = false; document.getElementById("standby")?.remove(); } latestState = msg; render(msg); spawnShots(msg); spawnUfx(msg); updateSandstorm(msg); updateInventory(msg); }
     else if (msg.type === "camps") { latestCamps = msg.camps; latestTurretBudget = msg.turretBudget; latestField = msg.fieldGeneral; latestAdvisor = msg.advisor; latestActiveOrder = msg.activeOrder ?? null; syncCommanders(); }
     else if (msg.type === "notice") { showNotice(msg.text, msg.level); }
     else if (msg.type === "fieldlog") { addLog(msg.text, msg.tick); }
     else if (msg.type === "gameover") { showEndscreen(msg.won); }
-    else if (msg.type === "doctrineOffer") { showDoctrinePicker(msg.current); }
+    else if (msg.type === "doctrineOffer") { showDoctrinePicker(msg.current, msg.faction); }
     else if (msg.type === "decision") { showDecision(msg); }
   };
   ws.onclose = () => setTimeout(connect, 1000);
@@ -330,6 +331,230 @@ function updateSandstorm(s: StateMsg) {
     `<div style="font-size:13px;font-weight:500;opacity:.9;letter-spacing:.12em">the field is being scoured — all units perish · ${st.secsLeft}s</div>`;
 }
 
+// ---- ARTIFACT INVENTORY + FORGE (right panel) ----
+const invGrid = document.getElementById("inv-grid")!;
+const forgeEl = document.getElementById("forge")!;
+const ultsEl = document.getElementById("ults")!;
+const hexCss = (n: number) => "#" + (n & 0xffffff).toString(16).padStart(6, "0");
+// a distinct illustrated icon per artifact (currentColor = the artifact's colour, with a glow)
+const ART_ICON: Record<string, string> = {
+  sky: `<svg viewBox="0 0 24 24" fill="none"><path d="M12 2 L19 9 L12 22 L5 9 Z" fill="currentColor" opacity=".85"/><path d="M12 2 L19 9 L12 12 Z" fill="currentColor"/><path d="M5 9 L12 12 L12 2 Z" fill="currentColor" opacity=".55"/><path d="M5 9 H19" stroke="#fff" stroke-opacity=".45" stroke-width="1"/></svg>`,
+  iron: `<svg viewBox="0 0 24 24" fill="none"><path d="M12 2 L20 7 V17 L12 22 L4 17 V7 Z" fill="currentColor" opacity=".85" stroke="#fff" stroke-opacity=".3" stroke-width="1"/><circle cx="12" cy="12" r="4.4" fill="#0a0f16"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/></svg>`,
+  spark: `<svg viewBox="0 0 24 24" fill="none"><rect x="6" y="3" width="12" height="18" rx="2" fill="currentColor" opacity=".22" stroke="currentColor" stroke-width="1.2"/><path d="M13 5 L8 13 H11 L10 19 L16 10 H12 Z" fill="currentColor"/></svg>`,
+  bloom: `<svg viewBox="0 0 24 24" fill="none"><path d="M12 21 V11" stroke="currentColor" stroke-width="2"/><path d="M12 12 C12 7 8 5 4 6 C5 11 9 13.5 12 12 Z" fill="currentColor" opacity=".8"/><path d="M12 14 C12 9 16 7 20 8 C19 13 15 15.5 12 14 Z" fill="currentColor"/></svg>`,
+  void: `<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" fill="currentColor" opacity=".18"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1"/><path d="M12 3 A9 9 0 0 1 21 12 A6 6 0 0 0 12 6 A3 3 0 0 1 15 9" fill="currentColor" opacity=".75"/><circle cx="12" cy="12" r="2.6" fill="#0a0f16"/></svg>`,
+};
+// a distinct icon per ULTIMATE (keyed by sorted pair id) — drawn in currentColor (purple via CSS)
+const ULT_ICON: Record<string, string> = {
+  "0-0": `<svg viewBox="0 0 24 24" fill="none"><path d="M22 12 L8 7 L12 12 L8 17 Z" fill="currentColor"/><path d="M2 12 H8" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  "1-1": `<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="10" width="14" height="6" rx="1" fill="currentColor"/><rect x="7" y="6" width="6" height="4" rx="1" fill="currentColor"/><rect x="12" y="7" width="9" height="1.6" fill="currentColor"/><g fill="currentColor"><circle cx="6" cy="18" r="1.4"/><circle cx="10" cy="18" r="1.4"/><circle cx="14" cy="18" r="1.4"/></g></svg>`,
+  "2-2": `<svg viewBox="0 0 24 24" fill="none"><path d="M13 2 L6 13 H10 L8 22 L18 9 H12 Z" fill="currentColor"/></svg>`,
+  "3-3": `<svg viewBox="0 0 24 24" fill="none"><g fill="currentColor"><circle cx="7" cy="8" r="2"/><circle cx="14" cy="6" r="1.6"/><circle cx="17" cy="12" r="2.2"/><circle cx="10" cy="14" r="2"/><circle cx="15" cy="17" r="1.6"/><circle cx="6" cy="16" r="1.5"/></g></svg>`,
+  "4-4": `<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1"/><path d="M12 3 A9 9 0 0 1 21 12 A6 6 0 0 0 12 6 A3 3 0 0 1 15 9" fill="currentColor" opacity=".8"/><circle cx="12" cy="12" r="2.6" fill="#0a0f16"/></svg>`,
+  "0-1": `<svg viewBox="0 0 24 24" fill="none"><ellipse cx="11" cy="14" rx="6" ry="3" fill="currentColor"/><path d="M3 9 H21" stroke="currentColor" stroke-width="1.6"/><path d="M12 9 V11" stroke="currentColor" stroke-width="1.4"/><path d="M17 14 H22 V16" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  "0-2": `<svg viewBox="0 0 24 24" fill="none"><path d="M22 12 L9 7 L13 12 L9 17 Z" fill="currentColor"/><path d="M6 4 L2 12 H5 L3 20 L10 10 H6 Z" fill="currentColor" opacity=".85"/></svg>`,
+  "0-3": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 7 l2 2 l2 -2"/><path d="M11 5 l2 2 l2 -2"/><path d="M15 11 l2 2 l2 -2"/><path d="M8 13 l2 2 l2 -2"/><path d="M13 17 l2 2 l2 -2"/></svg>`,
+  "0-4": `<svg viewBox="0 0 24 24" fill="none"><path d="M21 6 L9 10 L12.5 12 L10.5 15.5 Z" fill="currentColor"/><path d="M2 21 L11.5 11.5" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  "1-2": `<svg viewBox="0 0 24 24" fill="none"><rect x="8" y="10" width="8" height="7" rx="1" fill="currentColor"/><path d="M9 17 L7 21 M15 17 L17 21" stroke="currentColor" stroke-width="1.6"/><path d="M12 2 L9 8 H12 L11 12 L15 6 H12 Z" fill="currentColor"/></svg>`,
+  "1-3": `<svg viewBox="0 0 24 24" fill="none"><rect x="8" y="7" width="8" height="11" rx="2" fill="currentColor"/><circle cx="12" cy="5" r="2" fill="currentColor"/><path d="M19 8 V12 M17 10 H21" stroke="currentColor" stroke-width="1.7"/></svg>`,
+  "1-4": `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="6" rx="1" fill="currentColor"/><rect x="3" y="15" width="18" height="4" rx="2" fill="currentColor" opacity=".7"/><rect x="9" y="5" width="6" height="3" fill="currentColor"/></svg>`,
+  "2-3": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="12" cy="12" r="2.4" fill="currentColor"/><circle cx="5" cy="8" r="1.8"/><circle cx="19" cy="9" r="1.8"/><circle cx="8" cy="19" r="1.8"/><circle cx="17" cy="18" r="1.8"/><path d="M12 12 L5 8 M12 12 L19 9 M12 12 L8 19 M12 12 L17 18"/></svg>`,
+  "2-4": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 2 V22 M2 12 H22 M5 5 L19 19 M19 5 L5 19"/></svg>`,
+  "3-4": `<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="10" r="6" fill="currentColor"/><circle cx="10" cy="9.5" r="1.3" fill="#0a0f16"/><circle cx="14" cy="9.5" r="1.3" fill="#0a0f16"/><rect x="9.2" y="15" width="5.6" height="4" rx="1" fill="currentColor"/></svg>`,
+};
+// ---- FORGE BENCH: two slots; click a card to drop it in a slot, click a slot to clear it ----
+let slotA: number | null = null, slotB: number | null = null;
+const usedOf = (t: number) => (slotA === t ? 1 : 0) + (slotB === t ? 1 : 0);
+export function resetForge() { slotA = null; slotB = null; }
+function clickArt(i: number, inv: number[]) {
+  if ((inv[i] ?? 0) <= usedOf(i)) return; // you've no spare of this artifact to bench
+  if (slotA === null) slotA = i;
+  else if (slotB === null) slotB = i;
+  else { slotA = i; slotB = null; } // both full → start a fresh pair with this one
+  if (latestState) updateInventory(latestState);
+}
+function clearSlot(which: 0 | 1) { if (which === 0) slotA = null; else slotB = null; if (latestState) updateInventory(latestState); }
+
+// diff-based: only rebuild the cards/bench when inventory or selection changes (no per-frame churn);
+// the active-ultimate clocks tick every frame but only their width/text update (cheap).
+let lastCardSig = "", lastUltSig = "";
+const ultRows: { bar: HTMLElement; secs: HTMLElement }[] = [];
+function updateInventory(s: StateMsg) {
+  const inv = s.artifacts ?? [0, 0, 0, 0, 0];
+  const sig = inv.join(",") + "|" + slotA + "," + slotB;
+  if (sig !== lastCardSig) { lastCardSig = sig; renderCards(inv); renderForge(inv); }
+  const us = s.ultimates ?? [];
+  const usig = us.map((u) => u.id).join(",");
+  if (usig !== lastUltSig) { lastUltSig = usig; renderUlts(us); }
+  for (let i = 0; i < us.length; i++) {
+    const r = ultRows[i]; if (!r) continue;
+    const cd = us[i].cooldown ?? 0, ult = ULTIMATES[us[i].id];
+    r.bar.style.width = Math.round(cd * 100) + "%";
+    r.secs.textContent = Math.max(0, Math.ceil((1 - cd) * (ult?.intervalSec ?? 60))) + "s";
+  }
+}
+function renderCards(inv: number[]) {
+  invGrid.replaceChildren();
+  ARTIFACTS.forEach((a, i) => {
+    const have = inv[i] ?? 0, used = usedOf(i), avail = have - used;
+    const el = document.createElement("div");
+    el.className = "art" + (used ? " sel" : "") + (have === 0 ? " empty" : "");
+    el.innerHTML = `<div class="art-img" style="background:radial-gradient(circle at 50% 38%, ${hexCss(a.color)}33, #070c12 76%)">`
+      + `<span class="ico" style="color:${hexCss(a.color)}">${ART_ICON[a.key] ?? ""}</span>`
+      + `<span class="ct">${avail}</span></div>`
+      + `<div class="meta"><span class="nm">${a.name}</span><span class="tg">${a.tag}</span></div>`;
+    el.onclick = () => clickArt(i, inv);
+    invGrid.appendChild(el);
+  });
+}
+function slotHtml(t: number | null): string {
+  if (t === null) return `<div class="slot empty">+</div>`;
+  const a = ARTIFACTS[t];
+  return `<div class="slot filled" style="color:${hexCss(a.color)}">${ART_ICON[a.key] ?? ""}</div>`;
+}
+// the forging player's faction (live state if present, else the in-picker choice)
+const myFaction = (): Faction => (latestState?.faction ?? pickedFaction ?? "anthropic");
+// an ultimate's display name = the faction-specific unit it summons (e.g. Mammoth Tank vs Tiberium Behemoth).
+function ultDisplayName(ult: { effect: { kind: string; unit?: UnitType; count?: number }; name: string } | undefined): string {
+  if (!ult) return "?";
+  const eff = ult.effect;
+  if (eff.kind === "spawn" && eff.unit) { const label = UNIT_STATS[ultUnitFor(eff.unit, myFaction())].label; return (eff.count ?? 1) > 1 ? `${label} ×${eff.count}` : label; }
+  return ult.name;
+}
+function renderForge(_inv: number[]) {
+  forgeEl.replaceChildren();
+  const bench = document.createElement("div"); bench.className = "bench";
+  bench.innerHTML = slotHtml(slotA) + `<span class="plus">+</span>` + slotHtml(slotB);
+  const slots = bench.querySelectorAll(".slot");
+  slots[0]?.addEventListener("click", () => clearSlot(0));
+  slots[1]?.addEventListener("click", () => clearSlot(1));
+  const prev = document.createElement("div"); prev.className = "forge-prev";
+  const btn = document.createElement("button"); btn.className = "send"; btn.textContent = "⚡ Forge";
+  if (slotA !== null && slotB !== null) {
+    const ult = ultimateFor(slotA, slotB);
+    prev.innerHTML = `<span class="fhead"><span class="fico">${ULT_ICON[ult?.id ?? ""] ?? ""}</span><span class="fn">${ultDisplayName(ult)}</span></span><span class="fb">${ult?.blurb ?? ""}</span>`;
+    btn.disabled = false;
+    btn.onclick = () => { sendCmd({ type: "forgeUltimate", a: slotA, b: slotB }); resetForge(); if (latestState) updateInventory(latestState); };
+  } else {
+    prev.innerHTML = `<span class="fb">Tap two artifact cards (same or different) to preview an ultimate.</span>`;
+    btn.disabled = true;
+  }
+  forgeEl.append(bench, prev, btn);
+}
+function renderUlts(us: StateMsg["ultimates"]) {
+  ultsEl.replaceChildren(); ultRows.length = 0;
+  for (const act of us) {
+    const ult = ULTIMATES[act.id];
+    const el = document.createElement("div"); el.className = "ult";
+    el.innerHTML = `<span class="uico">${ULT_ICON[act.id] ?? ""}</span><span class="un">${ult ? ultDisplayName(ult) : act.id}</span><span class="uc"><i></i></span><span class="us"></span>`;
+    ultsEl.appendChild(el);
+    ultRows.push({ bar: el.querySelector(".uc i") as HTMLElement, secs: el.querySelector(".us") as HTMLElement });
+  }
+}
+
+// ---- ULTIMATE EFFECT FX (drawn on fxLayer, after projectiles) ----
+interface Ufx { kind: string; gx: number; gy: number; t0: number; }
+const ufxList: Ufx[] = [];
+// every ultimate reads as PURPLE — only the motion (mode) differs between them
+const UFX_STYLE: Record<string, { color: number; mode: string }> = {
+  jet: { color: 0xc98bff, mode: "jet" }, gunship: { color: 0xc98bff, mode: "gunship" },
+  meteor: { color: 0xb26bff, mode: "fall" }, orbital: { color: 0xc98bff, mode: "beam" },
+  ion: { color: 0xd0a0ff, mode: "bolts" }, singularity: { color: 0x9b30ff, mode: "implode" },
+  locust: { color: 0xb26bff, mode: "cloud" }, plague: { color: 0xb26bff, mode: "cloud" },
+  stasis: { color: 0xd0a0ff, mode: "bubble" }, nanite: { color: 0xc98bff, mode: "bloom" },
+  swarm: { color: 0xb26bff, mode: "bloom" }, spawn: { color: 0xc98bff, mode: "bloom" },
+};
+const UFX_IMPACT: Record<string, number> = { jet: 0.46, gunship: 0.32, fall: 0.6, beam: 0.12 }; // when the strike lands → when the purple burst plays
+function spawnUfx(s: StateMsg) {
+  for (const f of s.ufx ?? []) { if (ufxList.length > 60) break; ufxList.push({ kind: f.kind, gx: f.x, gy: f.y, t0: performance.now() }); }
+}
+// a clearly-readable fighter jet pointing along +dir (a swept dart with wings, tail, canopy)
+function drawJet(cx: number, cy: number, dir: number, col: number, a: number) {
+  const d = dir;
+  fxLayer.poly([cx - d * 11, cy - 9, cx - d * 4, cy, cx - d * 11, cy]).fill({ color: col, alpha: a * 0.85 }); // upper wing
+  fxLayer.poly([cx - d * 11, cy + 9, cx - d * 4, cy, cx - d * 11, cy]).fill({ color: col, alpha: a * 0.85 }); // lower wing
+  fxLayer.poly([cx - d * 7, cy, cx - d * 11, cy - 5, cx - d * 6, cy ]).fill({ color: col, alpha: a * 0.85 }); // tail fin
+  fxLayer.poly([cx + d * 13, cy, cx - d * 9, cy - 2.6, cx - d * 9, cy + 2.6]).fill({ color: col, alpha: a }); // fuselage
+  fxLayer.circle(cx + d * 4, cy, 1.7).fill({ color: 0xffffff, alpha: a * 0.7 }); // canopy
+}
+// a clearly-readable gunship/helicopter (fuselage, tail boom + fin, spinning rotor, skids)
+function drawHeli(cx: number, cy: number, col: number, a: number, tick: number) {
+  fxLayer.rect(cx - 19, cy - 1, 13, 2).fill({ color: col, alpha: a }); // tail boom
+  fxLayer.poly([cx - 19, cy - 1, cx - 22, cy - 7, cx - 17, cy + 1]).fill({ color: col, alpha: a }); // tail fin
+  fxLayer.ellipse(cx, cy, 9, 5).fill({ color: col, alpha: a }); // fuselage
+  fxLayer.ellipse(cx + 4, cy - 1, 3.5, 2.4).fill({ color: 0xffffff, alpha: a * 0.45 }); // canopy
+  fxLayer.rect(cx - 0.8, cy - 8, 1.6, 4).fill({ color: col, alpha: a }); // mast
+  const rx = Math.abs(Math.cos(tick * 0.9)) * 17 + 3; // rotor seen edge-on (length oscillates as it spins)
+  fxLayer.moveTo(cx - rx, cy - 8).lineTo(cx + rx, cy - 8).stroke({ color: col, width: 1.8, alpha: a * 0.75 });
+  fxLayer.rect(cx - 7, cy + 5, 14, 1.3).fill({ color: col, alpha: a * 0.8 }); // skids
+}
+// the big PURPLE signature burst (k 0..1) — plays when the strike actually lands
+function magicBurst(x: number, y: number, k: number, phase: number) {
+  if (k <= 0) return;
+  const cf0 = Math.max(0, 1 - k * 3);
+  fxLayer.circle(x, y, 18 + k * 64).fill({ color: 0x7a1fd0, alpha: 0.2 * (1 - k) });
+  fxLayer.circle(x, y, 8 + k * 70).stroke({ color: 0x9b30ff, width: 6 * (1 - k), alpha: 0.95 * (1 - k) });
+  fxLayer.circle(x, y, 4 + k * 44).stroke({ color: 0xc98bff, width: 3.5 * (1 - k), alpha: 0.9 * (1 - k) });
+  fxLayer.circle(x, y, 24 * cf0).fill({ color: 0x9b30ff, alpha: 0.55 * cf0 });
+  fxLayer.circle(x, y, 11 * cf0).fill({ color: 0xe6c8ff, alpha: 0.9 * cf0 });
+  for (let p = 0; p < 12; p++) {
+    const ang = (p / 12) * TAU + phase, dist = k * 74, len = (1 - k) * 12;
+    const px = x + Math.cos(ang) * dist, py = y + Math.sin(ang) * dist * 0.6;
+    fxLayer.moveTo(px, py).lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len * 0.6).stroke({ color: p % 2 ? 0x9b30ff : 0xc98bff, width: 2.2 * (1 - k), alpha: 0.9 * (1 - k) });
+  }
+}
+// draw all active ultimate FX. Called from INSIDE the projectile ticker (after its fxLayer.clear),
+// so the purple bursts survive the per-frame clear instead of being wiped by it.
+function drawUfx(s: StateMsg, now: number) {
+  for (let i = ufxList.length - 1; i >= 0; i--) {
+    const f = ufxList[i], st = UFX_STYLE[f.kind] ?? { color: 0xc98bff, mode: "bloom" };
+    const air = st.mode === "jet" || st.mode === "gunship";
+    const ms = air ? 1600 : 1000; // aircraft linger so you can actually watch them cross the map
+    const el = now - f.t0;
+    if (el >= ms) { ufxList.splice(i, 1); continue; }
+    const k = el / ms, C = st.color;
+    const x = isoX(f.gx, f.gy), y = isoY(f.gx, f.gy) - elevAt(f.gx, f.gy, s.seed, s.gridW, s.gridH) - 6;
+    const phase = f.gx * 0.7 + f.gy * 1.3;
+    const impactK = UFX_IMPACT[st.mode] ?? 0; // 0 = burst plays immediately (effect already at the target)
+    const blast = (R: number, bk: number) => { fxLayer.circle(x, y, R * 0.3 + bk * R).stroke({ color: C, width: 3 * (1 - bk), alpha: 0.8 * (1 - bk) }); };
+
+    if (st.mode === "jet") {
+      const px = x - 560 + k * 1120, py = y - 64; // streaks left→right, passing over the target ~k 0.5
+      const fade = Math.min(1, Math.min(k, 1 - k) * 7);
+      fxLayer.moveTo(px - 70, py).lineTo(px - 12, py).stroke({ color: C, width: 2, alpha: 0.22 * fade }); // contrail
+      drawJet(px, py, 1, C, 0.95 * fade);
+      if (k >= 0.4 && k <= 0.5) fxLayer.moveTo(px, py).lineTo(x, y).stroke({ color: 0xe6c8ff, width: 2, alpha: 0.9 }); // missile down
+    } else if (st.mode === "gunship") {
+      const gx2 = k < 0.25 ? x - 460 + (k / 0.25) * 460 : k < 0.72 ? x : x + ((k - 0.72) / 0.28) * 460; // in → hover → out
+      const gy2 = y - 54;
+      const fade = Math.min(1, Math.min(k, 1 - k) * 7);
+      drawHeli(gx2, gy2, C, 0.95 * fade, s.tick);
+      if (k >= 0.3 && k <= 0.68) for (let r = 0; r < 2; r++) { const tx = x + (Math.random() - 0.5) * 22; fxLayer.moveTo(gx2, gy2 + 4).lineTo(tx, y).stroke({ color: 0xe6c8ff, width: 1.6, alpha: 0.85 }); } // rains fire
+    } else if (st.mode === "fall") {
+      const t = Math.min(1, k / 0.6), mx = x + 240 - t * 240, my = y - 560 + t * 560; // meteor drops from upper-right
+      if (k < 0.6) { fxLayer.moveTo(mx + 30, my - 46).lineTo(mx, my).stroke({ color: 0xb26bff, width: 4, alpha: 0.9 }); fxLayer.circle(mx, my, 4).fill({ color: 0xe6c8ff, alpha: 0.95 }); }
+    } else if (st.mode === "beam") {
+      if (k < 0.35) fxLayer.moveTo(x, y - 700).lineTo(x, y).stroke({ color: C, width: 7 * (1 - k * 2.6), alpha: 0.9 }); // orbital column
+    } else if (st.mode === "bolts") {
+      for (let b = 0; b < 6; b++) { const ang = (b / 6) * TAU + k * 3, r = 8 + k * 30; let px = x, py = y; for (let seg = 1; seg <= 3; seg++) { const rr = (r * seg) / 3, jx = x + Math.cos(ang) * rr + (seg % 2 ? 6 : -6), jy = y + Math.sin(ang) * rr * 0.6; fxLayer.moveTo(px, py).lineTo(jx, jy).stroke({ color: C, width: 1.6 * (1 - k), alpha: 0.85 * (1 - k) }); px = jx; py = jy; } }
+    } else if (st.mode === "implode") {
+      const r = 44 * (1 - k); fxLayer.circle(x, y, r).stroke({ color: C, width: 2, alpha: 0.8 * (1 - k) });
+      fxLayer.circle(x, y, r * 0.5).stroke({ color: C, width: 1.5, alpha: 0.6 * (1 - k) });
+      fxLayer.circle(x, y, 6 * (1 - Math.abs(k - 0.5) * 2)).fill({ color: 0x1a1024, alpha: 0.7 });
+    } else if (st.mode === "bubble") {
+      const r = 34 * Math.min(1, k * 3); fxLayer.circle(x, y, r).stroke({ color: C, width: 2.5 * (1 - k), alpha: 0.7 * (1 - k) });
+      fxLayer.circle(x, y, r).fill({ color: C, alpha: 0.1 * (1 - k) });
+    } else if (st.mode === "cloud") {
+      for (let p = 0; p < 8; p++) { const ang = (p / 8) * TAU + f.t0, rr = 10 + k * 26; fxLayer.circle(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.6, 5 * (1 - k)).fill({ color: C, alpha: 0.4 * (1 - k) }); }
+    } else { // bloom (heal / spawn)
+      fxLayer.circle(x, y, 8 + k * 30).stroke({ color: C, width: 2.5 * (1 - k), alpha: 0.7 * (1 - k) });
+      fxLayer.circle(x, y, 8 + k * 24).fill({ color: C, alpha: 0.12 * (1 - k) });
+    }
+    // SIGNATURE PURPLE BURST at the target — timed to when the strike actually lands
+    if (k >= impactK) { const bk = (k - impactK) / (1 - impactK); magicBurst(x, y, bk, phase); blast(40, bk); }
+  }
+}
+
 function sendCmd(cmd: unknown) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 connect();
 
@@ -342,12 +567,50 @@ connect();
 interface ShotStyle { arc: number; travelMult: number; dashed: boolean; core: number; mid: number; glow: number; width: number; explode: boolean; scale: number; dash?: number; gap?: number; alpha?: number; }
 const SHOT_STYLES: Record<string, ShotStyle> = {
   gunner: { arc: 0, travelMult: 0.5, dashed: true, core: 0xc8ced6, mid: 0xeaf2ff, glow: 0xdfeaff, width: 0.8, explode: false, scale: 0.85, dash: 13, gap: 9, alpha: 0.62 },
+  rocket: { arc: 1.5, travelMult: 1.1, dashed: false, core: 0xffe6b0, mid: 0xff8a3a, glow: 0xff4d10, width: 1.8, explode: true, scale: 1.1 }, // anti-armor rocket
+  nod_rocket: { arc: 1.5, travelMult: 1.1, dashed: false, core: 0xffe6b0, mid: 0xff8a3a, glow: 0xff4d10, width: 1.8, explode: true, scale: 1.1 },
   humvee: { arc: 0, travelMult: 0.45, dashed: true, core: 0xfff0c0, mid: 0xffd070, glow: 0xffae3a, width: 0.9, explode: false, scale: 0.8, dash: 7, gap: 6 },
   tank: { arc: 5, travelMult: 1.5, dashed: false, core: 0xffe39a, mid: 0xff7a1a, glow: 0xff2d00, width: 3.2, explode: true, scale: 1.75 },
   turret: { arc: 2.5, travelMult: 1.1, dashed: false, core: 0xffe39a, mid: 0xff9a2a, glow: 0xff4d10, width: 2.4, explode: true, scale: 1.2 },
+  jet: { arc: 0, travelMult: 2.1, dashed: false, core: 0xfff0c0, mid: 0xff8a3a, glow: 0xff4d10, width: 1.7, explode: true, scale: 1.05 }, // fast straight air-to-ground missile
+  gunship: { arc: 0, travelMult: 1.3, dashed: true, core: 0xfff0c0, mid: 0xffb24a, glow: 0xff7a1a, width: 1.2, explode: false, scale: 0.95, dash: 8, gap: 5, alpha: 0.7 }, // rapid autocannon burst
+  nod_dronewing: { arc: 0, travelMult: 1.4, dashed: true, core: 0xfff0c0, mid: 0xffd070, glow: 0xffae3a, width: 2.0, explode: false, scale: 1.2, dash: 10, gap: 5, alpha: 0.85 }, // heavy gunship: big-caliber rear MG
+  drone: { arc: 0, travelMult: 1.6, dashed: false, core: 0xbfefff, mid: 0x6fd0ff, glow: 0x2f9fe0, width: 1.0, explode: false, scale: 0.7 }, // small cyan energy bolt
+  mech: { arc: 1.4, travelMult: 1.0, dashed: false, core: 0xffe39a, mid: 0xff9a2a, glow: 0xff4d10, width: 2.0, explode: true, scale: 1.0 }, // heavy autocannon shell
+  walker: { arc: 0, travelMult: 3.0, dashed: false, core: 0xeaf6ff, mid: 0x9fd0ff, glow: 0x4090ff, width: 2.6, explode: true, scale: 1.5 }, // hypervelocity railgun slug
+  tesla: { arc: 0, travelMult: 2.6, dashed: true, core: 0xeaffff, mid: 0x9fe8ff, glow: 0x4fb8ff, width: 1.3, explode: false, scale: 0.9, dash: 5, gap: 4, alpha: 0.9 }, // crackling electric arc
+  swarmling: { arc: 2, travelMult: 0.9, dashed: false, core: 0xd6ff9a, mid: 0x8fe04a, glow: 0x4fa01a, width: 1.3, explode: false, scale: 0.85 }, // lobbed acid glob
+  orb: { arc: 0, travelMult: 1.2, dashed: false, core: 0xe6c8ff, mid: 0xb26bff, glow: 0x7a1fd0, width: 2.0, explode: true, scale: 1.2 }, // void bolt
 };
-interface Proj { ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; st: ShotStyle; seed: number; ox: number; oy: number; }
+interface Proj { ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; st: ShotStyle; seed: number; ox: number; oy: number; mox: number; moy: number;
+  homing?: boolean; tid?: number; hx?: number; hy?: number; mh?: number; lastT?: number; boomAt?: number; trail?: number[]; boom?: { x: number; y: number }; lastTgt?: { x: number; y: number }; }
 const projectiles: Proj[] = [];
+// visual family for a unit type — several summon types share an art/shot/muzzle family.
+const famOf = (t: string): string => (UNIT_STATS as Record<string, { family?: string }>)[t]?.family ?? t;
+// planes reshape by speed: faster (lower moveEvery) → longer pointed nose + narrow, hard-swept wings;
+// slower → shorter nose + wide, shallow-swept wings. 0 = wide/blunt, 1 = sharp/pointed.
+const planeSharp = (t: string): number => {
+  const me = (UNIT_STATS as Record<string, { moveEvery?: number }>)[t]?.moveEvery ?? 2;
+  return Math.max(0, Math.min(1, 2 - me)); // moveEvery 1 → 1.0 (sharp dagger), ≥2 → 0 (wide body)
+};
+const planeSpan = (sh: number): number => 9.5 - 6.5 * sh;  // wingtip half-span: 9.5 (wide-body, slow) → 3.0 (fast)
+const planeTipX = (sh: number): number => -5.5 - 4.5 * sh; // wingtip sweep: near-straight (slow) → hard-swept back (fast)
+const isDart = (t: string): boolean => t === "jet" || t === "nod_jet"; // Fighter Jet role → small hypersonic-dart sprite
+const isDartShape = (t: string): boolean => isDart(t) || t === "nod_interceptor"; // units drawn as the hypersonic dart (Banshee too)
+
+// ---- INTERCEPTOR sprite: ported from the high-quality top-down reference model (SVG 200-canvas, nose-up) ----
+// Agiwar art-local space is FORWARD = +x, centred on the origin, so rotate the reference 90°:
+//   x = (100 − sy)·S (forward),  y = (sx − 100)·S (lateral).  S scales the 200-canvas down to sprite size.
+const ITC_S = 0.17;
+const itcXY = (sx: number, sy: number): [number, number] => [(100 - sy) * ITC_S, (sx - 100) * ITC_S];
+const itcPoly = (...sv: number[]): number[] => { const o: number[] = []; for (let i = 0; i < sv.length; i += 2) o.push((100 - sv[i + 1]) * ITC_S, (sv[i] - 100) * ITC_S); return o; };
+const itcPolyS = (sc: number, ...sv: number[]): number[] => itcPoly(...sv).map((v) => v * sc); // scaled about centre (volume taper)
+const ITC_WINGTIP = { x: (100 - 152) * ITC_S, y: (180 - 100) * ITC_S }; // outer (right) wingtip; left mirrors on y
+// muzzle reach per FAMILY, in art-local forward (+x) units = where the barrel/nozzle tip sits relative
+// to the unit centre. Scaled by footprint × the unit's render scale, then projected so shots leave the nozzle.
+const MUZZLE: Record<string, number> = { gunner: 11, humvee: 12.5, tank: 25, turret: 18, jet: 13, gunship: 10, drone: 4, mech: 9, walker: 22, tesla: 0, swarmling: 6, orb: 0 };
+// extra screen-up per flying FAMILY so their fire leaves the aircraft at altitude.
+const FLY_LIFT: Record<string, number> = { jet: 16, gunship: 13, drone: 12, orb: 14 };
 const TAU = Math.PI * 2;
 // dashed straight line A→B (Pixi has no native dash) — short segments, used for rifle/MG tracers
 function dashLine(x1: number, y1: number, x2: number, y2: number, dash: number, gap: number, style: { color: number; width: number; alpha: number }) {
@@ -359,31 +622,199 @@ function dashLine(x1: number, y1: number, x2: number, y2: number, dash: number, 
     fxLayer.moveTo(x1 + ux * d, y1 + uy * d).lineTo(x1 + ux * e, y1 + uy * e).stroke(style);
   }
 }
+// ---- DEATH FX: vehicles explode with shrapnel; gunners fall over (handled in reconcileUnits) ----
+interface DeathBlast { gx: number; gy: number; t0: number; scale: number; seed: number; }
+const deathBlasts: DeathBlast[] = [];
+const DEATH_MS = 600;
+const DEATH_BLAST_SCALE: Record<string, number> = { tank: 2.4, turret: 2.1, humvee: 1.6, drone: 1.1, jet: 1.5, gunship: 2.0, mech: 2.0, walker: 1.7, tesla: 1.3, swarmling: 0.9, orb: 1.8 };
+function spawnDeathBlast(gx: number, gy: number, kind: string, uscale = 1) {
+  if (deathBlasts.length > 120) return;
+  // bigger units leave a bigger blast — fold the unit's render scale into the base family blast size.
+  deathBlasts.push({ gx, gy, t0: performance.now(), scale: (DEATH_BLAST_SCALE[famOf(kind)] ?? 1.4) * (0.6 + 0.4 * uscale), seed: Math.random() * TAU });
+}
+
 function spawnShots(s: StateMsg) {
   for (const sh of s.shots ?? []) {
     if (projectiles.length > 400) break;
     const cells = Math.max(Math.abs(sh.ax - sh.bx), Math.abs(sh.ay - sh.by));
-    const st = SHOT_STYLES[sh.kind] ?? SHOT_STYLES.gunner;
+    const fam = famOf(sh.kind);
+    const st = SHOT_STYLES[sh.kind] ?? SHOT_STYLES[fam] ?? SHOT_STYLES.gunner;
     // a miss veers wide of the target by a few px in a random direction
     const a = Math.random() * Math.PI * 2, r = 7 + Math.random() * 8;
+    // muzzle offset: push the start to the weapon nozzle — same transform the art uses (rotate the
+    // forward barrel by heading, scale by footprint × render scale, iso-squash y) so the tracer leaves the barrel tip.
+    const heading = Math.atan2(sh.by - sh.ay, sh.bx - sh.ax) + Math.PI / 4;
+    const mLen = (MUZZLE[fam] ?? 0) * (FOOT[fam]?.x ?? 1) * (sh.scale ?? 1);
+    const fly = (FLY_LIFT[fam] ?? 0) * (sh.scale ?? 1); // flying units fire from altitude
+    // AIRCRAFT fire HOMING MISSILES on a hit: they track the target's live position and explode on it.
+    const homing = !!(UNIT_STATS as Record<string, { flying?: boolean }>)[sh.kind]?.flying && sh.kind !== "nod_dronewing" && sh.hit && sh.tid != null; // heavy gunship fires a big MG, not missiles
     projectiles.push({
       ax: sh.ax, ay: sh.ay, bx: sh.bx, by: sh.by, t0: performance.now(),
       travel: Math.max(40, Math.min(360, 90 + cells * 6) * st.travelMult), hit: sh.hit, st, seed: Math.random() * TAU,
       ox: sh.hit ? 0 : Math.cos(a) * r, oy: sh.hit ? 0 : Math.sin(a) * r * 0.6,
+      mox: Math.cos(heading) * mLen, moy: Math.sin(heading) * mLen * 0.62 - fly,
+      homing, tid: sh.tid, boomAt: -1,
     });
   }
 }
+// Homing missile: flies from the muzzle and STEERS toward the target unit's LIVE position each frame
+// (curving tracer + exhaust trail), then detonates ON the unit. Returns true when it's finished.
+function updateHomingMissile(s: StateMsg, p: Proj, st: ShotStyle, sx: number, sy: number, ex: number, ey: number, unitById: Map<number, StateMsg["units"][number]> | null, now: number): boolean {
+  // live target screen position (tracks the moving unit); fall back to last-known / the fire-time point
+  const tu = p.tid != null ? unitById?.get(p.tid) : undefined;
+  const tgt = tu
+    ? { x: isoX(tu.x, tu.y), y: isoY(tu.x, tu.y) - elevAt(tu.x, tu.y, s.seed, s.gridW, s.gridH) - 6 }
+    : p.lastTgt ?? { x: ex, y: ey };
+  p.lastTgt = tgt;
+  if (p.hx == null) { p.hx = sx; p.hy = sy; p.mh = Math.atan2(tgt.y - sy, tgt.x - sx); p.trail = []; p.lastT = now; } // launch from the nozzle
+  const dt = Math.min(64, now - (p.lastT ?? now)); p.lastT = now;
+
+  if ((p.boomAt ?? -1) < 0) {
+    // steer toward the target with a capped turn rate → a homing curve, not an instant snap
+    let diff = Math.atan2(tgt.y - p.hy!, tgt.x - p.hx!) - p.mh!;
+    while (diff > Math.PI) diff -= TAU; while (diff < -Math.PI) diff += TAU;
+    const maxTurn = 0.013 * dt; p.mh! += Math.max(-maxTurn, Math.min(maxTurn, diff));
+    const spd = 0.6 * dt; // px/ms — faster than any unit so it always runs the target down
+    p.hx! += Math.cos(p.mh!) * spd; p.hy! += Math.sin(p.mh!) * spd;
+    const tr = p.trail!; tr.push(p.hx!, p.hy!); if (tr.length > 18) tr.splice(0, tr.length - 18);
+    // detonate ON the unit: on contact, or a fuse so it always resolves onto the target
+    if (Math.hypot(tgt.x - p.hx!, tgt.y - p.hy!) <= 7 || now - p.t0 > 2400) { p.boomAt = now; p.boom = tgt; }
+    // draw exhaust/tracer trail (fades toward the tail) + a bright hot head
+    const t2 = p.trail!;
+    for (let j = 2; j < t2.length; j += 2) {
+      const f = j / t2.length;
+      fxLayer.moveTo(t2[j - 2], t2[j - 1]).lineTo(t2[j], t2[j + 1]).stroke({ color: st.glow, width: (st.width + 1.4) * f, alpha: 0.5 * f });
+      fxLayer.moveTo(t2[j - 2], t2[j - 1]).lineTo(t2[j], t2[j + 1]).stroke({ color: st.core, width: st.width * f, alpha: 0.9 * f });
+    }
+    fxLayer.circle(p.hx!, p.hy!, st.width * 3).fill({ color: st.glow, alpha: 0.3 }); // glow
+    fxLayer.circle(p.hx!, p.hy!, st.width * 1.5).fill({ color: 0xffffff, alpha: 0.95 }); // hot head
+    return false;
+  }
+  // EXPLOSION centered on the unit itself (shockwave + fireball + flung embers)
+  const b = p.boom!, k = (now - p.boomAt!) / 380;
+  if (k >= 1) return true;
+  fxLayer.circle(b.x, b.y, st.scale * 4 + k * st.scale * 22).stroke({ color: st.glow, width: 3 * (1 - k), alpha: 0.8 * (1 - k) });
+  fxLayer.circle(b.x, b.y, st.scale * 2 + k * st.scale * 13).stroke({ color: st.mid, width: 2 * (1 - k), alpha: 0.7 * (1 - k) });
+  const cf = Math.max(0, 1 - k * 2.2);
+  fxLayer.circle(b.x, b.y, st.scale * 9 * cf).fill({ color: st.mid, alpha: 0.6 * cf });
+  fxLayer.circle(b.x, b.y, st.scale * 6 * cf).fill({ color: st.core, alpha: 0.95 * cf });
+  for (let e = 0; e < 9; e++) { const ang = (e / 9) * TAU + p.seed, dist = k * st.scale * 21; fxLayer.circle(b.x + Math.cos(ang) * dist, b.y + Math.sin(ang) * dist * 0.6, (1 - k) * st.scale * 1.5).fill({ color: e % 2 ? st.core : st.mid, alpha: 0.9 * (1 - k) }); }
+  return false;
+}
+// ---- WRAITH WINGTIP WINDSTREAMS: white vortices trailing off the outer wingtips, fading to transparent over 5s ----
+interface WindPuff { x: number; y: number; t0: number; vx: number; vy: number; r: number; }
+const windPuffs: WindPuff[] = []; // wide-body (wraith) vortex bubbles
+interface TrailPt { x: number; y: number; t0: number; }
+const windTrails = new Map<string, { w: number; pts: TrailPt[] }>(); // fast-jet skinny-line contrails, keyed by `${unitId}:${sign}`
+const WIND_MS = 5000;      // full dissipation time
+const WIND_EMIT_MS = 38;   // spacing between emitted puffs (per wingtip)
+const WIND_MAX = 1000;     // hard cap (drop oldest) to bound per-frame draw cost
+let lastWindEmit = 0;
+
+// world-space position of a wraith's outer wingtip (sign = +1 / −1), replicating the drawBody top-cap
+// transform: footprint scale → heading rotate → iso squash (0.62) → lift → holder position/scale.
+// world position of an art-local point (pre-footprint-scale) on a flyer's apex sprite: footprint scale →
+// heading rotate → iso squash (0.62) → lift → holder position/scale. Shared by wingtip + tail emitters.
+function artPointWorld(e: UnitView, ax: number, ay: number): { x: number; y: number } {
+  const u = e.u;
+  const { fp, lift, H, sc } = unitDims(u);
+  const h = Math.atan2(u.dy, u.dx) + Math.PI / 4;
+  const px = ax * fp.x, py = ay * fp.y;
+  const c = Math.cos(h), si = Math.sin(h);
+  const rx = px * c - py * si, ry = px * si + py * c;
+  const hs = u.scale ?? 1;
+  return { x: e.holder.x + (rx + 1.6 * sc) * hs, y: e.holder.y + (ry * 0.62 - (lift + H * 1.25 * sc)) * hs };
+}
+function wingtipWorld(e: UnitView, sign: number): { x: number; y: number } {
+  if (e.u.unit === "interceptor") return artPointWorld(e, ITC_WINGTIP.x, sign * ITC_WINGTIP.y); // real sprite wingtip
+  const sh = planeSharp(e.u.unit);
+  return artPointWorld(e, planeTipX(sh), sign * planeSpan(sh));
+}
+
+function emitWind(now: number) {
+  if (now - lastWindEmit < WIND_EMIT_MS) return;
+  lastWindEmit = now;
+  for (const e of unitViews.values()) {
+    const type = e.u.unit;
+    if (type === "nod_dronewing") { // Heavy Gunship: two foam wakes trailing off the outside wing tips
+      const h = Math.atan2(e.u.dy, e.u.dx) + Math.PI / 4;
+      const fx = Math.cos(h), fy = Math.sin(h), perpx = -fy, perpy = fx;
+      for (const s of [-1, 1]) {
+        const p = artPointWorld(e, -3, s * 13); // outside wing tip
+        windPuffs.push({ x: p.x, y: p.y, t0: now, vx: perpx * s * 5 - fx * 6, vy: perpy * s * 5 - fy * 6, r: 3.0 });
+      }
+      while (windPuffs.length > WIND_MAX) windPuffs.shift();
+      continue;
+    }
+    if (famOf(type) !== "jet") continue; // only planes stream
+    if (isDartShape(type)) { // Fighter Jet + Banshee: ONE contrail centered behind the tail
+      const p = artPointWorld(e, -8.5, 0);
+      const key = `${e.u.id}:c`;
+      let tr = windTrails.get(key);
+      if (!tr) { tr = { w: 0.7, pts: [] }; windTrails.set(key, tr); }
+      tr.pts.push({ x: p.x, y: p.y, t0: now });
+      continue;
+    }
+    const fast = planeSharp(type) >= 0.5; // interceptor → skinny wingtip lines; wide-body wraith → bubbles
+    for (const sign of [-1, 1]) {
+      const p = wingtipWorld(e, sign);
+      if (fast) {
+        const key = `${e.u.id}:${sign}`;
+        let tr = windTrails.get(key);
+        if (!tr) { tr = { w: 0.55, pts: [] }; windTrails.set(key, tr); }
+        tr.pts.push({ x: p.x, y: p.y, t0: now }); // append to this wingtip's contrail path
+      } else {
+        windPuffs.push({ x: p.x, y: p.y, t0: now, vx: (Math.random() - 0.5) * 6, vy: -4 - Math.random() * 5, r: 1.6 + Math.random() * 0.8 });
+        if (windPuffs.length > WIND_MAX) windPuffs.shift();
+      }
+    }
+  }
+}
+
+function drawWind(now: number) {
+  // wide-body wraith: vortex bubbles that spread + fade
+  for (let i = windPuffs.length - 1; i >= 0; i--) {
+    const p = windPuffs[i], age = now - p.t0;
+    if (age >= WIND_MS) { windPuffs.splice(i, 1); continue; }
+    const k = age / WIND_MS;             // 0→1 across the 5s life
+    const t = age / 1000;                // seconds, for drift
+    const x = p.x + p.vx * t, y = p.y + p.vy * t; // drift up/out as it dissipates
+    const a = (1 - k) * 0.7;             // fade to fully transparent
+    const r = p.r + k * 4.5;             // spread out as it thins
+    fxLayer.circle(x, y, r + 1.6).fill({ color: 0xffffff, alpha: a * 0.3 }); // soft halo
+    fxLayer.circle(x, y, r).fill({ color: 0xffffff, alpha: a });             // bright core
+  }
+  // fast jets: super-skinny contrail lines, each segment fading to transparent by its age
+  for (const [key, tr] of windTrails) {
+    const pts = tr.pts;
+    while (pts.length && now - pts[0].t0 >= WIND_MS) pts.shift(); // drop expired points from the tail
+    if (pts.length < 2) { if (!pts.length) windTrails.delete(key); continue; }
+    for (let i = 1; i < pts.length; i++) {
+      const a0 = pts[i - 1], a1 = pts[i];
+      const a = (1 - (now - a1.t0) / WIND_MS) * 0.85; // newer end of the segment sets its opacity
+      if (a <= 0) continue;
+      fxLayer.moveTo(a0.x, a0.y).lineTo(a1.x, a1.y).stroke({ color: 0xffffff, width: tr.w, alpha: a });
+    }
+  }
+}
+
 app.ticker.add(() => {
-  if (!projectiles.length || !latestState) { if (!projectiles.length) fxLayer.clear(); return; }
+  if (!latestState) return;
   const s = latestState, now = performance.now();
+  emitWind(now); // wraiths keep streaming even when nothing else is on the fx layer
+  const idle = !projectiles.length && !deathBlasts.length && !ufxList.length && !windPuffs.length && windTrails.size === 0;
+  if (idle) { fxLayer.clear(); return; }
   fxLayer.clear();
+  drawWind(now); // contrails first, under projectiles/explosions
+  const unitById = projectiles.some((p) => p.homing) ? new Map(s.units.map((u) => [u.id, u])) : null; // live target lookup for homing missiles
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i], st = p.st;
     const el = now - p.t0;
     const impactMs = st.explode ? 380 : 130;
-    if (el >= p.travel + impactMs) { projectiles.splice(i, 1); continue; }
-    const sx = isoX(p.ax, p.ay), sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - 9;
+    const sx = isoX(p.ax, p.ay) + p.mox, sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - 9 + p.moy;
     const ex = isoX(p.bx, p.by) + p.ox, ey = isoY(p.bx, p.by) - elevAt(p.bx, p.by, s.seed, s.gridW, s.gridH) - 6 + p.oy;
+    if (p.homing) { if (updateHomingMissile(s, p, st, sx, sy, ex, ey, unitById, now)) projectiles.splice(i, 1); continue; }
+    if (el >= p.travel + impactMs) { projectiles.splice(i, 1); continue; }
     if (el < p.travel) {
       const t = el / p.travel, tt = Math.max(0, t - 0.16);
       const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * st.arc;
@@ -429,6 +860,46 @@ app.ticker.add(() => {
         fxLayer.circle(ex, ey, 3 + k * 5).stroke({ color: st.mid, width: 1, alpha: 0.3 * (1 - k) }); // whiff puff
       }
     }
+  }
+  // vehicle DEATH explosions: shockwave + fireball + SHRAPNEL (steel + ember streaks flung outward) + smoke
+  for (let i = deathBlasts.length - 1; i >= 0; i--) {
+    const d = deathBlasts[i], el = now - d.t0;
+    if (el >= DEATH_MS) { deathBlasts.splice(i, 1); continue; }
+    const k = el / DEATH_MS, S = d.scale;
+    const x = isoX(d.gx, d.gy), y = isoY(d.gx, d.gy) - elevAt(d.gx, d.gy, s.seed, s.gridW, s.gridH) - 6;
+    fxLayer.circle(x, y, S * 5 + k * S * 30).stroke({ color: 0xff6a1a, width: 3 * (1 - k), alpha: 0.8 * (1 - k) }); // shockwave
+    fxLayer.circle(x, y, S * 3 + k * S * 18).stroke({ color: 0xffd23a, width: 2 * (1 - k), alpha: 0.6 * (1 - k) });
+    const cf = Math.max(0, 1 - k * 2.4); // fireball flashes then dies
+    fxLayer.circle(x, y, S * 10 * cf).fill({ color: 0xff7a1a, alpha: 0.6 * cf });
+    fxLayer.circle(x, y, S * 6 * cf).fill({ color: 0xffe39a, alpha: 0.95 * cf });
+    for (let p = 0; p < 14; p++) { // shrapnel streaks
+      const ang = (p / 14) * TAU + d.seed + p * 0.7, sp = 0.5 + (p % 3) * 0.3, dist = k * S * 34 * sp, len = (1 - k) * S * 5;
+      const x1 = x + Math.cos(ang) * dist, y1 = y + Math.sin(ang) * dist * 0.6;
+      fxLayer.moveTo(x1, y1).lineTo(x1 + Math.cos(ang) * len, y1 + Math.sin(ang) * len * 0.6).stroke({ color: p % 2 ? 0x9aa6b2 : 0xffb24a, width: 1.4 * (1 - k), alpha: 0.9 * (1 - k) });
+    }
+    fxLayer.circle(x, y - k * 6, S * 5 + k * S * 14).fill({ color: 0x16130f, alpha: 0.18 * (1 - k) }); // smoke
+  }
+  if (ufxList.length) drawUfx(s, now); // ULTIMATE FX drawn last, on the freshly-cleared layer
+});
+
+// gunners fall over and die: keep the unit's art briefly and tip it over, fading, then drop it.
+interface Dying { holder: Container; t0: number; }
+const dyingUnits: Dying[] = [];
+const DEATH_FALL_MS = 650;
+function startFallOver(v: UnitView) {
+  v.topG?.clear(); // no hp bar on a corpse
+  dyingUnits.push({ holder: v.holder, t0: performance.now() });
+}
+app.ticker.add(() => {
+  if (!dyingUnits.length) return;
+  const now = performance.now();
+  for (let i = dyingUnits.length - 1; i >= 0; i--) {
+    const d = dyingUnits[i], k = (now - d.t0) / DEATH_FALL_MS;
+    if (k >= 1) { d.holder.destroy({ children: true }); dyingUnits.splice(i, 1); continue; }
+    const e = 1 - (1 - k) * (1 - k); // ease-out
+    d.holder.rotation = e * 1.35; // tip over
+    d.holder.alpha = 1 - e; // fade
+    d.holder.scale.set(1, 1 - 0.25 * e); // slight collapse
   }
 });
 
@@ -504,9 +975,10 @@ const DOCTRINE_SVG: Record<string, string> = {
 const doctrineIconSVG = (id: string) => `<svg class="dico-svg" viewBox="0 0 64 64" aria-hidden="true">${DOCTRINE_SVG[id] ?? DOCTRINE_SVG.balanced}</svg>`;
 let doctrineTimer: number | undefined;
 let awaitingStart = false; // picked a doctrine, waiting for the (paused) sim to begin — dismissed on the first live state
+let pickedFaction: Faction = "anthropic"; // chosen in the picker; sent with the doctrine
 function pickDoctrine(id: string) {
   clearInterval(doctrineTimer);
-  sendCmd({ type: "chooseArmyDoctrine", id });
+  sendCmd({ type: "chooseArmyDoctrine", id, faction: pickedFaction });
   document.getElementById("doctrine")?.remove();
   // the sim is paused server-side until everyone has picked — show a standby cue until it starts
   awaitingStart = true;
@@ -518,18 +990,43 @@ function pickDoctrine(id: string) {
     stage.appendChild(s);
   }
 }
-function showDoctrinePicker(current: string) {
+function factionRosterText(f: Faction): string {
+  const roles: [string, string][] = [["aggressive", "Attack"], ["defensive", "Defense"], ["builder", "Builder"], ["recon", "Recon"]];
+  return roles.map(([r, lbl]) => `${lbl}: ${UNIT_STATS[FACTION_ROLE_UNIT[f][r as keyof typeof FACTION_ROLE_UNIT["anthropic"]]].label}`).join(" · ");
+}
+function showDoctrinePicker(current: string, faction: Faction = "anthropic") {
   clearInterval(doctrineTimer);
   document.getElementById("doctrine")?.remove();
+  pickedFaction = faction;
   const C = 2 * Math.PI * 18; // ring circumference for the spindown
   const el = document.createElement("div");
   el.id = "doctrine";
   el.innerHTML =
     `<div class="dpanel">` +
     `<svg class="dtimer" viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="18"/><circle class="ring" cx="22" cy="22" r="18"/><text id="dtnum" x="22" y="26.5">${DOCTRINE_SECONDS}</text></svg>` +
-    `<h3>Choose your army doctrine</h3>` +
-    `<div class="dsub">Your build identity for this match — pick how you want to win. Auto-selects Combined Arms when the timer runs out.</div>` +
+    `<h3>Choose your army</h3>` +
+    `<div class="dsub">First your faction, then your doctrine. Auto-selects Anthropic · Combined Arms when the timer runs out.</div>` +
+    `<div class="facrow"></div>` +
+    `<div class="facros"></div>` +
     `<div class="dcards"></div></div>`;
+  const facrow = el.querySelector(".facrow") as HTMLElement;
+  const facros = el.querySelector(".facros") as HTMLElement;
+  for (const f of FACTIONS) {
+    const meta = FACTION_META[f];
+    const b = document.createElement("button");
+    b.className = "facbtn" + (f === pickedFaction ? " sel" : "");
+    b.dataset.f = f;
+    b.style.setProperty("--fac", hexCss(meta.color));
+    b.innerHTML = `<span class="facn">${meta.label}</span><span class="facb">${meta.blurb}</span>`;
+    b.onclick = () => {
+      pickedFaction = f;
+      facrow.querySelectorAll(".facbtn").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.f === f));
+      facros.textContent = factionRosterText(f);
+      el.style.setProperty("--accent", hexCss(meta.color));
+    };
+    facrow.appendChild(b);
+  }
+  facros.textContent = factionRosterText(pickedFaction);
   const cards = el.querySelector(".dcards")!;
   for (const d of ARMY_DOCTRINES) {
     const c = document.createElement("button");
@@ -593,15 +1090,9 @@ function showNotice(text: string, level: string) {
   noticeTimer = window.setTimeout(() => (noticeEl.textContent = ""), 4000);
 }
 
-// ---- field general command log (right panel) ----
-const fglogEl = document.getElementById("fglog")!;
-function addLog(text: string, tick: number) {
-  const d = document.createElement("div");
-  d.className = "logline";
-  d.innerHTML = `<span class="t">t${Math.floor(tick / 10)}s · </span>${text.replace(/^(\d+u[^→]*→ )?/, (m) => m && `<b>${m}</b>`)}`;
-  fglogEl.prepend(d);
-  while (fglogEl.childElementCount > 60) fglogEl.lastElementChild?.remove();
-}
+// ---- field-general feed: the command-log panel was replaced by the Artifacts inventory, so
+// commander chatter surfaces as transient toasts instead. ----
+function addLog(text: string, _tick: number) { showNotice(text, "info"); }
 
 // ---- upgrades panel (player-driven: click to QUEUE; all other spending pauses to save up) ----
 const investEl = document.getElementById("invest")!;
@@ -664,7 +1155,7 @@ function render(s: StateMsg) {
     resetFog(s.seed, s.gridW, s.gridH); centerOnBase(s);
     for (const e of unitViews.values()) e.holder.destroy({ children: true }); // new match → drop stale holders
     unitViews.clear();
-    fglogEl.replaceChildren(); // new match → wipe the previous game's command log
+    resetForge(); lastCardSig = ""; lastUltSig = ""; // new match → reset forge bench + force a fresh render
   }
   renderFog(s); // unexplored = black · explored = dim memory · visible = bright
   // transient entities (rebuilt each state); units are persistent + interpolated, so don't wipe them
@@ -673,6 +1164,7 @@ function render(s: StateMsg) {
   const addT = (g: Container) => { entityLayer.addChild(g); transientFx.push(g); };
   if (s.rally) addT(makeRally(s.rally, s));
   for (const a of s.outposts) addT(makeOutpost(a, s));
+  for (const d of s.drops ?? []) addT(makeDrop(d, s));
   for (const b of s.bases) addT(makeBase(b, s));
   reconcileUnits(s); // create/update/remove persistent unit holders; the ticker glides them
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
@@ -757,6 +1249,23 @@ function makeRally(p: { x: number; y: number }, s: StateMsg): Graphics {
   g.ellipse(cx, cy, 5, 2.5).fill({ color: W, alpha: 0.7 });
 
   g.zIndex = 1 << 20; // a divine order draws above all units/buildings
+  return g;
+}
+
+// a collectible artifact: a floating, glowing gem in the artifact's colour (+ a ring while picking up)
+function makeDrop(d: StateMsg["drops"][number], s: StateMsg): Graphics {
+  const g = new Graphics();
+  const elev = elevAt(d.x, d.y, s.seed, s.gridW, s.gridH);
+  const cx = isoX(d.x, d.y), cy = isoY(d.x, d.y) - elev;
+  const col = (ARTIFACTS[d.type] ?? ARTIFACTS[0]).color;
+  const pulse = 0.5 + 0.5 * Math.sin(s.tick / 5);
+  const gy = cy - (9 + 2 * Math.sin(s.tick / 7)); // bob in the air
+  g.ellipse(cx, cy + 2, 8, 4).fill({ color: 0x000000, alpha: 0.3 }); // shadow
+  g.ellipse(cx, cy + 1, 12 + 4 * pulse, 6 + 2 * pulse).fill({ color: col, alpha: 0.12 + 0.1 * pulse }); // ground glow
+  g.poly([cx, gy - 7, cx + 5, gy, cx, gy + 7, cx - 5, gy]).fill({ color: col, alpha: 0.95 }).stroke({ color: 0xffffff, width: 0.8, alpha: 0.5 }); // gem
+  g.poly([cx, gy - 7, cx + 5, gy, cx, gy]).fill({ color: tint(col, 0.35), alpha: 0.85 }); // lit facet
+  g.circle(cx, gy, 1.6).fill({ color: 0xffffff, alpha: 0.6 + 0.4 * pulse }); // sparkle
+  if (d.harvestAt > s.tick) g.circle(cx, gy, 10 + 3 * pulse).stroke({ color: 0xffffff, width: 1.2, alpha: 0.5 }); // harvesting
   return g;
 }
 
@@ -984,6 +1493,180 @@ function unitPalette(side: number) {
   };
 }
 
+// High-quality Interceptor top-cap, ported from the reference sprite (nose-up SVG → forward-+x art),
+// faction-tinted via unitPalette(side): swept-delta wings w/ rim-lit leading edges, curved fuselage
+// spindle, tinted canopy, tailplanes, engine nozzles, afterburner glow.
+function drawInterceptor(g: Graphics, side: number, acc: number) {
+  const m = unitPalette(side);
+  const dark = m.steelDk, mid = m.steel, light = m.steelLt;
+  const burn = 0xffd070; // afterburner
+  const P = itcXY;
+
+  // afterburner glow (rear, behind hull): soft bloom + bright core per nozzle
+  for (const off of [-3.5, 3.5]) {
+    const [bx, by] = P(100 + off, 182);
+    g.ellipse(bx, by, 20 * ITC_S, 10 * ITC_S).fill({ color: burn, alpha: 0.22 });
+    g.ellipse(bx, by, 12 * ITC_S, 6 * ITC_S).fill({ color: burn, alpha: 0.85 });
+  }
+  // swept-delta wings (dark) + lit upper faces (mid)
+  g.poly(itcPoly(97, 96, 20, 152, 47, 166, 99, 130)).fill(dark);
+  g.poly(itcPoly(103, 96, 180, 152, 153, 166, 101, 130)).fill(dark);
+  g.poly(itcPoly(97, 101, 41, 148, 54, 156, 99, 128)).fill(mid);
+  g.poly(itcPoly(103, 101, 159, 148, 146, 156, 101, 128)).fill(mid);
+  // leading-edge rim light
+  g.poly(itcPoly(97, 96, 20, 152, 26, 152, 98, 100)).fill({ color: 0xffffff, alpha: 0.18 });
+  g.poly(itcPoly(103, 96, 180, 152, 174, 152, 102, 100)).fill({ color: 0xffffff, alpha: 0.18 });
+  // team accent stripes
+  g.poly(itcPoly(60, 132, 44, 149, 52, 154, 67, 138)).fill(side);
+  g.poly(itcPoly(140, 132, 156, 149, 148, 154, 133, 138)).fill(side);
+  // tailplanes
+  g.poly(itcPoly(97, 150, 67, 182, 81, 187, 99, 164)).fill(dark);
+  g.poly(itcPoly(103, 150, 133, 182, 119, 187, 101, 164)).fill(dark);
+
+  // fuselage (mid) — curved spindle
+  g.moveTo(...P(100, 20)).bezierCurveTo(...P(108, 42), ...P(110, 76), ...P(108, 114))
+    .lineTo(...P(106, 170)).bezierCurveTo(...P(105, 181), ...P(95, 181), ...P(94, 170))
+    .lineTo(...P(92, 114)).bezierCurveTo(...P(90, 76), ...P(92, 42), ...P(100, 20)).fill(mid);
+  // side shade
+  g.moveTo(...P(100, 20)).bezierCurveTo(...P(108, 42), ...P(110, 76), ...P(108, 114))
+    .lineTo(...P(106, 170)).bezierCurveTo(...P(105.5, 175), ...P(103, 178), ...P(100, 178))
+    .lineTo(...P(100, 20)).fill({ color: dark, alpha: 0.45 });
+  // spine highlight
+  g.moveTo(...P(100, 30)).bezierCurveTo(...P(104, 48), ...P(105, 78), ...P(104, 114))
+    .lineTo(...P(103, 160)).bezierCurveTo(...P(102.6, 165), ...P(97.4, 165), ...P(97, 160))
+    .lineTo(...P(96, 114)).bezierCurveTo(...P(95, 78), ...P(96, 48), ...P(100, 30)).fill({ color: light, alpha: 0.85 });
+  // nose rim light
+  g.moveTo(...P(100, 20)).bezierCurveTo(...P(104, 30), ...P(105.6, 40), ...P(105.6, 48))
+    .lineTo(...P(94.4, 48)).bezierCurveTo(...P(94.4, 40), ...P(96, 30), ...P(100, 20)).fill({ color: 0xffffff, alpha: 0.4 });
+
+  // panel lines
+  const panel = { color: 0x000000, width: 0.5, alpha: 0.22 };
+  g.moveTo(...P(96, 92)).lineTo(...P(104, 92)).stroke(panel);
+  g.moveTo(...P(95, 128)).lineTo(...P(105, 128)).stroke(panel);
+  g.moveTo(...P(97, 150)).lineTo(...P(103, 150)).stroke(panel);
+
+  // canopy: dark frame → tinted glass → highlight
+  g.moveTo(...P(100, 50)).bezierCurveTo(...P(106.5, 55), ...P(106.5, 80), ...P(100, 86))
+    .bezierCurveTo(...P(93.5, 80), ...P(93.5, 55), ...P(100, 50)).fill(0x0c1622);
+  g.moveTo(...P(100, 53)).bezierCurveTo(...P(105, 57), ...P(105, 79), ...P(100, 83))
+    .bezierCurveTo(...P(95, 79), ...P(95, 57), ...P(100, 53)).fill(0x6fd2ff);
+  g.moveTo(...P(100, 55)).bezierCurveTo(...P(103.4, 58), ...P(103.8, 68), ...P(101.5, 73))
+    .bezierCurveTo(...P(100, 69), ...P(99, 62), ...P(100, 55)).fill({ color: 0xffffff, alpha: 0.55 });
+
+  // engine nozzles (dark housings + hot cores). SVG rect (x,y,w,h) → axis-aligned art rect (90° rotation).
+  const nozzle = (rx: number, ry: number, rw: number, rh: number, col: number, alpha = 1) =>
+    g.roundRect((100 - (ry + rh)) * ITC_S, (rx - 100) * ITC_S, rh * ITC_S, rw * ITC_S, 1.2 * ITC_S).fill({ color: col, alpha });
+  nozzle(94, 167, 4.4, 11, 0x12161c);
+  nozzle(101.6, 167, 4.4, 11, 0x12161c);
+  nozzle(94.7, 169, 3, 7, burn, 0.85);
+  nozzle(102.3, 169, 3, 7, burn, 0.85);
+
+  // doctrine pip (agiwar camp cue) on the spine, behind the canopy
+  const [px, py] = P(100, 104);
+  g.circle(px, py, 1.5).fill({ color: acc, alpha: 0.25 });
+  g.circle(px, py, 1.0).fill(acc);
+}
+
+// Fighter Jet "hypersonic dart": super-narrow, long needle nose, hard-swept delta wings with glowing tips,
+// small canopy + V-tail, single centered afterburner. Faction-tinted; authored small (scaled again by footprint).
+function drawFighterJet(g: Graphics, side: number, acc: number, banshee = false) {
+  const m = unitPalette(side);
+  const dark = banshee ? 0x15171b : m.steelDk;      // near-black charcoal hull for the Banshee
+  const mid = banshee ? 0x24272d : m.steel;
+  const light = banshee ? 0xccd0d6 : m.steelLt;     // bright silver nose/spine
+  const accent = banshee ? 0xff2e2e : side;          // glowing wingtips (red for the Banshee)
+  const canopyFrame = banshee ? 0x2a0709 : 0x0c1622;
+  const canopy = banshee ? 0xff2e2e : 0x6fd2ff;
+  const burn = banshee ? 0xff5a3c : 0xffd070;
+
+  // afterburner bloom (single, centered behind the tail)
+  g.ellipse(-10, 0, 3.0, 1.5).fill({ color: burn, alpha: 0.18 });
+
+  // hard-swept delta wings (dark) + lit upper faces
+  g.poly([2.5, -0.8, -4.5, -6.6, -6.5, -6.0, -2.0, -1.0]).fill(dark);
+  g.poly([2.5, 0.8, -4.5, 6.6, -6.5, 6.0, -2.0, 1.0]).fill(dark);
+  g.poly([2.2, -0.7, -4.1, -6.0, -5.6, -5.6, -1.9, -0.95]).fill({ color: mid, alpha: 0.9 });
+  g.poly([2.2, 0.7, -4.1, 6.0, -5.6, 5.6, -1.9, 0.95]).fill({ color: mid, alpha: 0.9 });
+  // glowing wingtips (accent)
+  g.poly([-4.5, -6.6, -6.5, -6.0, -5.5, -5.2]).fill(accent);
+  g.poly([-4.5, 6.6, -6.5, 6.0, -5.5, 5.2]).fill(accent);
+  g.circle(-5.3, -5.9, 0.7).fill({ color: tint(accent, 0.5), alpha: 0.9 });
+  g.circle(-5.3, 5.9, 0.7).fill({ color: tint(accent, 0.5), alpha: 0.9 });
+
+  // small V-tail fins at the rear
+  g.poly([-6.5, -0.4, -9, -2.0, -7.6, -0.2]).fill(dark);
+  g.poly([-6.5, 0.4, -9, 2.0, -7.6, 0.2]).fill(dark);
+
+  // slender fuselage + long needle nose
+  g.poly([6, -1.15, -7, -1.25, -9, 0, -7, 1.25, 6, 1.15]).fill(mid);
+  g.poly([13.5, 0, 6, -1.0, 6, 1.0]).fill(light);                        // needle nose (bright)
+  g.poly([13.5, 0, 6, -1.0, 6, 0]).fill({ color: 0xffffff, alpha: 0.5 }); // nose rim light (one edge)
+  g.poly([9, 0, -6, -0.5, -6, 0.5]).fill({ color: light, alpha: 0.6 });   // spine highlight
+
+  // canopy: long thin tinted teardrop
+  g.ellipse(3.4, 0, 3.0, 0.95).fill(canopyFrame);
+  g.ellipse(3.4, 0, 2.5, 0.72).fill(canopy);
+  g.ellipse(4.1, 0, 1.0, 0.32).fill({ color: 0xffffff, alpha: 0.5 });
+
+  // single centered engine nozzle + hot core
+  g.roundRect(-9.6, -0.9, 2.0, 1.8, 0.6).fill(0x12161c);
+  g.ellipse(-8.9, 0, 1.4, 0.8).fill({ color: burn, alpha: 0.9 });
+
+  // doctrine pip on the spine
+  g.circle(-1.2, 0, 0.85).fill({ color: acc, alpha: 0.25 });
+  g.circle(-1.2, 0, 0.55).fill(acc);
+}
+
+// Heavy Gunship: a big twin-boom hull — central fuselage pod + canopy, broad swept wings with cyan tips,
+// two long engine booms joined by a rear crossbar, and a BIG rear-facing autocannon barrel (points aft, −x).
+function drawHeavyGunship(g: Graphics, side: number, acc: number) {
+  const m = unitPalette(side);
+  const dark = m.steelDk, mid = m.steel, light = m.steelLt;
+  const accent = 0x6fd2ff;  // cyan tech accents
+  const exhaust = 0x8fe6ff; // engine glow
+
+  // twin engine exhausts (rear, glowing) — behind everything
+  for (const sy of [-7, 7]) {
+    g.ellipse(-15.5, sy, 3.4, 2.3).fill({ color: exhaust, alpha: 0.2 });
+    g.ellipse(-14.8, sy, 1.8, 1.2).fill({ color: exhaust, alpha: 0.85 });
+  }
+  // broad swept wings (dark) + lit faces + cyan tips
+  g.poly([4, -2, -2, -13.5, -4.5, -13, -3, -2.5]).fill(dark);
+  g.poly([4, 2, -2, 13.5, -4.5, 13, -3, 2.5]).fill(dark);
+  g.poly([3.4, -1.9, -1.6, -12.3, -3.6, -12, -2.6, -2.2]).fill({ color: mid, alpha: 0.9 });
+  g.poly([3.4, 1.9, -1.6, 12.3, -3.6, 12, -2.6, 2.2]).fill({ color: mid, alpha: 0.9 });
+  g.poly([-2, -13.5, -4.5, -13, -3.4, -11.6]).fill(accent);
+  g.poly([-2, 13.5, -4.5, 13, -3.4, 11.6]).fill(accent);
+
+  // twin booms + rear crossbar (the twin-boom hull)
+  for (const sy of [-7, 7]) {
+    g.roundRect(-15, sy - 1.35, 21, 2.7, 1.1).fill(dark);
+    g.roundRect(-15, sy - 1.35, 21, 1.0, 1.0).fill({ color: light, alpha: 0.32 }); // top sheen
+    g.circle(6, sy, 1.45).fill(mid); // boom nose cap
+  }
+  g.roundRect(-15.6, -7, 2.7, 14, 1).fill(dark); // crossbar linking the boom tails
+
+  // big-caliber REAR autocannon (points aft, −x)
+  g.roundRect(-17.5, -1.1, 6, 2.2, 0.6).fill(tint(m.gun, 0.06));
+  g.circle(-17.5, 0, 1.2).fill(0x0b0e11);
+
+  // central fuselage pod + pointed nose + spine
+  g.ellipse(1, 0, 11, 3.3).fill(mid).stroke(UNIT_LN);
+  g.poly([13.8, 0, 6, -1.8, 6, 1.8]).fill(light);
+  g.poly([13.8, 0, 6, -1.8, 6, 0]).fill({ color: 0xffffff, alpha: 0.4 });
+  g.ellipse(-1, 0, 8, 2.1).fill({ color: light, alpha: 0.4 });
+  g.rect(-7, -0.9, 3.2, 1.8).fill(accent); // rear cyan accent bar
+
+  // canopy (cyan teardrop, front)
+  g.ellipse(5, 0, 2.8, 1.5).fill(0x0c1622);
+  g.ellipse(5, 0, 2.2, 1.1).fill(accent);
+  g.ellipse(5.6, 0, 1.0, 0.5).fill({ color: 0xffffff, alpha: 0.5 });
+
+  // doctrine pip
+  g.circle(-3, 0, 1.0).fill({ color: acc, alpha: 0.25 });
+  g.circle(-3, 0, 0.62).fill(acc);
+}
+
 // The LIT TOP CAP: the finest detail, drawn on the apex layer only (FORWARD = +x so the
 // barrel/rifle/camera point along heading once the layer is rotated). The chassis volume
 // itself is sculpted by the stacked cross-sections below — this is just the crown.
@@ -991,8 +1674,13 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
   const m = unitPalette(side);
   const rim = { color: side, width: 0.9, alpha: 0.85 }; // team rim light along the lit edge
   const pip = (x: number, y: number, r: number) => { g.circle(x, y, r + 0.7).fill({ color: acc, alpha: 0.25 }); g.circle(x, y, r).fill(acc); g.circle(x, y, r).stroke({ color: tint(acc, 0.5), width: 0.5, alpha: 0.8 }); };
+  const fam = famOf(type); // summon types share an art family (e.g. mammoth/siege → "tank")
 
-  if (type === "tank") { // modern MBT: angular turret, thermal-sleeved gun w/ muzzle brake, bustle, cupola, sight
+  if (type === "interceptor") { drawInterceptor(g, side, acc); return; } // dedicated high-quality sprite
+  if (isDartShape(type)) { drawFighterJet(g, side, acc, type === "nod_interceptor"); return; } // hypersonic dart (Banshee = red)
+  if (type === "nod_dronewing") { drawHeavyGunship(g, side, acc); return; } // twin-boom heavy gunship
+
+  if (fam === "tank") { // modern MBT: angular turret, thermal-sleeved gun w/ muzzle brake, bustle, cupola, sight
     const turret = [-9, -3.4, -6.6, -5, 4, -5, 7, -2.3, 7, 2.3, 4, 5, -6.6, 5, -9, 3.4];
     g.roundRect(-11.2, -3.7, 3.2, 7.4, 0.7).fill(m.steelDkr); // stowage bustle (rear)
     for (let i = -3; i <= 3; i += 1.4) g.rect(-11, i - 0.1, 2.8, 0.5).fill({ color: 0x000000, alpha: 0.28 }); // mesh
@@ -1009,7 +1697,7 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
     g.rect(-7, -4.7, 0.7, 5).fill(m.gun); // antenna
     g.poly([-9, -3.4, -6.6, -5, 4, -5, 7, -2.3]).stroke(rim); // team rim
     pip(-0.6, 0, 1.5); // doctrine
-  } else if (type === "humvee") { // armored recon truck: raked windshield, roof RWS w/ MG, antennas, stowage
+  } else if (fam === "humvee") { // armored recon truck: raked windshield, roof RWS w/ MG, antennas, stowage
     g.roundRect(-8, -5, 15, 10, 2.5).fill(m.steel).stroke(ln); // roof/body
     g.roundRect(-7, -4.3, 5.5, 8.6, 1.6).fill({ color: m.steelLt, alpha: 0.42 }); // sheen
     g.roundRect(7, -4.4, 3.6, 8.8, 1.2).fill(tint(m.steel, -0.1)); // hood (front)
@@ -1020,14 +1708,14 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
     g.rect(-6, -5.7, 0.7, 4).fill(m.gun); g.rect(-4, -5.3, 0.7, 3.4).fill(m.gun); // antennas
     g.circle(6.2, -3.5, 0.7).fill(side); // marker light
     pip(-4.7, 0, 1.3);
-  } else if (type === "gunner") { // modern infantryman: plate carrier, ruck, NVG helmet (carbine = drawGunnerWeapon, at chest height)
+  } else if (fam === "gunner") { // modern infantryman: plate carrier, ruck, NVG helmet (carbine = drawGunnerWeapon, at chest height)
     g.roundRect(-4, -2.4, 3, 4.8, 1).fill(m.steelDkr); // ruck (rear)
     g.roundRect(-2.2, -3, 4.8, 6, 2).fill(m.steel).stroke(ln); g.roundRect(-2, -2.6, 2.1, 5.2, 1).fill({ color: m.steelLt, alpha: 0.5 }); // plate carrier / shoulders
     g.circle(0.7, 0, 2.7).fill(m.steelLt).stroke(ln); g.arc(0.7, 0, 2.7, -1.1, 1.1).fill({ color: tint(m.steelLt, 0.3), alpha: 0.5 }); // helmet
     g.roundRect(2.7, -0.9, 1.5, 1.8, 0.5).fill(m.steelDk); // NVG mount (front)
     g.circle(-1.5, -2.5, 0.65).fill(side); // shoulder IR strobe
     pip(0.7, -0.2, 0.95);
-  } else if (type === "drone") { // sleek quad: X-frame, motor nacelles + prop-blur discs, gimbal cam, LEDs
+  } else if (fam === "drone") { // sleek quad: X-frame, motor nacelles + prop-blur discs, gimbal cam, LEDs
     for (const [rx, ry] of [[6.5, 6.5], [6.5, -6.5], [-6.5, 6.5], [-6.5, -6.5]]) g.moveTo(0, 0).lineTo(rx, ry).stroke({ color: tint(m.steel, -0.2), width: 2.2 });
     for (const [rx, ry] of [[6.5, 6.5], [6.5, -6.5], [-6.5, 6.5], [-6.5, -6.5]]) {
       g.circle(rx, ry, 3).fill({ color: side, alpha: 0.16 }); g.circle(rx, ry, 3).stroke({ color: tint(side, 0.3), width: 0.8, alpha: 0.6 }); // prop-blur disc
@@ -1036,6 +1724,63 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
     g.roundRect(-3.5, -2.7, 7, 5.4, 2).fill(m.steel).stroke(ln); g.roundRect(-2.7, -2.1, 3, 4.2, 1).fill({ color: m.steelLt, alpha: 0.45 }); // fuselage
     g.circle(3.2, 0, 1.6).fill(m.glass); g.circle(3.4, 0, 0.75).fill({ color: side, alpha: 0.85 }); // gimbal camera (forward)
     g.circle(-2.5, -1.7, 0.6).fill(acc); g.circle(-2.5, 1.7, 0.6).fill(side); // status LEDs
+  } else if (fam === "jet") { // swept-wing fighter: pointed nose (+x), delta wings, canted twin tails, afterburner
+    const sh = planeSharp(type); // faster → sharper/narrower, slower → wider/blunter
+    const span = planeSpan(sh);    // wingtip half-span: very wide when slow, tucked when fast
+    const rootY = 3.6 - 2.7 * sh;  // wing-root width: broad delta when slow, pinched when fast
+    const tipX = planeTipX(sh);    // wingtips: near-straight when slow → hard-swept back when fast
+    const rootX = 3 - 1.5 * sh;    // wing root sits forward when slow (stubbier planform)
+    const noseX = 9 + 7 * sh;      // short blunt nose when slow → long pointed nose when fast
+    const fw = 3.3 - 1.5 * sh;     // fuselage half-width: fat when slow, slim when fast
+    g.poly([tipX, -span, rootX, -rootY, rootX, rootY, tipX, span]).fill(m.steelDk).stroke(ln); // delta wings (rear)
+    g.poly([noseX, 0, -3, -fw, -7.5, -1.5, -7.5, 1.5, -3, fw]).fill(m.steel).stroke(ln); // fuselage w/ nose
+    g.poly([noseX, 0, 3, -1.1, 3, 1.1]).fill({ color: m.steelLt, alpha: 0.7 }); // top-lit nose sheen
+    g.poly([-6, -2.6, -9, -4.2, -7, -1.8]).fill(m.steelDk); g.poly([-6, 2.6, -9, 4.2, -7, 1.8]).fill(m.steelDk); // canted twin tails
+    g.roundRect(2, -1, 4.4, 2, 0.8).fill(m.glass); g.circle(3.6, 0, 0.7).fill({ color: side, alpha: 0.9 }); // canopy + team glint
+    g.circle(-7.2, 0, 1.5).fill(acc); g.circle(-8.6, 0, 1.1).fill({ color: 0xffd070, alpha: 0.9 }); // afterburner glow
+    pip(-1.2, 0, 1.1); // doctrine
+  } else if (fam === "gunship") { // attack helo: nose (+x), tail boom (−x), rotor disc, stub wings w/ pods, skids
+    g.rect(-17, -1.1, 12, 2.2).fill(m.steelDk).stroke(ln); // tail boom
+    g.poly([-16.5, -1, -20, -5.5, -15, 0.5]).fill(m.steelDk); // tail rotor fin
+    g.roundRect(-2.4, -7.5, 4.8, 15, 1.4).fill(m.steelDk); // stub wings (span along y)
+    for (const wy of [-6.6, 6.6]) { g.roundRect(-2, wy - 1.3, 6, 2.6, 0.9).fill(m.gun); g.circle(4.2, wy, 1).fill(acc); } // weapon pods + team tips
+    g.ellipse(0, 0, 10, 5).fill(m.steel).stroke(ln); // fuselage
+    g.poly([10.5, 0, 3.5, -3.3, 3.5, 3.3]).fill({ color: m.steelLt, alpha: 0.6 }); // nose taper sheen
+    g.ellipse(5.2, 0, 3, 2.1).fill(m.glass); g.circle(6.1, 0, 0.85).fill({ color: side, alpha: 0.85 }); // cockpit canopy + team glint
+    g.rect(-7, 6.6, 14, 1.2).fill(m.gun); g.rect(-7, -7.8, 14, 1.2).fill(m.gun); // skids
+    g.circle(0, 0, 1.7).fill(m.steelLt).stroke(ln); // rotor hub (blades are a separate spinning overlay)
+    pip(-1, 0, 1.1); // doctrine
+  } else if (fam === "mech") { // bipedal battle mech: broad torso, cockpit, twin shoulder cannons (+x), back thrusters
+    g.poly([-5, -6.5, -8, -3, -5, 0]).fill(m.steelDkr); g.poly([-5, 6.5, -8, 3, -5, 0]).fill(m.steelDkr); // back thrusters
+    g.roundRect(-5, -6.5, 11, 13, 3).fill(m.steel).stroke(ln); // torso (broad along y)
+    g.roundRect(-3, -3.4, 7, 6.8, 2).fill({ color: m.steelLt, alpha: 0.5 }); // chest sheen
+    for (const sy of [-6.5, 6.5]) { g.roundRect(-1, sy - 1.7, 10, 3.4, 1).fill(m.gun); g.rect(8.5, sy - 0.9, 2.4, 1.8).fill(tint(m.gun, 0.1)); g.circle(7, sy, 0.9).fill(acc); } // shoulder cannons + muzzles
+    g.roundRect(2.6, -2.2, 4, 4.4, 1.2).fill(m.glass); g.circle(4, 0, 0.95).fill({ color: side, alpha: 0.85 }); // cockpit + team glint
+    pip(-0.6, 0, 1.3); // doctrine
+  } else if (fam === "walker") { // artillery walker: small high body, very long railgun barrel (+x), splayed legs, sensor
+    for (const [lx, ly, ex, ey] of [[-3, -4, -7, -8], [-3, 4, -7, 8], [2, -4.5, 5, -9], [2, 4.5, 5, 9]]) g.moveTo(lx, ly).lineTo(ex, ey).stroke({ color: tint(m.steelDk, 0.05), width: 2 }); // splayed legs
+    g.ellipse(-1, 0, 5.5, 4.6).fill(m.steel).stroke(ln); // body pod
+    g.ellipse(-2, -1, 3, 2.2).fill({ color: m.steelLt, alpha: 0.5 }); // sheen
+    g.rect(2, -1.4, 18, 2.8).fill(m.gun); g.rect(2, -1.4, 18, 0.9).fill({ color: m.gunLt, alpha: 0.5 }); // long railgun
+    g.roundRect(19.5, -1.9, 3, 3.8, 0.7).fill(tint(m.gun, 0.12)); g.circle(21, 0, 1).fill(0x0b0e11); // muzzle + bore
+    g.rect(6, -2.3, 4, 1).fill(0x9fd0ff); g.rect(6, 1.3, 4, 1).fill(0x9fd0ff); // charge coils glow
+    g.circle(-3.5, 0, 1.7).fill(m.steelDk); g.circle(-3.5, 0, 0.9).fill({ color: side, alpha: 0.85 }); // sensor
+    pip(-1.5, 0, 1.1);
+  } else if (fam === "tesla") { // tesla coil: ringed base, glowing orb, crackling arcs
+    g.circle(0, 0, 5.5).fill(m.steel).stroke(ln); g.circle(0, 0, 4).fill(m.steelDk); // base ring
+    for (let i = 0; i < 5; i++) { const ang = (i / 5) * TAU + 0.4; g.moveTo(0, -1).lineTo(Math.cos(ang) * 6, Math.sin(ang) * 6 - 1).stroke({ color: 0x9fe8ff, width: 1, alpha: 0.7 }); } // arcs
+    g.circle(0, -1.5, 2.8).fill({ color: 0x4fb8ff, alpha: 0.5 }); g.circle(0, -1.5, 1.6).fill(0xeaffff); // glowing orb
+    g.circle(0, 3.5, 0.9).fill(acc); // doctrine pip on base
+  } else if (fam === "swarmling") { // small bio crawler: carapace, mandible head (+x), spindly legs
+    for (const ly of [-3, 3]) { g.moveTo(0, ly).lineTo(3, ly + (ly < 0 ? -2.4 : 2.4)).stroke({ color: m.gun, width: 1 }); g.moveTo(-1.5, ly).lineTo(-3.5, ly + (ly < 0 ? -2.2 : 2.2)).stroke({ color: m.gun, width: 1 }); } // legs
+    g.ellipse(-0.4, 0, 4.4, 3.2).fill(m.steel).stroke(ln); // carapace
+    g.ellipse(-1.4, -0.4, 2, 1.4).fill({ color: acc, alpha: 0.55 }); // glowing back sac
+    g.poly([4.6, 0, 2.2, -1.8, 2.2, 1.8]).fill(m.steelDk); g.circle(5, 0, 0.7).fill({ color: side, alpha: 0.9 }); // mandible head + eye
+  } else if (fam === "orb") { // floating gravity well: dark void core, bright rim, accretion ring + debris
+    g.ellipse(0, 0, 11, 3.4).stroke({ color: 0x9b30ff, width: 1.3, alpha: 0.7 }); // accretion ring
+    for (let i = 0; i < 4; i++) { const a2 = (i / 4) * TAU; g.circle(Math.cos(a2) * 11, Math.sin(a2) * 3.4, 0.9).fill(0xc9a0ff); } // ring debris
+    g.circle(0, 0, 6.2).fill(0x140a22).stroke({ color: 0x9b30ff, width: 1.3, alpha: 0.85 }); // void core
+    g.circle(0, 0, 3.2).fill(0x2a1248); g.circle(-1.6, -1.6, 1.5).fill({ color: 0xc9a0ff, alpha: 0.6 }); // inner + highlight
   } else { // automated defense turret: angular head, twin autocannon, sensor dome, ammo drum
     const head = [-6, -4, 2, -4.4, 5, -2, 5, 2, 2, 4.4, -6, 4];
     g.poly(head).fill(m.steel).stroke(ln);
@@ -1051,6 +1796,17 @@ function drawBody(g: Graphics, type: UnitType, side: number, ln: { color: number
 
 // The gunner's carbine — drawn on a MID-HEIGHT layer (chest, where the hands are) instead of the
 // apex, so the rifle reads as held across the body rather than poking out of the helmet. forward = +x.
+// rocket trooper: a launcher tube over EACH shoulder (both sides), pointing forward (+x), at chest height.
+function drawRocketWeapon(g: Graphics, side: number) {
+  const m = unitPalette(side);
+  const tube = tint(m.gun, 0.06);
+  for (const sy of [-2.3, 2.3]) {
+    g.roundRect(-1.4, sy - 0.75, 7, 1.5, 0.7).fill(tube); // launcher tube
+    g.rect(-2.6, sy - 0.9, 1.5, 1.8).fill(m.gunLt); // rear grip/block
+    g.circle(5.6, sy, 0.9).fill(0x12161c); // muzzle bore
+    g.circle(5.6, sy, 0.9).stroke({ color: tint(side, 0.4), width: 0.4, alpha: 0.8 }); // team ring
+  }
+}
 function drawGunnerWeapon(g: Graphics, side: number) {
   const m = unitPalette(side);
   const gy = -1.6; // shouldered slightly to one side
@@ -1069,7 +1825,18 @@ function drawSilhouette(g: Graphics, type: UnitType, side: number, t: number) {
   const m = unitPalette(side);
   const body = tint(m.steel, lvl);
   const trk = tint(m.rubber, lvl * 0.45);
-  if (type === "tank") {
+  const fam = famOf(type); // summon types share an art family
+  if (isDartShape(type)) { // dart (fighter jets + Banshee): underside planform (unitArt insets it)
+    g.poly([13.5, 0, -4.5, -6.6, -6.5, -6.0, -9, 0, -6.5, 6.0, -4.5, 6.6]).fill(body);
+  } else if (type === "interceptor") { // underside planform (unitArt insets it)
+    g.poly(itcPolyS(1, 100, 20, 180, 152, 153, 166, 133, 182, 100, 178, 67, 182, 47, 166, 20, 152)).fill(body);
+  } else if (type === "nod_dronewing") { // heavy gunship underside: fuselage + wings + twin booms (unitArt insets it)
+    g.ellipse(1, 0, 11, 3.3).fill(body);
+    g.poly([4, -2, -2, -13.5, -4.5, -13, -3, -2.5]).fill(body);
+    g.poly([4, 2, -2, 13.5, -4.5, 13, -3, 2.5]).fill(body);
+    for (const sy of [-7, 7]) g.roundRect(-15, sy - 1.35, 21, 2.7, 1.1).fill(body);
+    g.roundRect(-15.6, -7, 2.7, 14, 1).fill(body);
+  } else if (fam === "tank") {
     if (t < 0.16) { // running gear + side skirts (widest, sloped glacis front)
       g.poly([-10.5, -7.6, 6, -7.6, 11, -4, 11, 4, 6, 7.6, -10.5, 7.6, -12, 3.6, -12, -3.6]).fill(trk); // track shoes
       g.poly([-9.6, -6, 6.5, -6, 10, -3, 10, 3, 6.5, 6, -9.6, 6]).fill(body); // hull pan
@@ -1081,7 +1848,7 @@ function drawSilhouette(g: Graphics, type: UnitType, side: number, t: number) {
       const s = 1 - (t - 0.64) * 0.7;
       g.poly([-9.5 * s, -3.6 * s, -6.6 * s, -5 * s, 4 * s, -5 * s, 7 * s, -2.4 * s, 7 * s, 2.4 * s, 4 * s, 5 * s, -6.6 * s, 5 * s, -9.5 * s, 3.6 * s]).fill(body);
     }
-  } else if (type === "humvee") {
+  } else if (fam === "humvee") {
     if (t < 0.3) { // wheels + lower chassis
       for (const [wx, wy] of [[-6, -6.6], [6, -6.6], [-6, 6.6], [6, 6.6]]) g.circle(wx, wy, 2.9).fill(trk);
       g.poly([-9, -5.6, 7, -5.6, 10, -2.6, 10, 2.6, 7, 5.6, -9, 5.6]).fill(body);
@@ -1090,88 +1857,174 @@ function drawSilhouette(g: Graphics, type: UnitType, side: number, t: number) {
     } else { // armored cabin (set back from the hood)
       g.roundRect(-8, -5, 13.5, 10, 2.5).fill(body);
     }
-  } else if (type === "gunner") {
-    if (t < 0.34) { g.roundRect(-2.3, -3.3, 4, 2.7, 1.2).fill(body); g.roundRect(-1.2, 0.6, 4, 2.7, 1.2).fill(body); } // striding legs
+  } else if (fam === "gunner") {
+    if (t < 0.34) g.roundRect(-1.7, -1.6, 3.4, 3.2, 1.2).fill(body); // hips/pelvis (legs are an animated overlay)
     else if (t < 0.7) { g.roundRect(-3.6, -3.4, 4.8, 6.8, 2).fill(tint(body, -0.1)); g.roundRect(-1.8, -3, 5.4, 6, 2.2).fill(body); } // ruck + torso/armor
     else if (t < 0.86) g.roundRect(-1.9, -3.4, 5, 6.8, 2.4).fill(body); // shoulders
     else { const s = 1 - (t - 0.86) * 0.4; g.circle(0.6, 0, 2.6 * s).fill(body); } // helmet
-  } else if (type === "drone") {
+  } else if (fam === "drone") {
     g.circle(0, 0, 3.3 - t * 1.0).fill(body);
+  } else if (fam === "jet") { // flat wing plane at the base, thin fuselage spine above
+    const sh = planeSharp(type); // faster → sharper/narrower, slower → wider/blunter (matches drawBody)
+    const span = 10 - 6.8 * sh;  // wingtip half-span at the base: 10 (wide, slow) → 3.2 (fast)
+    const rearX = -6 - 4 * sh;   // wingtips swept further back when fast
+    const noseX = 9 + 7 * sh;    // short blunt nose when slow → long pointed nose when fast
+    if (t < 0.5) g.poly([noseX, 0, -3, -0.85 * span, rearX, -span, rearX, span, -3, 0.85 * span]).fill(body); // wings + nose
+    else { const s = 1 - (t - 0.5) * 0.9; g.poly([(noseX - 2) * s, 0, -7 * s, -1.8 * s, -7 * s, 1.8 * s]).fill(body); } // fuselage spine
+  } else if (fam === "gunship") { // fuselage + tail boom low, narrowing cabin, rotor mast at apex
+    if (t < 0.55) { g.ellipse(0, 0, 9.5 - t * 2, 4.6 - t).fill(body); g.rect(-17, -1.3, 12, 2.6).fill(body); } // fuselage + tail boom
+    else if (t < 0.82) { const s = 1 - (t - 0.55) * 0.8; g.ellipse(0.5, 0, 6 * s, 3 * s).fill(body); } // cabin roof
+    else g.circle(0, 0, 1.6).fill(body); // rotor mast hub
+  } else if (fam === "mech") { // legs → broad torso → head
+    if (t < 0.32) { for (const ly of [-3.6, 3.6]) g.roundRect(-2.2, ly - 1.7, 7, 3.4, 1).fill(body); } // striding legs
+    else if (t < 0.82) g.roundRect(-5, -6.5, 11, 13, 3).fill(body); // torso
+    else { const s = 1 - (t - 0.82) * 0.5; g.roundRect(-2.6 * s, -2.6 * s, 5.2 * s, 5.2 * s, 1.4 * s).fill(body); } // head
+  } else if (fam === "walker") { // splayed legs → small body pod → barrel mount
+    if (t < 0.4) { g.ellipse(-1, 0, 7 - t * 4, 5.4 - t * 2).fill(body); }
+    else { const s = 1 - (t - 0.4) * 0.5; g.ellipse(-1, 0, 5.4 * s, 4.4 * s).fill(body); }
+  } else if (fam === "tesla") { // pedestal → coil → orb
+    if (t < 0.4) { const s = 1 - t * 0.4; g.circle(0, 0, 5.5 * s).fill(body); }
+    else { const s = 1 - (t - 0.4) * 0.5; g.circle(0, -t * 2, 2.8 * s).fill(body); }
+  } else if (fam === "swarmling") { // little rounded carapace
+    g.circle(0, 0, 3.6 - t * 1.6).fill(body);
+  } else if (fam === "orb") { // floating sphere
+    g.circle(0, 0, Math.max(0, 6.2 - Math.abs(t - 0.5) * 8)).fill(body);
   } else { // turret: sloped pedestal → neck → head housing
     if (t < 0.4) { const s = 1 - t * 0.3; g.circle(0, 0, 7 * s).fill(body); }
     else if (t < 0.6) g.circle(0, 0, 4.4).fill(tint(body, -0.1));
     else { const s = 1 - (t - 0.6) * 0.4; g.roundRect(-5 * s, -4.2 * s, 11 * s, 8.4 * s, 2 * s).fill(body); }
   }
 }
-const UNIT_HEIGHT: Record<string, number> = { tank: 11, turret: 14, humvee: 9, gunner: 11, drone: 3 };
+const UNIT_HEIGHT: Record<string, number> = { tank: 11, turret: 14, humvee: 9, gunner: 11, drone: 3, jet: 5, gunship: 8, mech: 13, walker: 12, tesla: 10, swarmling: 4, orb: 8 };
+// hover lift per family (flyers float well above ground); ground units sit near 2.
+const UNIT_LIFT: Record<string, number> = { drone: 14, jet: 18, gunship: 15, orb: 14 };
 
-// per-unit-type dimensions (footprint scale, ring radius, hover lift, z-stack height)
+// per-FAMILY dimensions (footprint scale, ring radius, hover lift, z-stack height), then everything
+// is multiplied by the unit's render scale (u.scale) so elites visibly tower / swarms read as small.
 const FOOT: Record<string, { x: number; y: number }> = { tank: { x: 1.6, y: 1.55 }, humvee: { x: 1.5, y: 1.48 } };
 function unitDims(u: StateMsg["units"][number]) {
-  const fp = FOOT[u.unit] ?? { x: 1, y: 1 };
-  const rad = Math.round((u.unit === "tank" || u.unit === "turret" ? 10 : 8) * (fp.x + fp.y) / 2);
-  return { fp, rad, lift: u.unit === "drone" ? 14 : 2, H: UNIT_HEIGHT[u.unit] };
+  const fam = famOf(u.unit);
+  const sc = u.scale ?? 1;
+  const dart = isDart(u.unit);                  // Fighter Jet: small dart sprite (they fly in pairs)
+  const banshee = u.unit === "nod_interceptor"; // Banshee: a slightly larger red dart
+  const fp0 = dart ? { x: 0.72, y: 0.72 } : banshee ? { x: 0.9, y: 0.9 } : (FOOT[fam] ?? { x: 1, y: 1 });
+  const fp = { x: fp0.x * sc, y: fp0.y * sc };
+  const rad = Math.round((fam === "tank" || fam === "turret" ? 10 : 8) * (fp.x + fp.y) / 2);
+  const H = (fam === "jet" || fam === "gunship") ? 1 : (UNIT_HEIGHT[fam] ?? 8); // all aircraft render flat — no z-stack slab under the body
+  return { fp, rad, lift: (UNIT_LIFT[fam] ?? 2) * sc, H, sc };
 }
 const UNIT_LN = { color: 0x05080b, width: 1, alpha: 0.55 };
+// unit BODY color = faction (Anthropic orange / OpenAI light grey); GLOW = allegiance (green ally / red enemy).
+const factionColorOf = (u: StateMsg["units"][number], s: StateMsg): number => FACTION_META[((s.factions?.[u.owner] ?? "anthropic") as Faction)].color;
+const GLOW_OWN = 0x37e07a, GLOW_ENEMY = 0xff4646; // ground-glow: allied = green, enemy = red
 
 // CHEAP per-tick bits (cleared + redrawn each state — a handful of shapes). The expensive z-stack
 // geometry below is built ONCE and only rotated, so we don't churn thousands of Graphics per second.
 function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
   g.clear();
   const { fp, rad } = unitDims(u);
-  const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
+  const ult = u.scale != null; // ULTIMATE-spawned unit → bright purple ring (below)
+  const glow = u.owner === s.you ? GLOW_OWN : GLOW_ENEMY; // ground glow = allegiance (green ally / red enemy)
+  const body = factionColorOf(u, s); // faction color (for the turret pedestal)
   // soft DIRECTIONAL contact shadow (key light upper-left → shadow falls down-right), layered for a
   // blurred penumbra → tight contact core, so the unit reads as grounded rather than a flat disc.
   g.ellipse(2.4, 5, 13 * fp.x, 5.2 * fp.y).fill({ color: 0x000000, alpha: 0.14 }); // outer penumbra
   g.ellipse(1.4, 4, 10 * fp.x, 4.2 * fp.y).fill({ color: 0x000000, alpha: 0.2 });
   g.ellipse(0.6, 3, 7.5 * fp.x, 3.2 * fp.y).fill({ color: 0x000000, alpha: 0.26 }); // contact core
-  // team-colored ground glow — tighter + a touch stronger so the side reads at a glance
-  g.ellipse(0, 1, rad + 12, (rad + 12) * 0.5).fill({ color: side, alpha: 0.1 });
-  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: side, alpha: 0.16 }); // team glow
-  if (u.unit === "turret") g.ellipse(0, 3, 12, 6.5).fill(tint(side, -0.3)).stroke(UNIT_LN);
+  // ALLEGIANCE GROUND GLOW — every unit (allied = green, enemy = red)
+  g.ellipse(0, 1, rad + 13, (rad + 13) * 0.5).fill({ color: glow, alpha: ult ? 0.22 : 0.14 });
+  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: glow, alpha: ult ? 0.32 : 0.22 });
+  // ULTIMATE units: a bright PURPLE ring around the outside (both armies)
+  if (ult) {
+    const PR = 0xc24bff, pulse = 0.5 + 0.5 * Math.sin(s.tick / 5), rr = rad + 14 + 2 * pulse;
+    g.ellipse(0, 1, rr + 3, (rr + 3) * 0.5).fill({ color: PR, alpha: 0.1 + 0.08 * pulse }); // soft halo
+    g.ellipse(0, 1, rr, rr * 0.5).stroke({ color: PR, width: 2.8, alpha: 0.95 }); // crisp bright ring
+  }
+  if (famOf(u.unit) === "turret") g.ellipse(0, 3, 12, 6.5).fill(tint(body, -0.3)).stroke(UNIT_LN);
   if (pinned && pinned.id === u.id) g.ellipse(0, 1, rad + 9, (rad + 9) * 0.5).stroke({ color: 0xffffff, width: 1.5, alpha: 0.85 }); // selection ring
 }
 function drawUnitTop(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
   g.clear();
-  const { rad, lift, H } = unitDims(u);
-  const topY = lift + H * 1.3 + rad * 0.4;
+  const { rad, lift, H, sc } = unitDims(u);
+  const topY = lift + H * 1.3 * sc + rad * 0.4;
   const frac = Math.max(0, u.hp / u.maxHp); // hp bar persists on every unit, green→yellow→orange→red
   g.rect(-rad, -topY - 6.5, rad * 2, 2.6).fill({ color: 0x05080b, alpha: 0.6 }); // track
   g.rect(-rad, -topY - 6.5, frac * rad * 2, 2.6).fill(hpColor(frac)); // spectrum fill
   if (u.overrideUntil > s.tick) g.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
 }
 
+// Wide 4-arm helicopter rotor — drawn once, then SPUN each frame (see the animation ticker). Lives in an
+// iso-squashed wrap at the apex so it reads as a top-down disc. Much larger area than the old r18 disc.
+function drawRotor(g: Graphics, side: number) {
+  const m = unitPalette(side);
+  g.ellipse(0, 0, 30, 30).fill({ color: side, alpha: 0.06 }); // broad blur disc
+  g.circle(0, 0, 28).stroke({ color: side, width: 2, alpha: 0.1 }); // faint tip-path ring
+  const blade = { color: tint(m.steelLt, 0.2), width: 2, alpha: 0.6 };
+  g.moveTo(-28, 0).lineTo(28, 0).stroke(blade);
+  g.moveTo(0, -28).lineTo(0, 28).stroke(blade); // 4 arms
+  g.circle(0, 0, 2).fill(m.steelLt); // hub cap
+}
+// Infantry legs — REDRAWN each frame with a stride phase so troops run while moving (feet together when idle).
+// forward = +x (the ticker rotates the graphic to heading). The two legs swing fore/aft in anti-phase.
+function drawRunLegs(g: Graphics, side: number, phase: number, moving: boolean) {
+  g.clear();
+  const col = tint(unitPalette(side).steel, -0.08);
+  const amp = moving ? 2.6 : 0;
+  const leg = (swing: number, ly: number) => g.roundRect(swing * amp - 1.7, ly - 1.0, 3.4, 2.0, 0.9).fill(col);
+  leg(Math.sin(phase), -1.5);          // left leg
+  leg(Math.sin(phase + Math.PI), 1.3); // right leg (anti-phase)
+}
+
 // Build a unit's STATIC art once (z-stack volume geometry + base/top placeholders). Returns the root
 // container plus the rotatable layer graphics so the per-tick update can spin them to face heading
 // without rebuilding geometry. A persistent holder carries the (eased) world position.
-function unitArt(u: StateMsg["units"][number], s: StateMsg): { root: Container; rotors: Graphics[]; baseG: Graphics; topG: Graphics } {
+function unitArt(u: StateMsg["units"][number], s: StateMsg): { root: Container; rotors: Graphics[]; baseG: Graphics; topG: Graphics; spinner: Graphics | null; legsG: Graphics | null } {
   const cont = new Container();
-  const side = u.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
-  const acc = u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
-  const { fp, lift, H } = unitDims(u);
+  const ult = u.scale != null; // ULTIMATE-spawned unit → purple accents + purple ring (in drawUnitBase)
+  const side = factionColorOf(u, s); // body = faction color (Anthropic orange / OpenAI light grey)
+  const acc = ult ? 0xd6a8ff : u.camp ? DOCTRINE_COLOR[u.camp] : 0x9aa6b2;
+  const fam = famOf(u.unit);
+  const { fp, lift, H, sc } = unitDims(u);
   const baseG = new Graphics(); drawUnitBase(baseG, u, s); cont.addChild(baseG);
 
   // Volume via z-stacking: the iso footprint drawn many times, each ~1px higher (dark base → lit
   // top). Geometry is built ONCE; `rotors` are spun to heading each tick (no rebuild).
   const rotors: Graphics[] = [];
-  const SP = 1.25;
+  const SP = 1.25 * sc; // layer spacing scales with the unit so big elites tower and swarms stay low
   for (let i = 0; i <= H; i++) {
     const t = i / H;
     const wrap = new Container();
-    wrap.position.set(t * 1.6, -(lift + i * SP)); // screen-vertical rise + slight lit-side lean
+    wrap.position.set(t * 1.6 * sc, -(lift + i * SP)); // screen-vertical rise + slight lit-side lean
     wrap.scale.set(1, 0.62); // iso ground squash
     const g = new Graphics();
-    g.scale.set(fp.x, fp.y); // widen/lengthen the chassis (scaled in local space, then rotated to heading)
+    const inset = (fam === "jet" || fam === "gunship") && i !== H ? 0.82 : 1; // aircraft: tuck the single underside beneath the top sprite
+    g.scale.set(fp.x * inset, fp.y * inset); // widen/lengthen the chassis (scaled in local space, then rotated to heading)
     if (i === H) drawBody(g, u.unit, side, UNIT_LN, acc); // lit, detailed top cap
     else drawSilhouette(g, u.unit, side, t); // sculpted volume
     if (u.unit === "gunner" && i === Math.round(H * 0.6)) drawGunnerWeapon(g, side); // carbine at chest height
+    if ((u.unit === "rocket" || u.unit === "nod_rocket") && i === Math.round(H * 0.6)) drawRocketWeapon(g, side); // shoulder launchers
     rotors.push(g);
     wrap.addChild(g);
     cont.addChild(wrap);
   }
 
+  // helicopter rotor: wide blades on an iso-squashed wrap at the apex, spun each frame by the animation ticker
+  let spinner: Graphics | null = null;
+  if (fam === "gunship" && u.unit !== "nod_dronewing") { // heavy gunship is a fixed-wing twin-boom, not a helicopter — no rotor
+    const w = new Container(); w.position.set(1.6 * sc, -(lift + H * SP)); w.scale.set(1, 0.62);
+    spinner = new Graphics(); spinner.scale.set(fp.x, fp.y); drawRotor(spinner, side);
+    w.addChild(spinner); cont.addChild(w);
+  }
+  // infantry legs: an overlay at the feet, redrawn each frame with a stride phase while moving
+  let legsG: Graphics | null = null;
+  if (fam === "gunner") {
+    const w = new Container(); w.position.set(0, -(lift + 0.2 * SP)); w.scale.set(1, 0.62);
+    legsG = new Graphics(); legsG.scale.set(fp.x, fp.y); drawRunLegs(legsG, side, 0, false);
+    w.addChild(legsG); cont.addChild(w);
+  }
+
   const topG = new Graphics(); drawUnitTop(topG, u, s); cont.addChild(topG); // hp bar + override ring
-  return { root: cont, rotors, baseG, topG };
+  return { root: cont, rotors, baseG, topG, spinner, legsG };
 }
 
 // Cheap per-state refresh of an existing unit's art: rotate the prebuilt layers to the new heading
@@ -1184,7 +2037,7 @@ function updateUnitArt(v: UnitView, u: StateMsg["units"][number], s: StateMsg) {
 }
 
 // ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
-interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
+interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; spinner: Graphics | null; legsG: Graphics | null; phase: number; pgx: number; pgy: number; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
 const unitViews = new Map<number, UnitView>();
 const transientFx: Container[] = []; // bases/outposts/rally — rebuilt each state (no interpolation)
 
@@ -1196,13 +2049,15 @@ function placeHolder(e: UnitView, s: StateMsg) {
 
 function reconcileUnits(s: StateMsg) {
   const live = new Set<number>();
+  const dyingNow = new Map<number, StateMsg["deaths"][number]>();
+  for (const d of s.deaths ?? []) dyingNow.set(d.id, d);
   for (const u of s.units) {
     live.add(u.id);
     let e = unitViews.get(u.id);
     if (!e) {
       const holder = new Container();
       holder.eventMode = "static"; holder.cursor = "pointer";
-      e = { holder, art: null, rotors: [], baseG: null, topG: null, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
+      e = { holder, art: null, rotors: [], baseG: null, topG: null, spinner: null, legsG: null, phase: 0, pgx: u.x, pgy: u.y, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
       const ev = e;
       holder.on("pointerover", () => { hovered = ev.u; updateReadout(); });
       holder.on("pointerout", () => { if (hovered?.id === ev.u.id) { hovered = null; updateReadout(); } });
@@ -1212,10 +2067,18 @@ function reconcileUnits(s: StateMsg) {
       placeHolder(e, s); // place new units immediately (no glide from origin)
     }
     e.u = u; e.tgx = u.x; e.tgy = u.y; // server position is the glide target
-    if (!e.art) { const a = unitArt(u, s); e.art = a.root; e.rotors = a.rotors; e.baseG = a.baseG; e.topG = a.topG; e.holder.addChild(a.root); } // build geometry ONCE
+    if (!e.art) { const a = unitArt(u, s); e.art = a.root; e.rotors = a.rotors; e.baseG = a.baseG; e.topG = a.topG; e.spinner = a.spinner; e.legsG = a.legsG; e.holder.addChild(a.root); } // build geometry ONCE
     updateUnitArt(e, u, s); // cheap per-state refresh: rotate to heading + redraw hp/ring (no rebuild)
+    e.holder.scale.set(u.scale ?? 1); // ULTIMATE elites (mammoth/titan/crawler) render big
+    e.holder.alpha = (u.disabledUntil ?? 0) > s.tick ? 0.55 : 1; // frozen by a Stasis Field
   }
-  for (const [id, e] of unitViews) if (!live.has(id)) { e.holder.destroy({ children: true }); unitViews.delete(id); }
+  for (const [id, e] of unitViews) if (!live.has(id)) {
+    const d = dyingNow.get(id);
+    if (d && famOf(d.kind) === "gunner") startFallOver(e); // infantry: tip over + fade (keeps its art briefly)
+    else if (d) { spawnDeathBlast(d.x, d.y, d.kind, d.scale ?? 1); e.holder.destroy({ children: true }); } // vehicle: explode w/ shrapnel
+    else e.holder.destroy({ children: true }); // left vision (fog) — silent removal, no death FX
+    unitViews.delete(id);
+  }
 }
 
 // glide every holder toward its target cell each frame (frame-rate independent exponential ease)
@@ -1231,6 +2094,30 @@ app.ticker.add(() => {
     placeHolder(e, s);
   }
   rebuildVisionMask(); // shroud glides with the eased unit positions + radii
+});
+
+// per-frame character animation: spin helicopter rotors continuously; run infantry legs while moving.
+const ROTOR_SPD = 0.55; // radians per ~16ms frame (fast blade spin)
+const RUN_RATE = 0.022; // stride phase advance per ms while moving
+app.ticker.add(() => {
+  if (!latestState) return;
+  const s = latestState, dt = app.ticker.deltaMS;
+  for (const e of unitViews.values()) {
+    const moved = Math.hypot(e.gx - e.pgx, e.gy - e.pgy);
+    e.pgx = e.gx; e.pgy = e.gy;
+    if (e.spinner) e.spinner.rotation += ROTOR_SPD * (dt / 16.67);
+    if (e.legsG) {
+      const moving = moved > 0.02;
+      if (moving) { // stride while gliding
+        e.phase += RUN_RATE * dt;
+        e.legsG.rotation = Math.atan2(e.u.dy, e.u.dx) + Math.PI / 4; // stride axis follows heading
+        drawRunLegs(e.legsG, factionColorOf(e.u, s), e.phase, true);
+      } else if (e.phase !== 0) { // just stopped → settle to a standing pose once, then idle (no per-frame redraw)
+        e.phase = 0;
+        drawRunLegs(e.legsG, factionColorOf(e.u, s), 0, false);
+      }
+    }
+  }
 });
 
 // how each army upgrade modifies the inspected unit (income is economy-wide, not per-unit). Reuses

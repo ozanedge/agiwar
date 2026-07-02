@@ -1,7 +1,7 @@
 // Shared protocol + domain types for agiwar.
 // Imported by both the server (tsx) and the web client (Vite) via relative path.
 
-import type { UnitType } from "./units.js";
+import type { UnitType, Faction } from "./units.js";
 
 /** A clamped behavior spec — the *compiled* output of a general's natural-language style.
  *  This is the contract between the LLM "policy compiler" and the deterministic sim.
@@ -55,6 +55,12 @@ export interface UnitState {
   overrideUntil: number;
   /** short label of the active override, for the client readout. "" when native. */
   overrideLabel: string;
+  // ULTIMATE-spawned elites + status effects (all optional; absent on normal units)
+  scale?: number; // render size multiplier (mammoth/titan look big)
+  dmgMult?: number; // attack-damage multiplier
+  slowMult?: number; // move-cadence multiplier (>1 = slower)
+  regen?: number; // hp regenerated per tick
+  disabledUntil?: number; // tick until which the unit is frozen (stasis) — can't move or fire
 }
 
 /** A transient weapon-fire event for the client to animate as a flying projectile. Sent in the
@@ -65,6 +71,16 @@ export interface Shot {
   hit: boolean; // did it connect (passed the accuracy roll)?
   kind: UnitType; // shooter type → projectile look
   owner: number; // shooter's player index → tracer color
+  scale?: number; // shooter render scale (elites) → muzzle offset & projectile size track the art
+  tid?: number; // target unit id (if the target is a unit) → homing missiles track its live position
+}
+
+export interface Death {
+  x: number; y: number; // cell where it died
+  kind: UnitType; // unit type → death effect (vehicles explode w/ shrapnel; gunners fall over)
+  owner: number;
+  id: number; // matches the client's unit view, so its art can drive the death animation
+  scale?: number; // unit render scale (elites) → bigger units leave a bigger blast
 }
 
 export interface BaseState {
@@ -91,6 +107,30 @@ export interface Outpost {
   capOwner: number; // player currently channeling the capture (-1 = none)
 }
 
+/** A collectible ARTIFACT that drops near a player's base and auto-harvests into their inventory. */
+export interface ArtifactDrop {
+  id: number;
+  owner: number; // whose base it spawned near — only they can harvest it
+  type: number; // 0..4 (index into ARTIFACTS)
+  x: number;
+  y: number;
+  harvestAt: number; // tick the pickup completes once a friendly unit/base is in range (0 = not yet started)
+}
+
+/** A forged ultimate the player has active, with its cooldown for the HUD ring. */
+export interface ActiveUltimate {
+  id: string; // ULTIMATES key
+  cooldown: number; // 0..1 progress toward the next firing (1 = about to fire)
+}
+
+/** A transient ultimate-effect event for the client to animate (fog-gated like shots/deaths). */
+export interface UltimateFx {
+  kind: string; // jet / meteor / orbital / ion / singularity / gunship / locust / stasis / plague / nanite / spawn
+  x: number;
+  y: number;
+  owner: number;
+}
+
 /** Lightweight world state, broadcast at the (lower) network rate. Deliberately
  *  excludes camps — those are static between edits, so shipping their prompt strings
  *  every tick was pure egress waste. */
@@ -105,6 +145,7 @@ export interface StateMsg {
   units: UnitState[];
   bases: BaseState[];
   shots: Shot[]; // weapon fire since the last broadcast (fog-gated) — client animates projectiles
+  deaths: Death[]; // units that died since the last broadcast (fog-gated) — client animates death FX
   outposts: Outpost[]; // visible outposts (fog-gated)
   bonuses: { income: number; range: number; hp: number; damage: number; armor: number; speed: number }; // recipient's total bonuses (outposts + investments)
   invest: Record<OutpostBonusKind, number>; // recipient's purchased investment levels
@@ -114,7 +155,13 @@ export interface StateMsg {
   armyDoctrine: string; // recipient's chosen build identity (id from shared/doctrine.ts); "balanced" until chosen
   rally: { x: number; y: number } | null; // recipient's active rally/commitment point (units concentrate here)
   sandstorm: { progress: number; secsLeft: number } | null; // active board-clearing storm: 0..1 intensity + countdown
+  drops: ArtifactDrop[]; // this client's un-harvested artifact drops on the map
+  artifacts: number[]; // this client's harvested inventory: count per artifact type (length 5)
+  ultimates: ActiveUltimate[]; // this client's forged ultimates (id + cooldown progress)
+  ufx: UltimateFx[]; // ultimate-effect events since the last broadcast (fog-gated) — client animates
   you: number; // which player index this client controls
+  faction: Faction; // recipient's faction (Anthropic/OpenAI) — drives the roster + ultimate units they get
+  factions: Faction[]; // faction per player index — lets the client tint/identify each side's units
 }
 
 /** The field general's editable command doctrine. Unlike a camp, this prompt is NOT
@@ -160,6 +207,7 @@ export interface GameOver {
 export interface DoctrineOffer {
   type: "doctrineOffer";
   current: string; // currently-applied doctrine id (defaults to "balanced" until chosen)
+  faction: Faction; // currently-selected faction (defaults to "anthropic" until chosen)
 }
 
 /** A strategic FORK the player's commander surfaces at a key moment. The player answers with one
@@ -200,11 +248,12 @@ export type ClientMsg =
   | { type: "cancelInvest" } // clear the queued upgrade and resume normal spending
   | { type: "fieldOrder"; order: FieldOrder } // manual override (debug/UI)
   | { type: "cancelFieldOrder" } // clear the field general's active tactic — units revert to native doctrine
-  | { type: "chooseArmyDoctrine"; id: string } // pick the once-per-match build identity
+  | { type: "chooseArmyDoctrine"; id: string; faction?: Faction } // pick the once-per-match build identity + faction
   | { type: "decide"; id: number; key: string } // answer a commander's strategic fork
   | { type: "setRally"; x: number; y: number } // set a rally/commitment point (double-click the map)
   | { type: "skipToBot" } // stop waiting for a live opponent — start a single-player (bot) match now
-  | { type: "buyBooster" }; // purchase a morale booster (cost scales with army size)
+  | { type: "buyBooster" } // purchase a morale booster (cost scales with army size)
+  | { type: "forgeUltimate"; a: number; b: number }; // combine two harvested artifact types into an ultimate
 
 /** A field-general command: a *time-boxed override* of native doctrine.
  *  Units revert to their camp doctrine when `durationTicks` elapses. */

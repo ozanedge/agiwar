@@ -1,11 +1,19 @@
 // Deterministic, server-authoritative fixed-tick simulation.
 // No Math.random / Date.now inside the tick: all "randomness" is a pure hash of
 // (unitId, tick) so a match is fully reproducible and replayable.
-import type { Outpost, OutpostBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, UnitState } from "../../shared/types.js";
+import type { Outpost, OutpostBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, Death, UnitState, ArtifactDrop, UltimateFx } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
 import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
 import { modsFor, budgetFor, type ArmyMods } from "../../shared/doctrine.js";
+import { ARTIFACTS, ULTIMATES, ultimateKey } from "../../shared/ultimates.js";
+
+// ---- ARTIFACT DROPS + ULTIMATES ----
+const DROP_EVERY = Number(process.env.DROP_EVERY ?? 600); // ticks between artifact drops per player (~60s — rare)
+const DROP_CAP = Number(process.env.DROP_CAP ?? 3); // max un-harvested drops on the field per player
+const DROP_MIN = 7 * GRID_SCALE, DROP_MAX = 16 * GRID_SCALE; // drops land in a ring this far from base
+const HARVEST_RADIUS = 4 * GRID_SCALE; // a friendly unit (or the base) this close starts the pickup
+const HARVEST_TICKS = 15 * 10; // 15s to complete a pickup once a friendly unit/base is in range
 
 const OUTPOST_CAP = Number(process.env.OUTPOST_CAP ?? 9);
 const OUTPOST_EVERY = Number(process.env.OUTPOST_EVERY ?? 150); // ticks between spawns (~15s)
@@ -77,6 +85,10 @@ export interface PlayerState {
   morale: number; // 0..1 team morale (degrades speed + accuracy when low); recomputed each tick
   recentLosses: number; // decaying tally of recent unit deaths (drags morale down)
   moraleBoost: number; // temporary morale lift from a purchased booster (decays over time)
+  artifacts: number[]; // harvested inventory: count per artifact type (length 5)
+  ultimates: { id: string; nextFire: number }[]; // forged ultimates + their next-firing tick
+  nextDropTick: number; // tick the next artifact drop may spawn near this base
+  faction: Faction; // Anthropic (GDI-style) or OpenAI (Nod-style) — sets the roster + ultimate units
 }
 
 /** This player's army-wide modifiers, derived from their chosen doctrine. */
@@ -127,6 +139,10 @@ export interface GameState {
   bases: BaseState[];
   outposts: Outpost[];
   shots: Shot[]; // transient weapon-fire events accumulated since the last broadcast (cosmetic)
+  deaths: Death[]; // transient unit-death events since the last broadcast (cosmetic; client death FX)
+  drops: ArtifactDrop[]; // un-harvested artifact collectibles on the map
+  ufx: UltimateFx[]; // transient ultimate-effect events since the last broadcast (cosmetic)
+  nextDropId: number;
   players: PlayerState[]; // index = player/owner
   flow: Int32Array[]; // BFS distance-to-base field per base, for obstacle-routed movement
   passGrid: Uint8Array; // 1 = passable, 0 = blocked (water/rock/cliff) — precomputed once per match
@@ -185,7 +201,19 @@ function makePlayer(): PlayerState {
     morale: 0.7,
     recentLosses: 0,
     moraleBoost: 0,
+    artifacts: [2, 2, 2, 2, 2], // start with 2 of each — enough to forge immediately
+    ultimates: [],
+    nextDropTick: DROP_EVERY,
+    faction: "anthropic", // default until the player picks (see setFaction)
   };
+}
+
+/** Set a player's faction and repoint each camp's default production to that faction's roster unit. */
+export function setFaction(g: GameState, owner: number, faction: Faction): void {
+  const p = g.players[owner];
+  if (!p) return;
+  p.faction = faction;
+  for (const camp of p.camps) camp.production.mix = { [FACTION_ROLE_UNIT[faction][camp.id as CampRole]]: 100 };
 }
 
 export const DEFAULT_ADVISOR_PROMPT =
@@ -201,7 +229,7 @@ export function newGame(seed = 1): GameState {
   ];
   // pick a terrain seed that keeps the two bases well-connected (no long range/lake walling the field)
   const mapSeed = pickMapSeed(seed >>> 0, bases);
-  const g: GameState = { tick: 0, seed: mapSeed, units: [], bases, outposts: [], shots: [], players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextOutpostId: 1, sandstorm: null, sandstormCooldownUntil: 0 };
+  const g: GameState = { tick: 0, seed: mapSeed, units: [], bases, outposts: [], shots: [], deaths: [], drops: [], ufx: [], nextDropId: 1, players: [makePlayer(), makePlayer()], flow: [], passGrid: new Uint8Array(0), dynFlow: new Map(), nextUnitId: 1, nextOutpostId: 1, sandstorm: null, sandstormCooldownUntil: 0 };
   // precompute passability ONCE (terrain w/ cliff slope is costly) — movement + flow read this grid
   const grid = new Uint8Array(GRID_W * GRID_H);
   for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) grid[y * GRID_W + x] = terrainAt(x, y, g.seed, GRID_W, GRID_H).passable ? 1 : 0;
@@ -384,11 +412,13 @@ function spawnOutpost(g: GameState) {
 }
 
 /** Spawn a unit (camp = doctrine) near base, or place a building (camp = null) at `pos`. */
-export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, type: UnitType = "gunner", pos?: { x: number; y: number }): void {
+export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, type?: UnitType, pos?: { x: number; y: number }): void {
+  // default to the owner faction's unit for this camp role (so omitting `type` is faction-correct)
+  if (!type) { const f = g.players[owner]?.faction ?? "anthropic"; type = camp ? FACTION_ROLE_UNIT[f][camp as CampRole] : FACTION_ROLE_UNIT[f].aggressive; }
   const base = g.bases[owner];
   const jitter = g.units.length;
   const mods = playerMods(g, owner);
-  const hp = Math.round((UNIT_STATS[type].maxHp + playerBonus(g, owner).hp) * (type === "turret" ? mods.turretHpMult : mods.hpMult));
+  const hp = Math.round((UNIT_STATS[type].maxHp * UNIT_HP_MULT + playerBonus(g, owner).hp) * (UNIT_STATS[type].building ? mods.turretHpMult : mods.hpMult));
   g.units.push({
     id: g.nextUnitId++,
     owner,
@@ -403,6 +433,104 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
     overrideUntil: 0,
     overrideLabel: "",
   });
+}
+
+// ---- ARTIFACT DROPS + ULTIMATES ----
+const TAU = Math.PI * 2;
+
+/** Drop a random artifact in a ring around a player's base. */
+function spawnDrop(g: GameState, owner: number): void {
+  const base = g.bases[owner];
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const ang = hash01(g.nextDropId * 13 + attempt, (g.seed ^ 0xd0d) >>> 0) * TAU;
+    const dist = DROP_MIN + hash01(g.nextDropId * 7 + attempt, owner + 1) * (DROP_MAX - DROP_MIN);
+    const x = Math.round(base.x + Math.cos(ang) * dist), y = Math.round(base.y + Math.sin(ang) * dist);
+    if (!passable(g, x, y)) continue;
+    const type = Math.min(ARTIFACTS.length - 1, Math.floor(hash01(g.nextDropId * 97 + attempt, g.seed) * ARTIFACTS.length));
+    g.drops.push({ id: g.nextDropId++, owner, type, x, y, harvestAt: 0 });
+    return;
+  }
+}
+
+/** Pick up drops once a friendly unit (or the home base) has been near them long enough. */
+function harvestDrops(g: GameState): void {
+  for (let i = g.drops.length - 1; i >= 0; i--) {
+    const d = g.drops[i], base = g.bases[d.owner];
+    const inRange = cheb(base.x, base.y, d.x, d.y) <= DROP_MAX + 4 * GRID_SCALE
+      || g.units.some((u) => u.owner === d.owner && u.hp > 0 && cheb(u.x, u.y, d.x, d.y) <= HARVEST_RADIUS);
+    if (!inRange) { d.harvestAt = 0; continue; } // wandered off — reset the pickup
+    if (d.harvestAt === 0) d.harvestAt = g.tick + HARVEST_TICKS; // start the pickup
+    else if (g.tick >= d.harvestAt) { g.players[d.owner].artifacts[d.type]++; g.drops.splice(i, 1); }
+  }
+}
+
+/** Combine two harvested artifact types into an active ultimate (consumes one of each). */
+export function forgeUltimate(g: GameState, owner: number, a: number, b: number): boolean {
+  const p = g.players[owner];
+  if (!p || a < 0 || b < 0 || a >= ARTIFACTS.length || b >= ARTIFACTS.length) return false;
+  if (a === b ? p.artifacts[a] < 2 : p.artifacts[a] < 1 || p.artifacts[b] < 1) return false;
+  const ult = ULTIMATES[ultimateKey(a, b)];
+  if (!ult) return false;
+  if (a === b) p.artifacts[a] -= 2; else { p.artifacts[a]--; p.artifacts[b]--; }
+  p.ultimates.push({ id: ult.id, nextFire: g.tick }); // fires once immediately, then fireUltimates reschedules to +intervalSec; stacks if forged again
+  return true;
+}
+
+/** Centre of the densest enemy knot within `radius` of any enemy unit — what strikes aim at. */
+function densestEnemyCluster(g: GameState, owner: number, radius: number): { x: number; y: number } | null {
+  const foes = g.units.filter((e) => e.owner !== owner && e.hp > 0);
+  if (!foes.length) return null;
+  let best = foes[0], bestN = -1;
+  for (const c of foes) { const n = foes.reduce((a, e) => a + (cheb(c.x, c.y, e.x, e.y) <= radius ? 1 : 0), 0); if (n > bestN) { bestN = n; best = c; } }
+  return { x: best.x, y: best.y };
+}
+
+/** Spawn elite ultimate units (stat-multiplied existing types) near the owner's base. */
+function spawnElite(g: GameState, owner: number, eff: Extract<import("../../shared/ultimates.js").UltEffect, { kind: "spawn" }>): void {
+  const base = g.bases[owner], dir = owner === 0 ? -1 : 1;
+  const unit = ultUnitFor(eff.unit, g.players[owner].faction); // faction-specific variant of the ultimate unit
+  const heavy = unit === "nod_dronewing"; // Heavy Gunship replaces the swarm: a single, much bigger unit
+  const count = heavy ? 1 : eff.count;
+  const scale = heavy ? 1.9 : eff.scale;
+  for (let i = 0; i < count; i++) {
+    const x = Math.max(0, Math.min(GRID_W - 1, base.x + (i - count / 2) * 2 * GRID_SCALE));
+    const y = Math.max(0, Math.min(GRID_H - 1, base.y + dir * 4 * GRID_SCALE));
+    spawnUnit(g, owner, "aggressive", unit, { x, y });
+    const u = g.units[g.units.length - 1];
+    u.maxHp = Math.round(u.maxHp * eff.hpMult); u.hp = u.maxHp;
+    u.dmgMult = eff.dmgMult; u.slowMult = eff.slowMult; u.scale = scale;
+    if (eff.regen) u.regen = eff.regen;
+  }
+}
+
+/** Fire every player's active ultimates whose timer is up. */
+function fireUltimates(g: GameState): void {
+  for (let pi = 0; pi < g.players.length; pi++) {
+    for (const act of g.players[pi].ultimates) {
+      if (g.tick < act.nextFire) continue;
+      const ult = ULTIMATES[act.id];
+      if (!ult) continue;
+      act.nextFire = g.tick + Math.round(ult.intervalSec * TICK_HZ);
+      const eff = ult.effect;
+      if (eff.kind === "spawn") { spawnElite(g, pi, eff); g.ufx.push({ kind: ult.fx, x: g.bases[pi].x, y: g.bases[pi].y, owner: pi }); continue; }
+      if (eff.kind === "heal") {
+        for (const u of g.units) if (u.owner === pi) u.hp = Math.min(u.maxHp, u.hp + eff.amount);
+        for (const e of g.units) if (e.owner !== pi && e.hp > 0 && g.units.some((u) => u.owner === pi && cheb(u.x, u.y, e.x, e.y) <= eff.radius)) e.hp -= eff.aoeDamage;
+        g.ufx.push({ kind: ult.fx, x: g.bases[pi].x, y: g.bases[pi].y, owner: pi });
+        continue;
+      }
+      // strike: hit the densest enemy knot; with no enemy units (e.g. forged at match start),
+      // fall back to the enemy base so the visual still plays and the AoE lands on their base.
+      const tgt = densestEnemyCluster(g, pi, eff.radius) ?? g.bases.find((_, bi) => bi !== pi) ?? null;
+      if (!tgt) continue;
+      for (const e of g.units) if (e.owner !== pi && e.hp > 0 && cheb(e.x, e.y, tgt.x, tgt.y) <= eff.radius) {
+        if (eff.damage) e.hp -= eff.damage;
+        if (eff.disableTicks) e.disabledUntil = g.tick + eff.disableTicks;
+        if (eff.pull) { const nx = e.x + sign(tgt.x - e.x) * GRID_SCALE, ny = e.y + sign(tgt.y - e.y) * GRID_SCALE; if (passable(g, nx, ny)) { e.x = nx; e.y = ny; } }
+      }
+      g.ufx.push({ kind: ult.fx, x: tgt.x, y: tgt.y, owner: pi });
+    }
+  }
 }
 
 /** Effective spec for a unit this tick: an active field-override wins over native
@@ -489,6 +617,38 @@ function moveToward(g: GameState, u: UnitState, tx: number, ty: number) {
 
 // Sophisticated path to a DYNAMIC target: a global flow field (BFS from the goal) routes around
 // terrain/cliffs at range, with the local greedy stepper handling the final approach + occupancy.
+// Fast fixed-wing flyers (jets/banshees) never stop: they hold forward momentum and bank toward the
+// target by a capped turn rate, so they overshoot and make WIDE sweeping passes (turn radius ≈ 1/FLY_TURN
+// fine cells). `_hdg` is the persisted flight heading (radians); position becomes fractional (in the air).
+const FLY_TURN = 0.038; // max radians turned per fine-cell step → very wide arcs (turn radius ≈ 26 fine cells)
+const FLY_FIRE_ARC = 0.9; // can only fire on a target within ±~52° of its nose (ahead, never behind)
+const REAR_ARC = 1.9; // heavy gunship: target must be >~109° off the nose (behind it) to be in the rear-gun arc
+const FLY_OOB = 80; // how far (fine cells) a flyer may stray off-map to complete a wide bank before being pulled back
+function flyMomentum(g: GameState, u: UnitState, tx: number, ty: number) {
+  const h0 = (u as any)._hdg;
+  const cur = typeof h0 === "number" ? h0 : Math.atan2(u.dy || (u.owner === 0 ? -1 : 1), u.dx || 0.0001);
+  // desired direction = toward the target, plus an inward pull applied ONLY once past the map border,
+  // so a flyer may briefly overshoot off-map and arc back at its true turn radius (never banks early).
+  let ax = tx - u.x, ay = ty - u.y;
+  const reach = Math.hypot(ax, ay) || 1;
+  ax /= reach; ay /= reach; // unit vector toward target
+  // only correct inward once actually PAST the border (bias grows with how far off), so a flyer may
+  // briefly cross the edge and arc back at its own turn radius instead of banking early / sliding the wall.
+  if (u.x < 0) ax += Math.min(2, -u.x / 15);
+  else if (u.x > GRID_W - 1) ax -= Math.min(2, (u.x - (GRID_W - 1)) / 15);
+  if (u.y < 0) ay += Math.min(2, -u.y / 15);
+  else if (u.y > GRID_H - 1) ay -= Math.min(2, (u.y - (GRID_H - 1)) / 15);
+  let diff = Math.atan2(ay, ax) - cur;
+  while (diff > Math.PI) diff -= 2 * Math.PI;
+  while (diff < -Math.PI) diff += 2 * Math.PI;
+  const turnCap = u.unit === "interceptor" ? FLY_TURN / 3 : FLY_TURN; // interceptor banks a third as hard → 3× turn radius
+  const hdg = cur + Math.max(-turnCap, Math.min(turnCap, diff));
+  (u as any)._hdg = hdg;
+  u.dx = Math.cos(hdg); u.dy = Math.sin(hdg); // facing follows the flight path (renderer reads atan2(dy,dx))
+  // ALWAYS advance — clamp into bounds so at worst it slides along the edge while banking away (never frozen).
+  u.x = Math.max(-FLY_OOB, Math.min(GRID_W - 1 + FLY_OOB, u.x + Math.cos(hdg))); // brief off-map excursion allowed
+  u.y = Math.max(-FLY_OOB, Math.min(GRID_H - 1 + FLY_OOB, u.y + Math.sin(hdg)));
+}
 function navigate(g: GameState, u: UnitState, tx: number, ty: number) {
   if (cheb(u.x, u.y, tx, ty) > 2 * GRID_SCALE) {
     const field = flowTo(g, tx, ty);
@@ -539,6 +699,7 @@ function packCenter(g: GameState, u: UnitState, R: number): { x: number; y: numb
 }
 
 function decide(g: GameState, u: UnitState) {
+  if ((u.disabledUntil ?? 0) > g.tick) return; // frozen by a Stasis Field — can't move or fire
   const stats = UNIT_STATS[u.unit];
   const period = (n: number) => Math.max(1, Math.round(n * SPEED_MULT));
   const mods = playerMods(g, u.owner);
@@ -546,7 +707,7 @@ function decide(g: GameState, u: UnitState) {
   // FRACTIONAL speed: accumulate cells/tick (no integer-period rounding, so the per-type ratio is
   // exact — a tank with moveEvery 2× a gunner's moves at exactly half a gunner's speed, always).
   //   cells/tick = (GRID_SCALE / moveEvery) × Engines-speedup ÷ (global × doctrine × morale slowdowns)
-  const slow = SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale);
+  const slow = SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale) * (u.slowMult ?? 1);
   const cellsPerTick = stats.stationary ? 0 : (GRID_SCALE / stats.moveEvery) * (1 + bonus.speed * 0.1) / slow;
   const acc = ((u as any)._acc || 0) + cellsPerTick;
   const stepBoost = Math.floor(acc); // whole cells to advance this tick (0,1,2…)
@@ -563,6 +724,27 @@ function decide(g: GameState, u: UnitState) {
   if (stats.stationary) {
     const e = nearestEnemy(g, u);
     if (e) { u.dx = sign(e.x - u.x); u.dy = sign(e.y - u.y); if (cheb(u.x, u.y, e.x, e.y) <= range) atk(e); } // aim at target
+    return;
+  }
+
+  // 0b) FAST FIXED-WING FLYERS (jets/banshees): never stop. Hold momentum and bank into wide turns —
+  // sweep the nearest enemy (or push the enemy base when none in sight), firing on the pass, then arc
+  // back around. They overshoot rather than hover, so they can't "stall and fall".
+  if (stats.momentum) {
+    const tgt = isScout ? null : nearestEnemy(g, u);
+    const foeBase = g.bases.find((b) => b.owner !== u.owner);
+    const tx = tgt ? tgt.x : foeBase ? foeBase.x : g.bases[u.owner].x;
+    const ty = tgt ? tgt.y : foeBase ? foeBase.y : g.bases[u.owner].y;
+    // FORWARD GUNS ONLY: fire only when the target is within a cone ahead of the nose (never behind).
+    if (tgt && cheb(u.x, u.y, tgt.x, tgt.y) <= range) {
+      const hdg = typeof (u as any)._hdg === "number" ? (u as any)._hdg : Math.atan2(u.dy || (u.owner === 0 ? -1 : 1), u.dx || 0.0001);
+      let off = Math.atan2(tgt.y - u.y, tgt.x - u.x) - hdg;
+      while (off > Math.PI) off -= 2 * Math.PI;
+      while (off < -Math.PI) off += 2 * Math.PI;
+      const rear = u.unit === "nod_dronewing"; // heavy gunship fires ONLY backward (rear arc); jets fire forward
+      if (rear ? Math.abs(off) >= REAR_ARC : Math.abs(off) <= FLY_FIRE_ARC) atk(tgt); // strafe on the pass, when lined up
+    }
+    if (canMove) for (let i = 0; i < stepBoost; i++) flyMomentum(g, u, tx, ty);
     return;
   }
 
@@ -692,14 +874,22 @@ function attack(g: GameState, u: UnitState, target: Target) {
   const hit = hash01(u.id + 91, g.tick) < hitChance; // decorrelated from movement/engage rolls
   if (target.unit) underAttack.set(target.unit.id, g.tick); // beacon: this ally is in a fight (hit or not)
   if (hit) {
-    const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult); // outpost/investment + doctrine
+    const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult) * (u.dmgMult ?? 1); // outpost/investment + doctrine + elite
     // high-ground rule: scale damage by elevation delta, clamped; Highland doctrine amplifies it.
     const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
     const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
     const armor = target.owner >= 0 ? playerBonus(g, target.owner).armor : 0; // defender's Armor upgrade
-    target.ref.hp -= Math.max(1, dmg * mult - armor); // armor reduces damage taken, never below 1
+    // weapon-vs-class effectiveness: MG bullets bounce off armor/aircraft; rockets shred them.
+    let cls = 1;
+    if (target.unit) {
+      const tt = UNIT_STATS[target.unit.unit];
+      const isTank = (tt.family ?? target.unit.unit) === "tank", isAir = !!tt.flying;
+      if (stats.mg) cls = isAir ? 0.1 : isTank ? 0.25 : 1;   // very ineffective vs planes, ineffective vs tanks
+      else if (stats.rocket && (isAir || isTank)) cls = 2;    // rockets: extra-effective vs both
+    }
+    target.ref.hp -= Math.max(1, dmg * mult * cls - armor); // armor reduces damage taken, never below 1
   }
-  if (g.shots.length < 240) g.shots.push({ ax: u.x, ay: u.y, bx: target.x, by: target.y, hit, kind: u.unit, owner: u.owner }); // cosmetic, capped
+  if (g.shots.length < 240) g.shots.push({ ax: u.x, ay: u.y, bx: target.x, by: target.y, hit, kind: u.unit, owner: u.owner, scale: u.scale, tid: target.unit?.id }); // cosmetic, capped
 }
 
 export function step(g: GameState) {
@@ -740,13 +930,14 @@ export function step(g: GameState) {
       } else player.queuedInvest = null;
       continue; // no unit training / turret building while saving for the upgrade
     }
+    const trainable = trainableFor(player.faction);
     player.camps.forEach((camp, ci) => {
       const pct = camp.production.budgetPct;
       if (pct <= 0) return;
       const mix = camp.production.mix;
-      const total = TRAINABLE.reduce((a, u) => a + (mix[u] || 0), 0);
+      const total = trainable.reduce((a, u) => a + (mix[u] || 0), 0);
       if (total <= 0) return;
-      TRAINABLE.forEach((u, ui) => {
+      trainable.forEach((u, ui) => {
         const w = mix[u] || 0;
         if (w <= 0) return;
         const cost = Math.round(UNIT_STATS[u].cost * mods.costMult); // doctrine-scaled train cost
@@ -760,11 +951,12 @@ export function step(g: GameState) {
     });
     // turret budget auto-builds a protective turret ring (savings = the unspent remainder)
     if (player.turretBudget > 0) {
-      const tcost = Math.round(UNIT_STATS.turret.cost * mods.turretCostMult);
+      const turretType = FACTION_TURRET[player.faction];
+      const tcost = Math.round(UNIT_STATS[turretType].cost * mods.turretCostMult);
       const interval = Math.max(1, Math.round((tcost * 100) / (INCOME_PER_TICK * player.turretBudget)));
       if ((g.tick + pi * 5) % interval === 0 && player.resources >= tcost) {
         const spot = freeTurretSlot(g, pi);
-        if (spot) { player.resources -= tcost; spawnUnit(g, pi, null, "turret", spot); }
+        if (spot) { player.resources -= tcost; spawnUnit(g, pi, null, turretType, spot); }
       }
     }
   }
@@ -779,12 +971,23 @@ export function step(g: GameState) {
     p.moraleBoost = Math.max(0, p.moraleBoost - 0.35 / (30 * TICK_HZ)); // a booster lasts ~30s
   }
   g.players.forEach((p, i) => (p.morale = computeMorale(g, i)));
+  // ARTIFACTS: regen elites, drip artifact drops near each base, harvest the ones in reach.
+  for (const u of g.units) if (u.regen) u.hp = Math.min(u.maxHp, u.hp + u.regen); // titan self-heal
+  for (let pi = 0; pi < g.players.length; pi++) {
+    const p = g.players[pi];
+    if (g.tick >= p.nextDropTick && g.drops.filter((d) => d.owner === pi).length < DROP_CAP) { spawnDrop(g, pi); p.nextDropTick = g.tick + DROP_EVERY; }
+  }
+  harvestDrops(g);
   // decide() self-gates movement/attack per unit type (deterministic, staggered by id).
   for (const u of g.units) decide(g, u);
   occ = null;
+  fireUltimates(g); // ULTIMATES: strikes/spawns/heals — strike kills flow through the casualty pass below
+
   // tally casualties this tick → recent losses (drags morale). The sandstorm is an act of nature, not
   // a defeat — units lost to it don't crater morale (else both armies would rebuild demoralized).
   if (!g.sandstorm) for (const u of g.units) if (u.hp <= 0 && !UNIT_STATS[u.unit].building) g.players[u.owner].recentLosses += 1;
+  // death FX events (combat only — the sandstorm wipe has its own visual and would spawn hundreds)
+  if (!g.sandstorm) for (const u of g.units) if (u.hp <= 0) g.deaths.push({ x: u.x, y: u.y, kind: u.unit, owner: u.owner, id: u.id, scale: u.scale });
   for (const u of g.units) if (u.hp <= 0) underAttack.delete(u.id); // drop dead units from the support beacons
   g.units = g.units.filter((u) => u.hp > 0);
   // a sieged outpost reverts to neutral (recapturable) rather than being destroyed
@@ -821,7 +1024,7 @@ function freeTurretSlot(g: GameState, owner: number): { x: number; y: number } |
         const y = Math.round(anchor.y + Math.sin(ang) * R);
         if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_H) continue;
         if (!passable(g, x, y)) continue;
-        if (g.units.some((u) => u.owner === owner && u.unit === "turret" && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2 * GRID_SCALE)) continue;
+        if (g.units.some((u) => u.owner === owner && UNIT_STATS[u.unit].building && Math.max(Math.abs(u.x - x), Math.abs(u.y - y)) <= 2 * GRID_SCALE)) continue;
         return { x, y };
       }
     }
@@ -834,6 +1037,7 @@ function pub(u: UnitState): UnitState {
   return {
     id: u.id, owner: u.owner, camp: u.camp, unit: u.unit, dx: u.dx, dy: u.dy, x: u.x, y: u.y,
     hp: u.hp, maxHp: u.maxHp, overrideUntil: u.overrideUntil, overrideLabel: u.overrideLabel,
+    scale: u.scale, disabledUntil: u.disabledUntil, // elites render bigger; frozen units show a stasis tint
   };
 }
 
@@ -868,6 +1072,18 @@ export function visibleShots(g: GameState, player: number): Shot[] {
   const src = visionSources(g, player);
   const see = (x: number, y: number) => src.some((s) => cheb(s.x, s.y, x, y) <= s.r);
   return g.shots.filter((s) => s.owner === player || see(s.ax, s.ay) || see(s.bx, s.by));
+}
+
+/** Deaths `player` should see this broadcast: their own units, or deaths within their vision. */
+export function visibleDeaths(g: GameState, player: number): Death[] {
+  const src = visionSources(g, player);
+  return g.deaths.filter((d) => d.owner === player || src.some((s) => cheb(s.x, s.y, d.x, d.y) <= s.r));
+}
+
+/** Ultimate-effect events `player` should see: their own, or any within their vision. */
+export function visibleUfx(g: GameState, player: number): UltimateFx[] {
+  const src = visionSources(g, player);
+  return g.ufx.filter((f) => f.owner === player || src.some((s) => cheb(s.x, s.y, f.x, f.y) <= s.r));
 }
 
 /** Apply a field-general order as a time-boxed override on the targeted units. */

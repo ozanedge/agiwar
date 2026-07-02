@@ -28,7 +28,7 @@
       body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 51; mix-blend-mode: screen;
         background: repeating-linear-gradient(to bottom, rgba(0,255,209,.022) 0, rgba(0,255,209,.022) 1px, transparent 1px, transparent 3px); }
 
-      #app { display: grid; grid-template-columns: 332px 1fr 320px; grid-template-rows: 40px 1fr 248px; height: 100vh; }
+      #app { display: grid; grid-template-columns: 332px 1fr 232px; grid-template-rows: 40px 1fr 248px; height: 100vh; }
       /* full-width morale bar across the very top */
       #topbar { grid-column: 1 / 4; grid-row: 1; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--edge); background: var(--bg-panel); backdrop-filter: blur(6px); box-shadow: inset 0 0 30px rgba(0,255,209,.05); }
       #topbar .tbl { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); text-shadow: 0 0 7px rgba(0,255,209,.5); white-space: nowrap; }
@@ -80,6 +80,45 @@
       #fglog { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
       .logline { border-left: 2px solid var(--accent-dim); padding: 3px 7px; background: rgba(0,255,209,.04); color: #b9d6cf; }
       .logline b { color: var(--accent); }
+      /* ---- artifacts / forge / ultimates ---- */
+      #right h4 { margin: 0; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-dim); }
+      #inv-grid { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px; }
+      /* each artifact is a card: full-width square art on top, info below (Magic-the-Gathering style) */
+      .art { display: flex; flex-direction: column; border: 1px solid var(--edge); border-radius: 9px; overflow: hidden; background: rgba(6,12,20,.6); cursor: pointer; transition: border-color .12s, box-shadow .12s, transform .08s; }
+      .art:hover { border-color: var(--accent-dim); transform: translateY(-2px); }
+      .art.sel { border-color: var(--accent); box-shadow: 0 0 16px rgba(0,255,209,.28); }
+      .art.empty { opacity: .4; }
+      .art .art-img { position: relative; width: 100%; height: 84px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--edge); }
+      .art .ico { width: 58px; height: 58px; filter: drop-shadow(0 0 10px currentColor); }
+      .art .ico svg { width: 100%; height: 100%; display: block; }
+      .art .ct { position: absolute; top: 8px; right: 8px; min-width: 22px; height: 22px; padding: 0 5px; display: flex; align-items: center; justify-content: center; border-radius: 11px; background: rgba(2,6,10,.7); border: 1px solid rgba(255,255,255,.28); font-size: 12px; font-weight: 700; color: #fff; }
+      .art .meta { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px 8px; text-align: center; }
+      .art .nm { font-size: 12px; font-weight: 700; color: #e9f4f0; letter-spacing: .02em; }
+      .art .tg { font-size: 8.5px; color: #7e8e9c; letter-spacing: .16em; text-transform: uppercase; }
+      #forge { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+      .bench { display: flex; align-items: center; justify-content: center; gap: 6px; }
+      .bench .plus { color: #6b7a8d; font-size: 15px; }
+      .slot { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--edge); border-radius: 8px; background: rgba(6,12,20,.5); cursor: pointer; transition: border-color .12s; }
+      .slot.empty { color: #45525e; font-size: 20px; }
+      .slot.filled { border-style: solid; border-color: currentColor; filter: drop-shadow(0 0 6px currentColor); }
+      .slot.filled:hover { opacity: .75; }
+      .slot svg { width: 26px; height: 26px; }
+      .forge-prev { padding: 7px 9px; border: 1px solid var(--edge); border-radius: 6px; background: rgba(155,48,255,.06); min-height: 18px; }
+      .forge-prev .fhead { display: flex; align-items: center; gap: 6px; }
+      .forge-prev .fico { width: 18px; height: 18px; color: #c98bff; flex-shrink: 0; filter: drop-shadow(0 0 5px #9b30ff); }
+      .forge-prev .fico svg { width: 100%; height: 100%; display: block; }
+      .forge-prev .fn { color: #c98bff; font-weight: 700; }
+      .forge-prev .fb { color: #9fb5ad; font-size: 10px; display: block; margin-top: 3px; line-height: 1.35; }
+      #forge .send { padding: 8px; }
+      #forge .send:disabled { opacity: .4; cursor: default; }
+      #ults { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; }
+      .ult { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border: 1px solid rgba(155,48,255,.3); border-radius: 6px; background: rgba(155,48,255,.07); font-size: 10px; }
+      .ult .uico { width: 16px; height: 16px; color: #c98bff; flex-shrink: 0; filter: drop-shadow(0 0 4px #9b30ff); }
+      .ult .uico svg { width: 100%; height: 100%; display: block; }
+      .ult .un { color: #d0a0ff; font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ult .uc { width: 30px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; flex-shrink: 0; }
+      .ult .uc i { display: block; height: 100%; background: #b26bff; }
+      .ult .us { font-size: 9px; color: #b59fd0; min-width: 22px; text-align: right; }
       .logline .t { color: #5b6b6a; }
       .panel { background: rgba(6, 12, 20, 0.6); border: 1px solid var(--edge); border-radius: 6px; padding: 9px; min-width: 224px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,255,209,.04), 0 0 18px rgba(0,255,209,.05); }
       #camps { display: flex; gap: 10px; }
@@ -189,7 +228,14 @@
       .dtimer .ring { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; filter: drop-shadow(0 0 4px rgba(0,255,209,.6)); }
       .dtimer text { fill: var(--text); font: 700 14px "JetBrains Mono", monospace; text-anchor: middle; }
       .dpanel h3 { margin: 0 0 2px; color: var(--accent); letter-spacing: .14em; text-transform: uppercase; font-size: 15px; text-shadow: 0 0 10px rgba(0,255,209,.5); }
-      .dsub { color: rgba(0,255,209,.5); font-size: 11px; margin-bottom: 14px; }
+      .dsub { color: rgba(0,255,209,.5); font-size: 11px; margin-bottom: 12px; }
+      .facrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+      .facbtn { text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 11px 14px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(255,255,255,.03); cursor: pointer; transition: background .12s, box-shadow .12s, border-color .12s; }
+      .facbtn .facn { color: var(--fac); font-weight: 700; font-size: 14px; letter-spacing: .06em; }
+      .facbtn .facb { color: #9db8b2; font-size: 10.5px; line-height: 1.4; }
+      .facbtn:hover { background: rgba(255,255,255,.06); }
+      .facbtn.sel { border-color: var(--fac); background: color-mix(in srgb, var(--fac) 14%, transparent); box-shadow: 0 0 14px color-mix(in srgb, var(--fac) 35%, transparent); }
+      .facros { color: #9db8b2; font-size: 10.5px; letter-spacing: .03em; margin: 0 2px 14px; opacity: .9; }
       .dcards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
       .dcard { text-align: left; display: grid; grid-template-columns: 64px 1fr; grid-template-rows: auto auto auto; column-gap: 13px; row-gap: 3px; align-items: center; padding: 13px 14px; border: 1px solid rgba(0,255,209,.2); border-radius: 8px; background: rgba(0,255,209,.04); cursor: pointer; transition: background .12s, box-shadow .12s, transform .08s; }
       .dcard .dicon { grid-column: 1; grid-row: 1 / 4; width: 64px; height: 64px; color: var(--accent); filter: drop-shadow(0 0 9px rgba(0,255,209,.45)); }
@@ -251,8 +297,12 @@
       </div>
       <div id="controls"></div>
       <div id="right">
-        <h4>Command log</h4>
-        <div id="fglog"></div>
+        <h4>Artifacts</h4>
+        <div id="inv-grid"></div>
+        <h4 style="margin-top:4px">Forge Ultimate</h4>
+        <div id="forge"></div>
+        <h4 style="margin-top:4px">Active Ultimates</h4>
+        <div id="ults"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

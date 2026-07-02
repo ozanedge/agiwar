@@ -3,8 +3,9 @@
 // Matchmaking pairs two humans into a PvP room; a solo player gets a bot opponent.
 import { WebSocketServer, WebSocket } from "ws";
 import type { Camp, ClientMsg, ServerMsg } from "../../shared/types.js";
-import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyArmyDoctrine, applyFieldOrder, clearFieldOrder, computeVisibleState, visibleShots, boosterCost, newGame, playerBonus, spawnUnit, step } from "./sim.js";
-import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE } from "../../shared/units.js";
+import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyArmyDoctrine, applyFieldOrder, clearFieldOrder, computeVisibleState, visibleShots, visibleDeaths, visibleUfx, forgeUltimate, boosterCost, newGame, playerBonus, spawnUnit, setFaction, step } from "./sim.js";
+import { ULTIMATES } from "../../shared/ultimates.js";
+import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE, type Faction, FACTIONS, FACTION_TURRET, trainableFor } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
@@ -56,11 +57,20 @@ const sendState = (ws: WebSocket, g: GameState, player: number, includeShots = f
     bonuses: b, invest: g.players[player].invest, queuedInvest: g.players[player].queuedInvest,
     morale: g.players[player].morale, boosterCost: boosterCost(g, player),
     armyDoctrine: g.players[player].armyDoctrine,
+    faction: g.players[player].faction, factions: g.players.map((p) => p.faction),
     rally: g.players[player].rally ? { x: g.players[player].rally!.x, y: g.players[player].rally!.y } : null,
     sandstorm: g.sandstorm
       ? { progress: Math.min(1, (g.tick - g.sandstorm.from) / Math.max(1, g.sandstorm.until - g.sandstorm.from)), secsLeft: Math.ceil((g.sandstorm.until - g.tick) / TICK_HZ) }
       : null,
     shots: includeShots ? visibleShots(g, player) : [],
+    deaths: includeShots ? visibleDeaths(g, player) : [],
+    ufx: includeShots ? visibleUfx(g, player) : [],
+    drops: g.drops.filter((d) => d.owner === player), // you only see (and can harvest) your own
+    artifacts: g.players[player].artifacts.slice(),
+    ultimates: g.players[player].ultimates.map((a) => {
+      const iv = (ULTIMATES[a.id]?.intervalSec ?? 15) * TICK_HZ;
+      return { id: a.id, cooldown: Math.max(0, Math.min(1, 1 - (a.nextFire - g.tick) / iv)) };
+    }),
     ...computeVisibleState(g, player), you: player,
   });
 };
@@ -81,9 +91,11 @@ async function recompileCamp(ws: WebSocket, g: GameState, player: number, camp: 
   camp.compiling = true;
   sendOwnCamps(ws, g, player); // reflect "compiling…"
   try {
-    const { spec, mix, source } = await compilePolicy(camp.prompt);
+    const trainable = trainableFor(g.players[player].faction);
+    const { spec, mix, source } = await compilePolicy(camp.prompt, trainable);
     camp.spec = spec;
-    if (mix) camp.production.mix = mix; // the general also chooses what it trains
+    // only accept a mix that actually trains this faction's units (a stub/foreign mix would zero production)
+    if (mix && trainable.some((u) => (mix[u] ?? 0) > 0)) camp.production.mix = mix;
     send(ws, { type: "notice", level: "info", text: `${camp.label} retrained via ${source}.` });
   } catch (err) {
     send(ws, { type: "notice", level: "error", text: `${camp.label} retrain failed (${(err as Error).message}).` });
@@ -94,27 +106,29 @@ async function recompileCamp(ws: WebSocket, g: GameState, player: number, camp: 
   }
 }
 
+// Spawn a player's opening forces — uses their (already-set) faction's turret + roster units.
 function seed(g: GameState, player: number, bot: boolean) {
   const b = g.bases[player];
-  spawnUnit(g, player, null, "turret", { x: b.x, y: b.y + (player === 0 ? -1 : 1) * 3 * GRID_SCALE }); // starting strongpoint, toward the field
+  spawnUnit(g, player, null, FACTION_TURRET[g.players[player].faction], { x: b.x, y: b.y + (player === 0 ? -1 : 1) * 3 * GRID_SCALE }); // starting strongpoint, toward the field
   if (bot) { for (let i = 0; i < 4; i++) spawnUnit(g, player, "aggressive"); return; }
   for (const c of ["aggressive", "recon", "defensive"] as const) { spawnUnit(g, player, c); spawnUnit(g, player, c); }
 }
+const randFaction = (): Faction => FACTIONS[Math.floor(Math.random() * FACTIONS.length)];
 
 function createRoom(humans: WebSocket[], bot: boolean) {
   const mapSeed = (Math.floor(Math.random() * 0x100000000) ^ ((roomSeq + 1) * 2654435761)) >>> 0; // fresh per match (random + room counter), stable within it
   const game = newGame(mapSeed);
-  seed(game, 0, false);
-  seed(game, 1, bot);
   const members: Member[] = humans.map((ws, i) => ({ ws, player: i }));
   const runners: (FieldGeneralRunner | null)[] = [createFieldGeneral(0), bot ? null : createFieldGeneral(1)];
   const advisors: (AdvisorRunner | null)[] = [createAdvisor(0), bot ? null : createAdvisor(1)];
   const decisions: (DecisionRunner | null)[] = [createDecisionRunner(0), bot ? null : createDecisionRunner(1)];
 
-  // the sim stays PAUSED until every HUMAN picks a doctrine; non-human (bot) slots are pre-chosen.
+  // the sim stays PAUSED until every HUMAN picks a doctrine + faction; non-human (bot) slots are pre-chosen.
   const isHuman = [false, false];
   for (const m of members) isHuman[m.player] = true;
   const chosen = [0, 1].map((i) => !isHuman[i]);
+  // Bots get a random faction + opening forces now; humans are seeded when they pick (see chooseArmyDoctrine).
+  for (const i of [0, 1]) if (!isHuman[i]) { setFaction(game, i, randFaction()); seed(game, i, true); }
 
   const room: Room = {
     id: roomSeq++, game, members, runners, advisors, decisions, bot, netTick: 0, over: false,
@@ -129,7 +143,7 @@ function createRoom(humans: WebSocket[], bot: boolean) {
     send(m.ws, { type: "notice", level: "info", text: `Matched — you are Player ${m.player + 1} (vs ${bot ? "bot" : "human"}). Pick your doctrine to begin.` });
     sendOwnCamps(m.ws, game, m.player);
     sendState(m.ws, game, m.player);
-    send(m.ws, { type: "doctrineOffer", current: game.players[m.player].armyDoctrine }); // pick a build identity (sim is paused until chosen)
+    send(m.ws, { type: "doctrineOffer", current: game.players[m.player].armyDoctrine, faction: game.players[m.player].faction }); // pick a faction + build identity (sim is paused until chosen)
   }
   console.log(`[room ${room.id}] created · ${bot ? "vs bot" : "PvP"} · awaiting doctrine pick · ${rooms.size} active`);
 }
@@ -137,6 +151,9 @@ function createRoom(humans: WebSocket[], bot: boolean) {
 // Begin the match once doctrines are locked in — unpauses the sim loop. Idempotent.
 function startMatch(room: Room) {
   if (room.started || room.over) return;
+  // backstop: any human who never picked gets seeded now with the default faction so they aren't empty.
+  const human = [false, false]; for (const m of room.members) human[m.player] = true;
+  for (let i = 0; i < room.chosen.length; i++) if (human[i] && !room.chosen[i]) { seed(room.game, i, false); room.chosen[i] = true; }
   room.started = true;
   if (room.startTimer) { clearTimeout(room.startTimer); room.startTimer = null; }
   for (const m of room.members) send(m.ws, { type: "notice", level: "info", text: "▸ Doctrine locked — battle begins." });
@@ -174,6 +191,8 @@ function tickRoom(room: Room) {
   if (++room.netTick % NET_EVERY === 0) {
     for (const m of room.members) sendState(m.ws, g, m.player, true); // egress: NET_HZ, fogged per player (incl. shots)
     g.shots.length = 0; // shots consumed by this broadcast
+    g.deaths.length = 0; // deaths consumed by this broadcast
+    g.ufx.length = 0; // ultimate FX consumed by this broadcast
   }
 }
 
@@ -359,10 +378,24 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
   if (msg.type === "chooseArmyDoctrine") {
     const d = ARMY_DOCTRINES.find((x) => x.id === msg.id);
     if (!d) return;
+    const firstPick = !room.chosen[player]; // seed opening forces once, on the first pick
+    if (msg.faction === "anthropic" || msg.faction === "openai") setFaction(g, player, msg.faction); // faction BEFORE seeding/doctrine so the roster is right
     applyArmyDoctrine(g, player, d.id); // sets build identity AND seeds the opening budget to match
+    if (firstPick) seed(g, player, false); // spawn this human's faction-correct opening forces
+    // single-player: force the bot to the OPPOSITE faction (so the matchup is always visibly asymmetric,
+    // not a same-color mirror). Re-seed its opening forces since the match is still paused (no ticks yet).
+    if (firstPick && room.bot) {
+      const foe = player === 0 ? 1 : 0;
+      if (!room.members.some((m) => m.player === foe)) {
+        setFaction(g, foe, g.players[player].faction === "anthropic" ? "openai" : "anthropic");
+        g.units = g.units.filter((u) => u.owner !== foe); // drop the bot's random-faction seed units
+        seed(g, foe, true); // reseed with the opposite faction's roster
+      }
+    }
     sendState(ws, g, player);
     sendOwnCamps(ws, g, player); // push the doctrine-aligned camp budgets so the Sankey reflects them
-    send(ws, { type: "notice", level: "info", text: `Army doctrine: ${d.label} — ${d.hint}.` });
+    const fac = g.players[player].faction === "openai" ? "OpenAI" : "Anthropic";
+    send(ws, { type: "notice", level: "info", text: `${fac} · ${d.label} — ${d.hint}.` });
     // gate: the match only begins once EVERY human has locked a doctrine (solo → just this player;
     // PvP → both). Until then the sim stays paused in tickRoom.
     room.chosen[player] = true;
@@ -381,6 +414,29 @@ async function handle(ws: WebSocket, msg: ClientMsg) {
     if (!(x >= 0 && x < GRID_W && y >= 0 && y < GRID_H)) return;
     g.players[player].rally = { x, y, until: g.tick + 30 * TICK_HZ }; // manual rally lasts 30s
     send(ws, { type: "notice", level: "info", text: "Rally point set — forces will concentrate there." });
+    return;
+  }
+
+  if (msg.type === "forgeUltimate") {
+    const ult = ULTIMATES[`${Math.min(msg.a, msg.b)}-${Math.max(msg.a, msg.b)}`];
+    if (forgeUltimate(g, player, msg.a, msg.b)) {
+      sendState(ws, g, player); // refresh inventory + ultimates
+      send(ws, { type: "notice", level: "info", text: `⚡ Forged ULTIMATE: ${ult?.name ?? "?"}.` });
+      // single-player: 5s later the bot opponent forges a RANDOM ultimate from its own army, so the AI keeps pace.
+      const foe = player === 0 ? 1 : 0;
+      if (room.bot && !room.members.some((m) => m.player === foe)) {
+        setTimeout(() => {
+          if (room.over) return;
+          const a = Math.floor(Math.random() * 5), b = Math.floor(Math.random() * 5); // any of the 15 artifact pairs
+          const fp = g.players[foe];
+          fp.artifacts[a] = Math.max(fp.artifacts[a], a === b ? 2 : 1); // top up so the bot can always forge
+          fp.artifacts[b] = Math.max(fp.artifacts[b], 1);
+          forgeUltimate(g, foe, a, b);
+        }, 5000);
+      }
+    } else {
+      send(ws, { type: "notice", level: "error", text: "Not enough artifacts to forge that ultimate." });
+    }
     return;
   }
 
