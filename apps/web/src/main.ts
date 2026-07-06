@@ -1,7 +1,7 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
 import { Application, Container, Graphics, RenderTexture, Sprite, Text, Texture } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
-import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, type UnitType, type Faction, FACTIONS, FACTION_META, FACTION_ROLE_UNIT, ultUnitFor } from "../../../shared/units.js";
+import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, bonusFrac, type UnitType, type Faction, FACTIONS, FACTION_META, FACTION_ROLE_UNIT, ultUnitFor } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
 import { heightAt, elevationAt, elevFromHeight, kindOf, highGroundBonus, CLIFF_SLOPE, type TerrainKind } from "../../../shared/terrain.js";
 import { ARTIFACTS, ULTIMATES, ultimateFor } from "../../../shared/ultimates.js";
@@ -597,6 +597,7 @@ const planeSpan = (sh: number): number => 9.5 - 6.5 * sh;  // wingtip half-span:
 const planeTipX = (sh: number): number => -5.5 - 4.5 * sh; // wingtip sweep: near-straight (slow) → hard-swept back (fast)
 const isDart = (t: string): boolean => t === "jet" || t === "nod_jet"; // Fighter Jet role → small hypersonic-dart sprite
 const isDartShape = (t: string): boolean => isDart(t) || t === "nod_interceptor"; // units drawn as the hypersonic dart (Banshee too)
+const isHoverTank = (t: string): boolean => famOf(t) === "tank" && t.startsWith("nod_"); // OpenAI tanks hover (no tracks); Anthropic tanks run on tracks
 
 // ---- INTERCEPTOR sprite: ported from the high-quality top-down reference model (SVG 200-canvas, nose-up) ----
 // Agiwar art-local space is FORWARD = +x, centred on the origin, so rotate the reference 90°:
@@ -623,14 +624,102 @@ function dashLine(x1: number, y1: number, x2: number, y2: number, dash: number, 
   }
 }
 // ---- DEATH FX: vehicles explode with shrapnel; gunners fall over (handled in reconcileUnits) ----
-interface DeathBlast { gx: number; gy: number; t0: number; scale: number; seed: number; }
+interface DeathBlast { gx: number; gy: number; t0: number; scale: number; seed: number; vx: number; vy: number; }
 const deathBlasts: DeathBlast[] = [];
-const DEATH_MS = 600;
+const DEATH_MS = 1100; // slower-blooming explosion (shockwave/fireball/smoke play out longer)
 const DEATH_BLAST_SCALE: Record<string, number> = { tank: 2.4, turret: 2.1, humvee: 1.6, drone: 1.1, jet: 1.5, gunship: 2.0, mech: 2.0, walker: 1.7, tesla: 1.3, swarmling: 0.9, orb: 1.8 };
-function spawnDeathBlast(gx: number, gy: number, kind: string, uscale = 1) {
+function spawnDeathBlast(gx: number, gy: number, kind: string, uscale = 1, vsx = 0, vsy = 0) {
   if (deathBlasts.length > 120) return;
   // bigger units leave a bigger blast — fold the unit's render scale into the base family blast size.
-  deathBlasts.push({ gx, gy, t0: performance.now(), scale: (DEATH_BLAST_SCALE[famOf(kind)] ?? 1.4) * (0.6 + 0.4 * uscale), seed: Math.random() * TAU });
+  const S = (DEATH_BLAST_SCALE[famOf(kind)] ?? 1.4) * (0.6 + 0.4 * uscale);
+  deathBlasts.push({ gx, gy, t0: performance.now(), scale: S, seed: Math.random() * TAU, vx: vsx, vy: vsy });
+  spawnDebris(gx, gy, kind, uscale, S, vsx, vsy); // physics shrapnel: chunky metal + embers flung with gravity/tumble
+}
+
+// ---- PHYSICS DEBRIS: shards + embers flung on death, integrated per-frame with gravity, drag, tumble, ground bounce ----
+// Fake 3D over the iso ground: `z` is height above the ground plane (px); the piece renders at (x, y − z),
+// its shadow stays at (x, y). Gravity pulls `z` down; on landing it bounces then slides/settles.
+interface Shard { x: number; y: number; z: number; vx: number; vy: number; vz: number; rot: number; vr: number; t0: number; life: number; ember: boolean; size: number; col: number; seed: number; }
+const debris: Shard[] = [];
+const SHARD_COLS = [0x9aa6b2, 0x7b838e, 0x586069, 0x444b54]; // steel greys
+const DEBRIS_TIMESCALE = 0.4; // <1 = slow-motion debris (arcs, fall, tumble all drift through the air slower)
+const FIRE_MS = 3000;         // shrapnel is ablaze for this long, then cools to bare metal
+interface Smoke { x: number; y: number; vx: number; vy: number; t0: number; r: number; }
+const smoke: Smoke[] = [];    // dark grey blast cloud that billows out then dissipates
+const SMOKE_MS = 5000;        // cloud fully fades over 5s
+function spawnDebris(gx: number, gy: number, kind: string, uscale: number, S: number, vsx = 0, vsy = 0) {
+  const s = latestState;
+  if (!s || debris.length > 380) return;
+  const fam = famOf(kind);
+  const cx = isoX(gx, gy), cy = isoY(gx, gy) - elevAt(gx, gy, s.seed, s.gridW, s.gridH) - 6;
+  const z0 = (FLY_LIFT[fam] ?? 0) * uscale; // aircraft burst apart in mid-air, then rain down
+  const iv = 1.0; // shards fully carry the unit's own velocity (launched from its moving reference frame)
+  const now = performance.now();
+  const metal = Math.min(26, Math.round(9 + S * 6));
+  const embers = Math.min(18, Math.round(6 + S * 4));
+  for (let i = 0; i < metal + embers; i++) {
+    const ember = i >= metal;
+    const ang = Math.random() * TAU;
+    const sp = (ember ? 55 : 45) + Math.random() * (ember ? 90 : 130) * S; // outward fling speed
+    debris.push({
+      x: cx, y: cy, z: z0 + Math.random() * 3,
+      vx: Math.cos(ang) * sp + vsx * iv, vy: Math.sin(ang) * sp * 0.62 + vsy * iv, // radial burst + inherited unit momentum
+      vz: (ember ? 90 : 70) + Math.random() * 150 * (0.6 + S * 0.3), // upward launch
+      rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 14, // tumble
+      t0: now, life: (ember ? 1200 : 4600) + Math.random() * (ember ? 800 : 1200), // burn (3s) + cool + fade
+      ember, size: ember ? 1.3 + Math.random() * 1.4 : (1.6 + Math.random() * 2.4) * (0.7 + S * 0.2),
+      col: SHARD_COLS[i % SHARD_COLS.length], seed: Math.random() * TAU,
+    });
+  }
+  // dark grey blast cloud — billows out over the wreck, drifts up, dissipates over 5s
+  const puffs = Math.min(8, Math.round(3 + S * 2));
+  for (let i = 0; i < puffs; i++) {
+    smoke.push({ x: cx + (Math.random() - 0.5) * S * 8, y: cy - z0 * 0.4 + (Math.random() - 0.5) * S * 5, vx: (Math.random() - 0.5) * 10 + vsx * 0.15, vy: -6 - Math.random() * 9 + vsy * 0.15, t0: now, r: S * 3 + Math.random() * S * 3 });
+  }
+}
+function drawDebris(now: number, dtMs: number) {
+  // dark grey smoke cloud (behind the shrapnel): billows in, expands, drifts up, gone by 5s
+  for (let i = smoke.length - 1; i >= 0; i--) {
+    const m = smoke[i], age = now - m.t0;
+    if (age >= SMOKE_MS) { smoke.splice(i, 1); continue; }
+    const k = age / SMOKE_MS, t = age / 1000;
+    const x = m.x + m.vx * t, y = m.y + m.vy * t;             // slow rise + drift
+    const r = m.r * (1 + k * 2.2);                            // expands as it dissipates
+    const alpha = Math.min(1, age / 600) * (1 - k) * 0.5;     // billows in, then fades to nothing
+    fxLayer.circle(x, y, r * 1.15).fill({ color: 0x24262b, alpha: alpha * 0.6 }); // soft outer
+    fxLayer.circle(x, y, r).fill({ color: 0x2e3036, alpha });                      // dark grey body
+  }
+  const dt = Math.min(0.05, dtMs / 1000) * DEBRIS_TIMESCALE;
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const d = debris[i], age = now - d.t0;
+    if (age >= d.life) { debris.splice(i, 1); continue; }
+    d.vz -= 900 * dt;                       // gravity
+    d.z += d.vz * dt;
+    if (d.z <= 0) { d.z = 0; if (d.vz < 0) { d.vz *= -0.42; d.vx *= 0.55; d.vy *= 0.55; d.vr *= 0.5; if (-d.vz < 14) d.vz = 0; } } // bounce + settle
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    const drag = 1 - Math.min(0.9, (d.z > 0 ? 0.6 : 2.4) * dt); // extra drag once it's sliding on the ground
+    d.vx *= drag; d.vy *= drag;
+    d.rot += d.vr * dt;
+    const k = age / d.life, a = Math.max(0, 1 - k * k), sx = d.x, sy = d.y - d.z;
+    fxLayer.ellipse(d.x, d.y, d.size * 1.2, d.size * 0.55).fill({ color: 0x000000, alpha: 0.16 * a }); // ground shadow
+    if (d.ember) {
+      fxLayer.circle(sx, sy, d.size * 1.7).fill({ color: 0xff7a1a, alpha: 0.22 * a }); // glow
+      fxLayer.circle(sx, sy, d.size * 0.85).fill({ color: 0xffe39a, alpha: 0.9 * a });  // hot core
+    } else { // tumbling metal shard — ablaze for FIRE_MS, then cooled bare metal
+      const c = Math.cos(d.rot), si = Math.sin(d.rot), z = d.size;
+      const P = (px: number, py: number): [number, number] => [sx + (px * c - py * si), sy + (px * si + py * c)];
+      const pts = [...P(z, 0), ...P(0.2 * z, 0.7 * z), ...P(-z, 0.3 * z), ...P(-0.4 * z, -0.7 * z)];
+      const fire = Math.max(0, 1 - age / FIRE_MS); // 1 → 0 over 3s
+      if (fire > 0) { // flickering flame wrapping the shard, tapering up like a licking fire
+        const fl = 0.6 + 0.4 * Math.sin(now / 45 + d.seed * 9);
+        fxLayer.circle(sx, sy, z * (2.6 + 1.3 * fl) * fire).fill({ color: 0xff5a1a, alpha: 0.2 * fire * a }); // outer flame
+        fxLayer.circle(sx, sy - z * 0.4, z * (1.6 + 0.7 * fl) * fire).fill({ color: 0xffb24a, alpha: 0.42 * fire * a }); // mid
+        fxLayer.circle(sx, sy - z * 0.8, z * 0.9 * fire).fill({ color: 0xffe39a, alpha: 0.7 * fire * a }); // hot tip
+      }
+      const bodyCol = fire > 0 ? lerpColor(d.col, 0xff6a1a, 0.55 * fire) : d.col; // glowing hot, cooling to steel
+      fxLayer.poly(pts).fill({ color: bodyCol, alpha: a }).stroke({ color: fire > 0 ? 0xffd070 : 0xd7dee6, width: 0.5, alpha: 0.5 * a });
+    }
+  }
 }
 
 function spawnShots(s: StateMsg) {
@@ -702,7 +791,7 @@ function updateHomingMissile(s: StateMsg, p: Proj, st: ShotStyle, sx: number, sy
   return false;
 }
 // ---- WRAITH WINGTIP WINDSTREAMS: white vortices trailing off the outer wingtips, fading to transparent over 5s ----
-interface WindPuff { x: number; y: number; t0: number; vx: number; vy: number; r: number; }
+interface WindPuff { x: number; y: number; t0: number; vx: number; vy: number; r: number; col?: number; am?: number; life?: number; }
 const windPuffs: WindPuff[] = []; // wide-body (wraith) vortex bubbles
 interface TrailPt { x: number; y: number; t0: number; }
 const windTrails = new Map<string, { w: number; pts: TrailPt[] }>(); // fast-jet skinny-line contrails, keyed by `${unitId}:${sign}`
@@ -746,6 +835,15 @@ function emitWind(now: number) {
       while (windPuffs.length > WIND_MAX) windPuffs.shift();
       continue;
     }
+    if (isHoverTank(type)) { // hover tank: two VERY subtle windstreams wisping out from underneath
+      const h = Math.atan2(e.u.dy, e.u.dx) + Math.PI / 4;
+      const fx = Math.cos(h), fy = Math.sin(h), perpx = -fy, perpy = fx;
+      for (const sgn of [-1, 1]) {
+        windPuffs.push({ x: e.holder.x + perpx * sgn * 4, y: e.holder.y + perpy * sgn * 4 + 2, t0: now, vx: -fx * 6 + perpx * sgn * 2, vy: (-fy * 6 + perpy * sgn * 2) * 0.62 + 5, r: 1.4, col: 0x9fd8ff, am: 0.16, life: 1300 });
+      }
+      while (windPuffs.length > WIND_MAX) windPuffs.shift();
+      continue;
+    }
     if (famOf(type) !== "jet") continue; // only planes stream
     if (isDartShape(type)) { // Fighter Jet + Banshee: ONE contrail centered behind the tail
       const p = artPointWorld(e, -8.5, 0);
@@ -774,15 +872,16 @@ function emitWind(now: number) {
 function drawWind(now: number) {
   // wide-body wraith: vortex bubbles that spread + fade
   for (let i = windPuffs.length - 1; i >= 0; i--) {
-    const p = windPuffs[i], age = now - p.t0;
-    if (age >= WIND_MS) { windPuffs.splice(i, 1); continue; }
-    const k = age / WIND_MS;             // 0→1 across the 5s life
+    const p = windPuffs[i], age = now - p.t0, life = p.life ?? WIND_MS;
+    if (age >= life) { windPuffs.splice(i, 1); continue; }
+    const k = age / life;                // 0→1 across its life
     const t = age / 1000;                // seconds, for drift
-    const x = p.x + p.vx * t, y = p.y + p.vy * t; // drift up/out as it dissipates
-    const a = (1 - k) * 0.7;             // fade to fully transparent
+    const x = p.x + p.vx * t, y = p.y + p.vy * t; // drift as it dissipates
+    const a = (1 - k) * 0.7 * (p.am ?? 1); // fade to transparent (am = per-puff subtlety)
     const r = p.r + k * 4.5;             // spread out as it thins
-    fxLayer.circle(x, y, r + 1.6).fill({ color: 0xffffff, alpha: a * 0.3 }); // soft halo
-    fxLayer.circle(x, y, r).fill({ color: 0xffffff, alpha: a });             // bright core
+    const col = p.col ?? 0xffffff;
+    fxLayer.circle(x, y, r + 1.6).fill({ color: col, alpha: a * 0.3 }); // soft halo
+    fxLayer.circle(x, y, r).fill({ color: col, alpha: a });             // core
   }
   // fast jets: super-skinny contrail lines, each segment fading to transparent by its age
   for (const [key, tr] of windTrails) {
@@ -802,7 +901,7 @@ app.ticker.add(() => {
   if (!latestState) return;
   const s = latestState, now = performance.now();
   emitWind(now); // wraiths keep streaming even when nothing else is on the fx layer
-  const idle = !projectiles.length && !deathBlasts.length && !ufxList.length && !windPuffs.length && windTrails.size === 0;
+  const idle = !projectiles.length && !deathBlasts.length && !debris.length && !smoke.length && !ufxList.length && !windPuffs.length && windTrails.size === 0;
   if (idle) { fxLayer.clear(); return; }
   fxLayer.clear();
   drawWind(now); // contrails first, under projectiles/explosions
@@ -866,7 +965,8 @@ app.ticker.add(() => {
     const d = deathBlasts[i], el = now - d.t0;
     if (el >= DEATH_MS) { deathBlasts.splice(i, 1); continue; }
     const k = el / DEATH_MS, S = d.scale;
-    const x = isoX(d.gx, d.gy), y = isoY(d.gx, d.gy) - elevAt(d.gx, d.gy, s.seed, s.gridW, s.gridH) - 6;
+    const drift = Math.min(el / 1000, 0.7); // the blast carries the unit's momentum, then air-brakes
+    const x = isoX(d.gx, d.gy) + d.vx * drift, y = isoY(d.gx, d.gy) - elevAt(d.gx, d.gy, s.seed, s.gridW, s.gridH) - 6 + d.vy * drift;
     fxLayer.circle(x, y, S * 5 + k * S * 30).stroke({ color: 0xff6a1a, width: 3 * (1 - k), alpha: 0.8 * (1 - k) }); // shockwave
     fxLayer.circle(x, y, S * 3 + k * S * 18).stroke({ color: 0xffd23a, width: 2 * (1 - k), alpha: 0.6 * (1 - k) });
     const cf = Math.max(0, 1 - k * 2.4); // fireball flashes then dies
@@ -879,6 +979,7 @@ app.ticker.add(() => {
     }
     fxLayer.circle(x, y - k * 6, S * 5 + k * S * 14).fill({ color: 0x16130f, alpha: 0.18 * (1 - k) }); // smoke
   }
+  drawDebris(now, app.ticker.deltaMS); // physics shrapnel: arcs up/out, tumbles, falls, settles
   if (ufxList.length) drawUfx(s, now); // ULTIMATE FX drawn last, on the freshly-cleared layer
 });
 
@@ -900,6 +1001,37 @@ app.ticker.add(() => {
     d.holder.rotation = e * 1.35; // tip over
     d.holder.alpha = 1 - e; // fade
     d.holder.scale.set(1, 1 - 0.25 * e); // slight collapse
+  }
+});
+
+// destroyed GROUND VEHICLES leave a charred, blackened husk of the body that lingers, then slowly fades.
+interface Wreck { holder: Container; t0: number; }
+const wrecks: Wreck[] = [];
+const WRECK_MS = 10000;
+function leaveWreck(v: UnitView) {
+  v.topG?.clear(); // no hp bar on a wreck
+  if (v.baseG) { // replace the ground glow with a dark scorch mark
+    const { rad } = unitDims(v.u);
+    v.baseG.clear();
+    v.baseG.ellipse(0, 3, rad * 1.3, rad * 0.62).fill({ color: 0x0a0806, alpha: 0.5 });
+    v.baseG.ellipse(0, 3, rad * 0.85, rad * 0.42).fill({ color: 0x000000, alpha: 0.42 });
+  }
+  // patchy char: blacken ~75% of the body's layers, leave ~25% at full original color (burnt, not ash)
+  const CHAR = 0x2b2620;
+  for (const r of v.rotors) if (Math.random() < 0.75) r.tint = CHAR;
+  if (v.spinner && Math.random() < 0.75) v.spinner.tint = CHAR;
+  if (v.legsG && Math.random() < 0.75) v.legsG.tint = CHAR;
+  v.holder.eventMode = "none"; // dead: no hover/click
+  if (wrecks.length > 40) { wrecks[0].holder.destroy({ children: true }); wrecks.shift(); } // cap
+  wrecks.push({ holder: v.holder, t0: performance.now() });
+}
+app.ticker.add(() => {
+  if (!wrecks.length) return;
+  const now = performance.now();
+  for (let i = wrecks.length - 1; i >= 0; i--) {
+    const w = wrecks[i], k = (now - w.t0) / WRECK_MS;
+    if (k >= 1) { w.holder.destroy({ children: true }); wrecks.splice(i, 1); continue; }
+    w.holder.alpha = Math.min(1, 2 * (1 - k)); // hold fully, then fade over the back half of the 10s
   }
 });
 
@@ -1114,6 +1246,7 @@ const MONEY_SVG =
   `<ellipse cx="12" cy="9.4" rx="8" ry="3.2" fill="currentColor" fill-opacity=".6" stroke="currentColor" stroke-width="1.5"/>` +
   `<ellipse cx="9.6" cy="8.7" rx="2.6" ry="0.9" fill="#eafffb" fill-opacity=".55"/>`;
 const UP_PIPS = 6;
+const UP_NOUN: Record<string, string> = { damage: "damage", hp: "max HP", armor: "dmg taken", range: "range & sight", speed: "move speed", income: "income" };
 let upgradesBuilt = false;
 function syncInvest(s: StateMsg) {
   if (!upgradesBuilt) {
@@ -1124,7 +1257,7 @@ function syncInvest(s: StateMsg) {
       row.title = "Click to queue — all other spending pauses while we save up. Click again to cancel.";
       row.innerHTML =
         `<span class="ico">${upIconSVG(inv.kind)}</span>` +
-        `<span class="nm">${inv.label}<small>${inv.effect} per level</small></span>` +
+        `<span class="nm">${inv.label}<small id="up-eff-${inv.kind}">${inv.effect}</small></span>` +
         `<span class="meter" id="up-m-${inv.kind}">${Array.from({ length: UP_PIPS }, () => "<i></i>").join("")}</span>` +
         `<span class="lv" id="up-lv-${inv.kind}"></span>` +
         `<span class="upq" id="up-q-${inv.kind}"></span>`;
@@ -1137,6 +1270,11 @@ function syncInvest(s: StateMsg) {
     const lvl = s.invest[inv.kind] || 0;
     const cost = investCost(inv.base, lvl);
     const queued = s.queuedInvest === inv.kind;
+    // this row's INVESTMENT bonus (its own diminishing pool → Lv0 is +0%; outposts stack separately in the
+    // total shown on the econ bar), plus exactly what the next purchased level would add.
+    const cur = bonusFrac(inv.kind, lvl), next = bonusFrac(inv.kind, lvl + 1), sign = inv.kind === "armor" ? "−" : "+";
+    document.getElementById(`up-eff-${inv.kind}`)!.textContent =
+      `${sign}${Math.round(cur * 100)}% ${UP_NOUN[inv.kind]} · ${sign}${Math.round((next - cur) * 100)}% next lvl`;
     document.getElementById(`up-lv-${inv.kind}`)!.textContent = `Lv${lvl}`;
     const pips = document.getElementById(`up-m-${inv.kind}`)!.children;
     for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("on", i < lvl);
@@ -1165,7 +1303,7 @@ function render(s: StateMsg) {
   if (s.rally) addT(makeRally(s.rally, s));
   for (const a of s.outposts) addT(makeOutpost(a, s));
   for (const d of s.drops ?? []) addT(makeDrop(d, s));
-  for (const b of s.bases) addT(makeBase(b, s));
+  for (const b of s.bases) { addT(makeAirstrip(b, s)); addT(makeBase(b, s)); }
   reconcileUnits(s); // create/update/remove persistent unit holders; the ticker glides them
   if (hovered) hovered = s.units.find((u) => u.id === hovered!.id) ?? null;
   if (pinned) pinned = s.units.find((u) => u.id === pinned!.id) ?? null; // drop the pin if the unit died
@@ -1173,7 +1311,8 @@ function render(s: StateMsg) {
   const allocPct = latestCamps.reduce((a, c) => a + c.production.budgetPct, 0) + latestTurretBudget;
   const spend = Math.round((s.incomePerSec * Math.min(100, allocPct)) / 100);
   const b = s.bonuses;
-  const bonusBits = [b.income && `+${b.income}⛃`, b.range && `+${b.range}rng`, b.hp && `+${b.hp}hp`, b.damage && `+${b.damage}dmg`, b.armor && `−${b.armor}dmg⛨`, b.speed && `+${b.speed * 10}%spd`].filter(Boolean).join(" ");
+  const bp = (m: number) => Math.round((m - 1) * 100); // multiplier → +%
+  const bonusBits = [bp(b.income) > 0 && `+${bp(b.income)}%⛃`, bp(b.range) > 0 && `+${bp(b.range)}%rng`, bp(b.hp) > 0 && `+${bp(b.hp)}%hp`, bp(b.damage) > 0 && `+${bp(b.damage)}%dmg`, b.armor > 0.005 && `−${Math.round(b.armor * 100)}%⛨`, bp(b.speed) > 0 && `+${bp(b.speed)}%spd`].filter(Boolean).join(" ");
   econEl.innerHTML =
     `<span class="econ-ico">${svgIcon(MONEY_SVG)}</span>` +
     `<span class="econ-amt">${s.resources}</span>` +
@@ -1322,6 +1461,21 @@ function makeOutpost(a: StateMsg["outposts"][number], s: StateMsg): Graphics {
   return g;
 }
 
+// a runway/pad behind each base where wounded aircraft land to repair (dark asphalt + centerline + team edge lights)
+function makeAirstrip(b: StateMsg["bases"][number], s: StateMsg): Graphics {
+  const g = new Graphics();
+  const dir = b.owner === 0 ? 1 : -1; // owner 0 base sits at the bottom → strip further down (behind it)
+  const ax = b.x, ay = Math.max(0, Math.min(s.gridH - 1, b.y + dir * 4 * GRID_SCALE));
+  const elev = elevAt(ax, ay, s.seed, s.gridW, s.gridH);
+  const team = b.owner === s.you ? OWN_COLOR : ENEMY_COLOR;
+  const HW = 2.3 * GRID_SCALE, HL = 4.5 * GRID_SCALE;
+  const P = (gx: number, gy: number): [number, number] => [isoX(gx, gy), isoY(gx, gy) - elev];
+  g.poly([...P(ax - HW, ay - HL), ...P(ax + HW, ay - HL), ...P(ax + HW, ay + HL), ...P(ax - HW, ay + HL)]).fill({ color: 0x23262c, alpha: 0.95 }).stroke({ color: 0x14161a, width: 1.5 }); // asphalt pad
+  for (let t = -HL + GRID_SCALE; t < HL - GRID_SCALE * 0.5; t += 2 * GRID_SCALE) // dashed centerline
+    g.poly([...P(ax - 0.35 * GRID_SCALE, ay + t), ...P(ax + 0.35 * GRID_SCALE, ay + t), ...P(ax + 0.35 * GRID_SCALE, ay + t + GRID_SCALE), ...P(ax - 0.35 * GRID_SCALE, ay + t + GRID_SCALE)]).fill({ color: 0xcfd6dd, alpha: 0.45 });
+  for (let t = -HL; t <= HL; t += 2 * GRID_SCALE) for (const sx of [-HW, HW]) { const [ex, ey] = P(ax + sx, ay + t); g.circle(ex, ey, 1.5).fill({ color: team, alpha: 0.8 }); } // edge lights
+  return g;
+}
 function makeBase(b: StateMsg["bases"][number], s: StateMsg): Graphics {
   const g = new Graphics();
   const elev = elevAt(b.x, b.y, s.seed, s.gridW, s.gridH);
@@ -1837,9 +1991,14 @@ function drawSilhouette(g: Graphics, type: UnitType, side: number, t: number) {
     for (const sy of [-7, 7]) g.roundRect(-15, sy - 1.35, 21, 2.7, 1.1).fill(body);
     g.roundRect(-15.6, -7, 2.7, 14, 1).fill(body);
   } else if (fam === "tank") {
-    if (t < 0.16) { // running gear + side skirts (widest, sloped glacis front)
-      g.poly([-10.5, -7.6, 6, -7.6, 11, -4, 11, 4, 6, 7.6, -10.5, 7.6, -12, 3.6, -12, -3.6]).fill(trk); // track shoes
-      g.poly([-9.6, -6, 6.5, -6, 10, -3, 10, 3, 6.5, 6, -9.6, 6]).fill(body); // hull pan
+    if (t < 0.16) { // running gear: Anthropic rides on tracks; OpenAI is a smooth hover skirt
+      if (isHoverTank(type)) {
+        g.roundRect(-11, -6.8, 22.5, 13.6, 5).fill(tint(body, -0.12)); // smooth hover skirt — no tracks
+      } else {
+        g.poly([-10.5, -7.6, 6, -7.6, 11, -4, 11, 4, 6, 7.6, -10.5, 7.6, -12, 3.6, -12, -3.6]).fill(trk); // track shoes
+        for (const sy of [-6.6, 6.6]) for (let tx = -9; tx <= 8; tx += 2.2) g.rect(tx, sy - 1.3, 1.1, 2.6).fill({ color: 0x000000, alpha: 0.3 }); // tread links
+        g.poly([-9.6, -6, 6.5, -6, 10, -3, 10, 3, 6.5, 6, -9.6, 6]).fill(body); // hull pan
+      }
     } else if (t < 0.5) { // hull + glacis
       g.poly([-9.6, -6, 6, -6, 10, -3, 10, 3, 6, 6, -9.6, 6]).fill(body);
     } else if (t < 0.64) { // turret ring
@@ -1908,10 +2067,12 @@ function unitDims(u: StateMsg["units"][number]) {
   const dart = isDart(u.unit);                  // Fighter Jet: small dart sprite (they fly in pairs)
   const banshee = u.unit === "nod_interceptor"; // Banshee: a slightly larger red dart
   const fp0 = dart ? { x: 0.72, y: 0.72 } : banshee ? { x: 0.9, y: 0.9 } : (FOOT[fam] ?? { x: 1, y: 1 });
-  const fp = { x: fp0.x * sc, y: fp0.y * sc };
+  const jetScale = fam === "jet" ? 2 : 1; // double the size of all fixed-wing jets (heavy gunship is the "gunship" family)
+  const fp = { x: fp0.x * sc * jetScale, y: fp0.y * sc * jetScale };
   const rad = Math.round((fam === "tank" || fam === "turret" ? 10 : 8) * (fp.x + fp.y) / 2);
   const H = (fam === "jet" || fam === "gunship") ? 1 : (UNIT_HEIGHT[fam] ?? 8); // all aircraft render flat — no z-stack slab under the body
-  return { fp, rad, lift: (UNIT_LIFT[fam] ?? 2) * sc, H, sc };
+  const lift = (isHoverTank(u.unit) ? 6 : (UNIT_LIFT[fam] ?? 2)) * sc; // Nod tanks hover above the ground
+  return { fp, rad, lift, H, sc };
 }
 const UNIT_LN = { color: 0x05080b, width: 1, alpha: 0.55 };
 // unit BODY color = faction (Anthropic orange / OpenAI light grey); GLOW = allegiance (green ally / red enemy).
@@ -1931,6 +2092,7 @@ function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
   g.ellipse(2.4, 5, 13 * fp.x, 5.2 * fp.y).fill({ color: 0x000000, alpha: 0.14 }); // outer penumbra
   g.ellipse(1.4, 4, 10 * fp.x, 4.2 * fp.y).fill({ color: 0x000000, alpha: 0.2 });
   g.ellipse(0.6, 3, 7.5 * fp.x, 3.2 * fp.y).fill({ color: 0x000000, alpha: 0.26 }); // contact core
+  if (isHoverTank(u.unit)) g.ellipse(0, 4, rad * 1.05, rad * 0.5).fill({ color: 0x6fd2ff, alpha: 0.13 }); // hover glow beneath the chassis
   // ALLEGIANCE GROUND GLOW — every unit (allied = green, enemy = red)
   g.ellipse(0, 1, rad + 13, (rad + 13) * 0.5).fill({ color: glow, alpha: ult ? 0.22 : 0.14 });
   g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: glow, alpha: ult ? 0.32 : 0.22 });
@@ -1951,6 +2113,12 @@ function drawUnitTop(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
   g.rect(-rad, -topY - 6.5, rad * 2, 2.6).fill({ color: 0x05080b, alpha: 0.6 }); // track
   g.rect(-rad, -topY - 6.5, frac * rad * 2, 2.6).fill(hpColor(frac)); // spectrum fill
   if (u.overrideUntil > s.tick) g.circle(0, -topY, rad + 4).stroke({ color: 0xffd76b, width: 1.5, alpha: 0.5 + 0.5 * Math.sin(s.tick / 2) });
+  if (u.repairing) { // pulsing green medical cross — landing/repairing at the airstrip
+    const p = 0.6 + 0.4 * Math.sin(s.tick / 3), cy = -topY - 3;
+    g.circle(0, cy, 3.4).fill({ color: 0x0b3a1e, alpha: 0.6 });
+    g.rect(-1.8, cy - 0.7, 3.6, 1.4).fill({ color: 0x6bffa0, alpha: p });
+    g.rect(-0.7, cy - 1.8, 1.4, 3.6).fill({ color: 0x6bffa0, alpha: p });
+  }
 }
 
 // Wide 4-arm helicopter rotor — drawn once, then SPUN each frame (see the animation ticker). Lives in an
@@ -2037,7 +2205,7 @@ function updateUnitArt(v: UnitView, u: StateMsg["units"][number], s: StateMsg) {
 }
 
 // ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
-interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; spinner: Graphics | null; legsG: Graphics | null; phase: number; pgx: number; pgy: number; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
+interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; spinner: Graphics | null; legsG: Graphics | null; phase: number; pgx: number; pgy: number; vsx: number; vsy: number; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
 const unitViews = new Map<number, UnitView>();
 const transientFx: Container[] = []; // bases/outposts/rally — rebuilt each state (no interpolation)
 
@@ -2057,7 +2225,7 @@ function reconcileUnits(s: StateMsg) {
     if (!e) {
       const holder = new Container();
       holder.eventMode = "static"; holder.cursor = "pointer";
-      e = { holder, art: null, rotors: [], baseG: null, topG: null, spinner: null, legsG: null, phase: 0, pgx: u.x, pgy: u.y, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
+      e = { holder, art: null, rotors: [], baseG: null, topG: null, spinner: null, legsG: null, phase: 0, pgx: u.x, pgy: u.y, vsx: 0, vsy: 0, gx: u.x, gy: u.y, tgx: u.x, tgy: u.y, vr: unitSight(u, s), u };
       const ev = e;
       holder.on("pointerover", () => { hovered = ev.u; updateReadout(); });
       holder.on("pointerout", () => { if (hovered?.id === ev.u.id) { hovered = null; updateReadout(); } });
@@ -2075,7 +2243,11 @@ function reconcileUnits(s: StateMsg) {
   for (const [id, e] of unitViews) if (!live.has(id)) {
     const d = dyingNow.get(id);
     if (d && famOf(d.kind) === "gunner") startFallOver(e); // infantry: tip over + fade (keeps its art briefly)
-    else if (d) { spawnDeathBlast(d.x, d.y, d.kind, d.scale ?? 1); e.holder.destroy({ children: true }); } // vehicle: explode w/ shrapnel
+    else if (d) { // vehicle: explode w/ shrapnel; ground vehicles leave a charred husk, aircraft leave only debris
+      spawnDeathBlast(d.x, d.y, d.kind, d.scale ?? 1, e.vsx, e.vsy);
+      if (UNIT_STATS[d.kind as UnitType]?.flying) e.holder.destroy({ children: true });
+      else leaveWreck(e);
+    }
     else e.holder.destroy({ children: true }); // left vision (fog) — silent removal, no death FX
     unitViews.delete(id);
   }
@@ -2104,6 +2276,11 @@ app.ticker.add(() => {
   const s = latestState, dt = app.ticker.deltaMS;
   for (const e of unitViews.values()) {
     const moved = Math.hypot(e.gx - e.pgx, e.gy - e.pgy);
+    const dtSec = Math.max(0.001, dt / 1000); // screen velocity (px/s), low-passed so a steady mover keeps a
+    const nvx = (isoX(e.gx, e.gy) - isoX(e.pgx, e.pgy)) / dtSec; // stable value (a single-frame sample decays
+    const nvy = (isoY(e.gx, e.gy) - isoY(e.pgx, e.pgy)) / dtSec; // to ~0 between the 5Hz server updates) — inherited by death debris
+    e.vsx += (nvx - e.vsx) * 0.2;
+    e.vsy += (nvy - e.vsy) * 0.2;
     e.pgx = e.gx; e.pgy = e.gy;
     if (e.spinner) e.spinner.rotation += ROTOR_SPD * (dt / 16.67);
     if (e.legsG) {
@@ -2129,12 +2306,13 @@ function updateReadout() {
   if (!u || !latestState) { readoutEl.innerHTML = `<span class="sub">hover a unit to inspect · click to pin</span>`; return; }
   const s = latestState, st = UNIT_STATS[u.unit];
   const mine = u.owner === s.you;
-  const b = mine ? s.bonuses : { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 }; // we only know OUR upgrades
+  const b = mine ? s.bonuses : { income: 1, range: 1, hp: 1, damage: 1, armor: 0, speed: 1 }; // multipliers; we only know OUR upgrades
+  const pct = (m: number) => Math.round((m - 1) * 100); // multiplier → +% for display
   const lv = (k: string) => (mine ? s.invest[k as keyof typeof s.invest] || 0 : 0);
   const h = heightAt(u.x, u.y, s.seed, s.gridW, s.gridH);
   const hg = highGroundBonus(h); // high-ground range/sight bonus on this tile
   const ground = h >= 0.60 ? `<span class="hi">⛰ high ground</span> +${hg} rng/sight` : h < 0.40 ? `<span class="sub">↓ low ground</span>` : `level ground`;
-  const effDmg = st.dmg + b.damage, effRange = st.range + b.range;
+  const effDmg = Math.round(st.dmg * b.damage), effRange = Math.round(st.range * b.range);
   const vision = Math.min(VISION_CAP, (effRange + hg) * VISION_MULT);
   const teamCol = mine ? "#00ffd1" : "#ff6b80";
 
@@ -2145,11 +2323,11 @@ function updateReadout() {
   // UPGRADES block — every army upgrade, its level, and exactly what it does to THIS unit. Active
   // ones are bright; un-purchased ones are dimmed so the picture is complete and unambiguous.
   const upEffect: Record<string, string> = {
-    damage: b.damage ? `+${b.damage} damage` : "+ damage",
-    hp: b.hp ? `+${b.hp} max HP` : "+ max HP",
-    armor: b.armor ? `−${b.armor} damage taken` : "− damage taken",
-    range: b.range ? `+${b.range} range & sight` : "+ range & sight",
-    speed: b.speed ? `+${b.speed * 10}% move speed` : "+ move speed",
+    damage: b.damage > 1 ? `+${pct(b.damage)}% damage` : "+ damage",
+    hp: b.hp > 1 ? `+${pct(b.hp)}% max HP` : "+ max HP",
+    armor: b.armor > 0.005 ? `−${Math.round(b.armor * 100)}% damage taken` : "− damage taken",
+    range: b.range > 1 ? `+${pct(b.range)}% range & sight` : "+ range & sight",
+    speed: b.speed > 1 ? `+${pct(b.speed)}% move speed` : "+ move speed",
     income: "economy-wide (not this unit)",
   };
   const upRows = INVESTMENTS.map((inv) => {
@@ -2172,12 +2350,12 @@ function updateReadout() {
     `<div class="uc-doctrine">${doctrine}</div>` +
     `<div class="uc-hpbar"><div class="uc-hpfill" style="width:${Math.round(frac * 100)}%;background:${hex(hpColor(frac))}"></div><span class="uc-hptxt">${u.hp} / ${u.maxHp} HP</span></div>` +
     `<div class="uc-stats">` +
-    stat("Damage", String(effDmg), b.damage ? `+${b.damage}` : "") +
-    stat("Range", String(effRange) + (hg ? ` <span class="hi">+${hg}</span>` : ""), b.range ? `+${b.range}` : "") +
+    stat("Damage", String(effDmg), b.damage > 1 ? `+${pct(b.damage)}%` : "") +
+    stat("Range", String(effRange) + (hg ? ` <span class="hi">+${hg}</span>` : ""), b.range > 1 ? `+${pct(b.range)}%` : "") +
     stat("Accuracy", st.accuracy > 0 ? Math.round(st.accuracy * 100) + "%" : "—") +
-    stat("Vision", String(vision), b.range ? `+${b.range * VISION_MULT}` : "") +
+    stat("Vision", String(vision), b.range > 1 ? `+${pct(b.range)}%` : "") +
     stat("Fire rate", st.attackEvery >= 9999 ? "—" : `every ${st.attackEvery}t`) +
-    stat("Move", st.stationary ? "stationary" : `every ${st.moveEvery}t${st.flying ? " ✈" : ""}`, b.speed ? `+${b.speed * 10}%` : "") +
+    stat("Move", st.stationary ? "stationary" : `every ${st.moveEvery}t${st.flying ? " ✈" : ""}`, b.speed > 1 ? `+${pct(b.speed)}%` : "") +
     `</div>` +
     `<div class="uc-ups"><div class="uc-ups-h">${mine ? "UPGRADES ON THIS UNIT" : "ENEMY — upgrades unknown"}</div>${mine ? upRows : ""}</div>` +
     `<div class="uc-foot">${ground} · cost ${st.cost} · @ ${u.x},${u.y}</div>` +

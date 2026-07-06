@@ -3,7 +3,7 @@
 import type { OutpostBonusKind } from "./types.js";
 export type UnitType =
   // ANTHROPIC (GDI-style) base + ultimate units — durable, powerful, slower.
-  | "gunner" | "rocket" | "tank" | "humvee" | "drone" | "turret"
+  | "gunner" | "rocket" | "tank" | "humvee" | "drone" | "turret" | "baseturret"
   | "jet" | "interceptor" | "wraith" | "gunship" | "dronewing"
   | "mammoth" | "siege" | "warmech" | "titan"
   | "tesla" | "railwalker" | "spitter" | "spore" | "devourer" | "singularity"
@@ -69,6 +69,7 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   humvee: { label: "APC", maxHp: 16, moveEvery: 2, attackEvery: 4, dmg: 1, cost: 40, range: 4, accuracy: 0.6, mg: true, family: "humvee", blurb: "fast but lightly armored" },
   drone: { label: "Orca Scout", maxHp: 10, moveEvery: 2, attackEvery: 99, dmg: 0, cost: 90, range: 44, accuracy: 0, flying: true, family: "drone", blurb: "unarmed, huge vision, flies over terrain" },
   turret: { label: "Guard Tower", maxHp: 160, moveEvery: 9999, attackEvery: 5, dmg: 7, cost: 220, range: 28, accuracy: 0.85, stationary: true, building: true, family: "turret", blurb: "placed strongpoint" },
+  baseturret: { label: "Base Cannon", maxHp: 400, moveEvery: 9999, attackEvery: 4, dmg: 22, cost: 0, range: 48, accuracy: 0.9, stationary: true, building: true, family: "turret", blurb: "base defense: powerful, long-range emplacement" },
 
   // ===== ULTIMATE SUMMON UNITS — each is excellent at ONE niche and weak elsewhere (no all-rounders).
   // Power is balanced across damage / durability / mobility / range: high firepower comes with low HP,
@@ -87,7 +88,7 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   // ENERGY — high firepower, but fragile.
   tesla:       { label: "Tesla Coil",     maxHp: 60,  moveEvery: 4,  attackEvery: 1, dmg: 4,  cost: 0, range: 7 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "tesla",                 blurb: "shreds with rapid arcs, fragile" },
   railwalker:  { label: "Railgun Walker", maxHp: 65,  moveEvery: 6,  attackEvery: 8, dmg: 34, cost: 0, range: 14 * GRID_SCALE, accuracy: 0.92, summon: true, family: "walker",                blurb: "extreme range & burst, very slow fire" },
-  spitter:     { label: "Acid Spitters",  maxHp: 30,  moveEvery: 3,  attackEvery: 3, dmg: 5,  cost: 0, range: 7 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "swarmling",             blurb: "fragile mid-range squad" },
+  spitter:     { label: "Acid Spitters",  maxHp: 30,  moveEvery: 3,  attackEvery: 4, dmg: 5,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "swarmling",             blurb: "fragile mid-range squad" },
   // BIO — numbers & regeneration, but weak individually.
   spore:       { label: "Spore Swarm",    maxHp: 12,  moveEvery: 2,  attackEvery: 4, dmg: 2,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.65, summon: true, family: "swarmling",             blurb: "huge expendable swarm" },
   devourer:    { label: "Devourer Pack",  maxHp: 55,  moveEvery: 3,  attackEvery: 4, dmg: 5,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.75, summon: true, family: "swarmling",             blurb: "regenerating bio-bruiser pack" },
@@ -114,7 +115,7 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   nod_titan:       { label: "Cyborg Reaper",     maxHp: 160, moveEvery: 7,  attackEvery: 5, dmg: 7,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "mech",                  blurb: "self-healing wall, low damage" },
   nod_tesla:       { label: "Laser Coil",        maxHp: 48,  moveEvery: 3,  attackEvery: 1, dmg: 4,  cost: 0, range: 7 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "tesla",                 blurb: "shreds with rapid arcs, fragile" },
   nod_railwalker:  { label: "Obelisk Walker",    maxHp: 52,  moveEvery: 5,  attackEvery: 7, dmg: 32, cost: 0, range: 14 * GRID_SCALE, accuracy: 0.92, summon: true, family: "walker",                blurb: "extreme range & burst, slow fire" },
-  nod_spitter:     { label: "Chem Spitters",     maxHp: 24,  moveEvery: 3,  attackEvery: 3, dmg: 5,  cost: 0, range: 7 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "swarmling",             blurb: "fragile mid-range squad" },
+  nod_spitter:     { label: "Chem Spitters",     maxHp: 24,  moveEvery: 3,  attackEvery: 4, dmg: 5,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.8,  summon: true, family: "swarmling",             blurb: "fragile mid-range squad" },
   nod_spore:       { label: "Visceroid Swarm",   maxHp: 10,  moveEvery: 2,  attackEvery: 4, dmg: 2,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.65, summon: true, family: "swarmling",             blurb: "huge expendable swarm" },
   nod_devourer:    { label: "Tiberium Fiends",   maxHp: 44,  moveEvery: 3,  attackEvery: 4, dmg: 5,  cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.75, summon: true, family: "swarmling",             blurb: "regenerating bio-bruiser pack" },
   nod_singularity: { label: "Rift Generator",    maxHp: 96,  moveEvery: 8,  attackEvery: 5, dmg: 10, cost: 0, range: 15 * GRID_SCALE, accuracy: 0.9,  flying: true, summon: true, family: "orb",       blurb: "floating well, longest range, slow" },
@@ -134,14 +135,32 @@ export const UNIT_TYPES: UnitType[] = [
 // Permanent, repeatable investments — each level adds to that player's army-wide bonus.
 // (kind matches the outpost bonus pool, so they stack.) Cost escalates per level.
 export const INVESTMENTS: { kind: OutpostBonusKind; label: string; amount: number; base: number; effect: string }[] = [
-  { kind: "damage", label: "Munitions", amount: 1, base: 120, effect: "+1 dmg" },
-  { kind: "hp", label: "Health", amount: 5, base: 120, effect: "+5 hp" },
-  { kind: "armor", label: "Armor", amount: 1, base: 150, effect: "−1 dmg taken" },
-  { kind: "range", label: "Optics", amount: GRID_SCALE, base: 170, effect: "+1 range" },
-  { kind: "speed", label: "Engines", amount: 1, base: 160, effect: "+10% speed" },
-  { kind: "income", label: "Reactor", amount: 1, base: 140, effect: "+1 ⛃/s" },
+  { kind: "damage", label: "Munitions", amount: 1, base: 120, effect: "damage +%" },
+  { kind: "hp", label: "Health", amount: 5, base: 120, effect: "max HP +%" },
+  { kind: "armor", label: "Armor", amount: 1, base: 150, effect: "damage reduction +%" },
+  { kind: "range", label: "Optics", amount: GRID_SCALE, base: 170, effect: "range & sight +%" },
+  { kind: "speed", label: "Engines", amount: 1, base: 160, effect: "move speed +%" },
+  { kind: "income", label: "Reactor", amount: 1, base: 140, effect: "income +%" },
 ];
 export const investCost = (base: number, level: number) => base * (level + 1);
+
+// Army upgrades are PERCENTAGE-based with DIMINISHING RETURNS. `levels` = purchased investment levels
+// + owned outposts of that kind; they map to a bonus fraction that asymptotes toward `cap` (each level
+// adds a shrinking slice, so the 1st level matters most and stacking never runs away). income/range/hp/
+// damage/speed are used as MULTIPLIERS (1 + frac); armor is a damage-REDUCTION fraction.
+export const BONUS_CURVE: Record<OutpostBonusKind, { cap: number; decay: number }> = {
+  damage: { cap: 1.0, decay: 0.75 },
+  hp: { cap: 1.2, decay: 0.78 },
+  armor: { cap: 0.55, decay: 0.75 },
+  range: { cap: 0.5, decay: 0.72 },
+  speed: { cap: 0.5, decay: 0.75 },
+  income: { cap: 1.5, decay: 0.8 },
+};
+export const OUTPOST_LEVELS = 2; // each owned outpost of a kind ≈ this many purchased investment levels
+export const bonusFrac = (kind: OutpostBonusKind, levels: number): number => {
+  const c = BONUS_CURVE[kind];
+  return c.cap * (1 - Math.pow(c.decay, Math.max(0, levels)));
+};
 
 // Units see far beyond their attack range; a base reveals a fixed radius.
 export const VISION_MULT = 9;
@@ -149,6 +168,14 @@ export const VISION_CAP = 42 * GRID_SCALE; // so a long-range scout can't reveal
 export const BASE_VISION = 20 * GRID_SCALE;
 export const visionOf = (u: UnitType) => Math.min(VISION_CAP, UNIT_STATS[u].range * VISION_MULT);
 // Units are trained at a camp; buildings are placed on the map (no doctrine).
+// Fast jets (the "jet" family) fly too quickly for guns to track — only ANTI-AIR units can target them:
+// other jets (air-to-air), rocket infantry, tesla coils, singularities, and base cannons.
+export const isJetUnit = (t: UnitType): boolean => (UNIT_STATS[t].family ?? t) === "jet";
+export const canTargetAir = (t: UnitType): boolean => {
+  const f = UNIT_STATS[t].family ?? t;
+  return f === "jet" || f === "tesla" || f === "orb" || t === "baseturret" || !!UNIT_STATS[t].rocket;
+};
+
 export const TRAINABLE: UnitType[] = UNIT_TYPES.filter((t) => !UNIT_STATS[t].building && !UNIT_STATS[t].summon);
 export const BUILDINGS: UnitType[] = UNIT_TYPES.filter((t) => UNIT_STATS[t].building);
 

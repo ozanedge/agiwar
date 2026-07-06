@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Outpost, OutpostBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, Death, UnitState, ArtifactDrop, UltimateFx } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, bonusFrac, OUTPOST_LEVELS, isJetUnit, canTargetAir, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
 import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
 import { modsFor, budgetFor, type ArmyMods } from "../../shared/doctrine.js";
 import { ARTIFACTS, ULTIMATES, ultimateKey } from "../../shared/ultimates.js";
@@ -154,12 +154,24 @@ export interface GameState {
 }
 
 /** Sum of bonuses from outposts a player currently controls. */
+// PERCENTAGE bonuses with DIMINISHING RETURNS. Accumulate `levels` per kind (purchased investment
+// levels + owned outposts of that kind), then map through the shared curve. income/range/hp/damage/
+// speed come back as MULTIPLIERS (≥1); armor as a damage-REDUCTION fraction (0..cap).
 export function playerBonus(g: GameState, player: number): Bonus {
-  const b: Bonus = { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 };
-  for (const a of g.outposts) if (a.owner === player) b[a.bonus.kind] += a.bonus.amount;
-  const inv = g.players[player].invest; // permanent investments stack with outposts
-  for (const i of INVESTMENTS) b[i.kind] += inv[i.kind] * i.amount;
-  return b;
+  const oc: Record<OutpostBonusKind, number> = { income: 0, range: 0, hp: 0, damage: 0, armor: 0, speed: 0 };
+  for (const a of g.outposts) if (a.owner === player) oc[a.bonus.kind]++;
+  const inv = g.players[player].invest;
+  // investments and captured outposts are SEPARATE diminishing pools that add up — so the upgrade panel
+  // (which shows the investment pool alone) reads cleanly from Lv0, while outposts still stack on top.
+  const frac = (k: OutpostBonusKind) => bonusFrac(k, inv[k] ?? 0) + bonusFrac(k, OUTPOST_LEVELS * oc[k]);
+  return {
+    income: 1 + frac("income"),
+    range: 1 + frac("range"),
+    hp: 1 + frac("hp"),
+    damage: 1 + frac("damage"),
+    speed: 1 + frac("speed"),
+    armor: Math.min(0.85, frac("armor")), // damage-reduction fraction, hard-capped
+  };
 }
 
 export const DEFAULT_FIELD_GENERAL_PROMPT =
@@ -238,6 +250,11 @@ export function newGame(seed = 1): GameState {
   // the field at full resolution. If the bases are truly disconnected, carve a march lane between them.
   if (bfsFrom(g, bases[0].x, bases[0].y)[bases[1].y * GRID_W + bases[1].x] >= 1e9) carveCorridor(grid, bases);
   g.flow = [computeFlow(g, 0), computeFlow(g, 1)]; // route-around-terrain fields, once per match
+  // each base is guarded by two powerful, long-range cannon emplacements (built in, not purchased)
+  for (const base of bases) for (const dx of [-5 * GRID_SCALE, 5 * GRID_SCALE]) {
+    const x = Math.max(0, Math.min(GRID_W - 1, base.x + dx));
+    spawnUnit(g, base.owner, null, "baseturret", { x, y: base.y });
+  }
   return g;
 }
 
@@ -418,7 +435,7 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
   const base = g.bases[owner];
   const jitter = g.units.length;
   const mods = playerMods(g, owner);
-  const hp = Math.round((UNIT_STATS[type].maxHp * UNIT_HP_MULT + playerBonus(g, owner).hp) * (UNIT_STATS[type].building ? mods.turretHpMult : mods.hpMult));
+  const hp = Math.round(UNIT_STATS[type].maxHp * UNIT_HP_MULT * playerBonus(g, owner).hp * (UNIT_STATS[type].building ? mods.turretHpMult : mods.hpMult));
   g.units.push({
     id: g.nextUnitId++,
     owner,
@@ -551,7 +568,12 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
     const d = cheb(u.x, u.y, x, y);
     if (d < bestD) { bestD = d; best = { x, y, owner, ref, unit }; }
   };
-  for (const e of g.units) if (e.owner !== u.owner && e.hp > 0) consider(e.x, e.y, e.owner, e, e);
+  const uAA = canTargetAir(u.unit); // only anti-air units can lock onto fast jets
+  for (const e of g.units) {
+    if (e.owner === u.owner || e.hp <= 0) continue;
+    if (!uAA && isJetUnit(e.unit)) continue; // jets fly too fast for guns to track
+    consider(e.x, e.y, e.owner, e, e);
+  }
   for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b.owner, b);
   for (const a of g.outposts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy outposts
   return best;
@@ -698,6 +720,13 @@ function packCenter(g: GameState, u: UnitState, R: number): { x: number; y: numb
   return n ? { x: sx / n, y: sy / n } : null;
 }
 
+const REPAIR_SECS = 30; // an aircraft repairs from its landing HP back to full over this long
+const AIRSTRIP_BACK = 4 * GRID_SCALE; // cells behind a base (away from the field) where its aircraft land
+const airstripOf = (g: GameState, owner: number) => {
+  const b = g.bases[owner], dir = owner === 0 ? 1 : -1; // owner 0 base sits at the bottom → strip further down (behind it)
+  return { x: b.x, y: Math.max(0, Math.min(GRID_H - 1, b.y + dir * AIRSTRIP_BACK)) };
+};
+
 function decide(g: GameState, u: UnitState) {
   if ((u.disabledUntil ?? 0) > g.tick) return; // frozen by a Stasis Field — can't move or fire
   const stats = UNIT_STATS[u.unit];
@@ -708,15 +737,32 @@ function decide(g: GameState, u: UnitState) {
   // exact — a tank with moveEvery 2× a gunner's moves at exactly half a gunner's speed, always).
   //   cells/tick = (GRID_SCALE / moveEvery) × Engines-speedup ÷ (global × doctrine × morale slowdowns)
   const slow = SPEED_MULT * mods.speedMult * moraleSpeedFactor(g.players[u.owner].morale) * (u.slowMult ?? 1);
-  const cellsPerTick = stats.stationary ? 0 : (GRID_SCALE / stats.moveEvery) * (1 + bonus.speed * 0.1) / slow;
+  const cellsPerTick = stats.stationary ? 0 : (GRID_SCALE / stats.moveEvery) * bonus.speed / slow;
   const acc = ((u as any)._acc || 0) + cellsPerTick;
   const stepBoost = Math.floor(acc); // whole cells to advance this tick (0,1,2…)
   (u as any)._acc = acc - stepBoost; // carry the fraction
   const canMove = stepBoost > 0;
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
+
+  // AIRCRAFT REPAIR: drop below 35% HP → break off, fly home to the airstrip, land, and repair to full
+  // over REPAIR_SECS, then rejoin. Hysteresis: enter at <35%, leave only once fully repaired.
+  if (stats.flying && u.hp < u.maxHp * 0.35) u.repairing = true;
+  if (u.repairing) {
+    const strip = airstripOf(g, u.owner);
+    if (cheb(u.x, u.y, strip.x, strip.y) > 3 * GRID_SCALE) { // still inbound — fly home, out of the fight
+      (u as any)._landAt = undefined;
+      if (canMove) for (let i = 0; i < stepBoost; i++) (stats.momentum ? flyMomentum(g, u, strip.x, strip.y) : moveToward(g, u, strip.x, strip.y));
+    } else { // landed on the pad — hold and repair to full over exactly REPAIR_SECS
+      if ((u as any)._landAt == null) { (u as any)._landAt = g.tick; (u as any)._landHp = u.hp; }
+      const t = Math.min(1, (g.tick - (u as any)._landAt) / (REPAIR_SECS * TICK_HZ));
+      u.hp = (u as any)._landHp + (u.maxHp - (u as any)._landHp) * t;
+      if (t >= 1) { u.hp = u.maxHp; u.repairing = false; (u as any)._landAt = undefined; } // fully repaired → rejoin
+    }
+    return;
+  }
   if (!canMove && !canAttack) return; // between actions this tick — do nothing
 
-  const range = stats.range + bonus.range + hgBonus(g, u.x, u.y); // outpost range + HIGH-GROUND reach
+  const range = stats.range * bonus.range + hgBonus(g, u.x, u.y); // Optics % + HIGH-GROUND reach (flat)
   const isScout = stats.dmg <= 0; // drones: never engage, just scout
   const atk = (t: Target) => { if (canAttack) attack(g, u, t); };
 
@@ -733,8 +779,26 @@ function decide(g: GameState, u: UnitState) {
   if (stats.momentum) {
     const tgt = isScout ? null : nearestEnemy(g, u);
     const foeBase = g.bases.find((b) => b.owner !== u.owner);
-    const tx = tgt ? tgt.x : foeBase ? foeBase.x : g.bases[u.owner].x;
-    const ty = tgt ? tgt.y : foeBase ? foeBase.y : g.bases[u.owner].y;
+    let tx = tgt ? tgt.x : foeBase ? foeBase.x : g.bases[u.owner].x;
+    let ty = tgt ? tgt.y : foeBase ? foeBase.y : g.bases[u.owner].y;
+    // STAY BEHIND THE SCREEN: rather than charging the enemy, prefer to loiter just behind our own
+    // ground front line so the planes aren't so exposed. Anchor on the friendly mobile ground combatant
+    // closest to the enemy and hold a few cells back from it, on our side. (Still fire at anything in range.)
+    if (tgt) {
+      let anchor: UnitState | null = null, bestD = Infinity;
+      for (const f of g.units) {
+        if (f.owner !== u.owner || f.hp <= 0 || f.id === u.id) continue;
+        const fs = UNIT_STATS[f.unit];
+        if (fs.flying || fs.stationary || fs.dmg <= 0) continue; // mobile GROUND combatants only
+        const d = cheb(f.x, f.y, tgt.x, tgt.y);
+        if (d < bestD) { bestD = d; anchor = f; }
+      }
+      if (anchor) { // hold ~5 cells behind the front-most ground unit, along the away-from-enemy axis
+        const dx = anchor.x - tgt.x, dy = anchor.y - tgt.y, dd = Math.hypot(dx, dy) || 1, back = 5 * GRID_SCALE;
+        tx = anchor.x + (dx / dd) * back;
+        ty = anchor.y + (dy / dd) * back;
+      }
+    }
     // FORWARD GUNS ONLY: fire only when the target is within a cone ahead of the nose (never behind).
     if (tgt && cheb(u.x, u.y, tgt.x, tgt.y) <= range) {
       const hdg = typeof (u as any)._hdg === "number" ? (u as any)._hdg : Math.atan2(u.dy || (u.owner === 0 ? -1 : 1), u.dx || 0.0001);
@@ -864,21 +928,22 @@ function attack(g: GameState, u: UnitState, target: Target) {
   const stats = UNIT_STATS[u.unit];
   if (stats.dmg <= 0) return; // unarmed (drones)
   const mods = playerMods(g, u.owner);
+  const b = playerBonus(g, u.owner); // percentage upgrades (multipliers; armor = damage-reduction fraction)
   // ACCURACY: base per-type hit chance, falling off with distance (point-blank reliable, the far
   // edge of range chancy). A little high-ground steadiness bonus rewards the heights.
   const dist = cheb(u.x, u.y, target.x, target.y);
-  const range = Math.max(1, stats.range + playerBonus(g, u.owner).range + hgBonus(g, u.x, u.y)); // high-ground reach
+  const range = Math.max(1, stats.range * b.range + hgBonus(g, u.x, u.y)); // Optics % + high-ground reach
   const falloff = 1 - 0.45 * Math.min(1, dist / range); // 1.0 → ~0.55 across the range band
   const highSteady = 1 + 0.12 * (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y));
   const hitChance = Math.max(0.1, Math.min(0.98, stats.accuracy * falloff * highSteady * moraleAccFactor(g.players[u.owner].morale)));
   const hit = hash01(u.id + 91, g.tick) < hitChance; // decorrelated from movement/engage rolls
   if (target.unit) underAttack.set(target.unit.id, g.tick); // beacon: this ally is in a fight (hit or not)
   if (hit) {
-    const dmg = (stats.dmg + playerBonus(g, u.owner).damage) * (stats.building ? mods.turretDmgMult : mods.dmgMult) * (u.dmgMult ?? 1); // outpost/investment + doctrine + elite
+    const dmg = stats.dmg * b.damage * (stats.building ? mods.turretDmgMult : mods.dmgMult) * (u.dmgMult ?? 1); // Munitions % + doctrine + elite
     // high-ground rule: scale damage by elevation delta, clamped; Highland doctrine amplifies it.
     const dh = (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y)) * mods.highGroundMult;
     const mult = Math.max(HIGH_GROUND_MIN, Math.min(HIGH_GROUND_MAX, 1 + dh * HIGH_GROUND_GAIN));
-    const armor = target.owner >= 0 ? playerBonus(g, target.owner).armor : 0; // defender's Armor upgrade
+    const dr = target.owner >= 0 ? playerBonus(g, target.owner).armor : 0; // defender's Armor upgrade → damage-reduction fraction
     // weapon-vs-class effectiveness: MG bullets bounce off armor/aircraft; rockets shred them.
     let cls = 1;
     if (target.unit) {
@@ -887,7 +952,7 @@ function attack(g: GameState, u: UnitState, target: Target) {
       if (stats.mg) cls = isAir ? 0.1 : isTank ? 0.25 : 1;   // very ineffective vs planes, ineffective vs tanks
       else if (stats.rocket && (isAir || isTank)) cls = 2;    // rockets: extra-effective vs both
     }
-    target.ref.hp -= Math.max(1, dmg * mult * cls - armor); // armor reduces damage taken, never below 1
+    target.ref.hp -= Math.max(1, dmg * mult * cls * (1 - dr)); // Armor % reduces damage taken, never below 1
   }
   if (g.shots.length < 240) g.shots.push({ ax: u.x, ay: u.y, bx: target.x, by: target.y, hit, kind: u.unit, owner: u.owner, scale: u.scale, tid: target.unit?.id }); // cosmetic, capped
 }
@@ -902,7 +967,7 @@ export function step(g: GameState) {
     if (fo && (fo.target === "all" || u.camp === fo.target)) { u.overrideUntil = g.tick + 2; u.overrideLabel = fo.label; }
     else if (u.overrideUntil) { u.overrideUntil = 0; u.overrideLabel = ""; }
   }
-  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult + playerBonus(g, i).income / TICK_HZ)); // income (doctrine-scaled) + outpost bonus
+  g.players.forEach((p, i) => (p.resources += INCOME_PER_TICK * playerMods(g, i).incomeMult * playerBonus(g, i).income)); // income (doctrine-scaled × Reactor %)
   if (g.tick % OUTPOST_EVERY === 0 && g.outposts.length < OUTPOST_CAP) spawnOutpost(g);
   // SANDSTORM — stalemate-breaker. Once the field is choked with units (both armies summed), a storm
   // rolls in and scours EVERY unit away over ~SANDSTORM_SECS; production halts until skies clear, then
@@ -1037,7 +1102,7 @@ function pub(u: UnitState): UnitState {
   return {
     id: u.id, owner: u.owner, camp: u.camp, unit: u.unit, dx: u.dx, dy: u.dy, x: u.x, y: u.y,
     hp: u.hp, maxHp: u.maxHp, overrideUntil: u.overrideUntil, overrideLabel: u.overrideLabel,
-    scale: u.scale, disabledUntil: u.disabledUntil, // elites render bigger; frozen units show a stasis tint
+    scale: u.scale, disabledUntil: u.disabledUntil, repairing: u.repairing, // elites render bigger; frozen units show a stasis tint; aircraft show a repair cue
   };
 }
 
@@ -1046,12 +1111,12 @@ function pub(u: UnitState): UnitState {
 /** A player's vision sources for this snapshot: base + each unit, with HIGH-GROUND-boosted radius.
  *  Computed once and reused (heightAt per own unit, not per candidate cell). */
 function visionSources(g: GameState, player: number): { x: number; y: number; r: number }[] {
-  const vm = playerMods(g, player).visionMult, vr = playerBonus(g, player).range;
+  const vm = playerMods(g, player).visionMult, vr = playerBonus(g, player).range; // vr = Optics range multiplier
   const out: { x: number; y: number; r: number }[] = [];
   const b = g.bases[player];
   if (b) out.push({ x: b.x, y: b.y, r: BASE_VISION * vm });
   for (const u of g.units) if (u.owner === player) {
-    const r = Math.min(VISION_CAP, (UNIT_STATS[u.unit].range + vr + hgBonus(g, u.x, u.y)) * VISION_MULT) * vm; // high ground sees far
+    const r = Math.min(VISION_CAP, (UNIT_STATS[u.unit].range * vr + hgBonus(g, u.x, u.y)) * VISION_MULT) * vm; // high ground sees far
     out.push({ x: u.x, y: u.y, r });
   }
   return out;

@@ -61,6 +61,7 @@ export interface UnitState {
   slowMult?: number; // move-cadence multiplier (>1 = slower)
   regen?: number; // hp regenerated per tick
   disabledUntil?: number; // tick until which the unit is frozen (stasis) — can't move or fire
+  repairing?: boolean; // aircraft below 35% HP: broken off to land at the home airstrip and repair
 }
 
 /** A transient weapon-fire event for the client to animate as a flying projectile. Sent in the

@@ -53,7 +53,7 @@ const sendState = (ws: WebSocket, g: GameState, player: number, includeShots = f
   const b = playerBonus(g, player);
   send(ws, {
     type: "state", tick: g.tick, gridW: GRID_W, gridH: GRID_H, seed: g.seed,
-    resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ + b.income,
+    resources: Math.floor(g.players[player].resources), incomePerSec: INCOME_PER_TICK * TICK_HZ * b.income,
     bonuses: b, invest: g.players[player].invest, queuedInvest: g.players[player].queuedInvest,
     morale: g.players[player].morale, boosterCost: boosterCost(g, player),
     armyDoctrine: g.players[player].armyDoctrine,

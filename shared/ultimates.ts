@@ -88,7 +88,7 @@ export const ULTIMATES: Record<string, Ultimate> = {
     effect: sp("tesla", 1, 1.2) },
   "2-3": { id: "2-3", pair: [2, 3], name: "Acid Spitters", fx: "spawn", intervalSec: IV,
     blurb: "A squad of three fragile mid-range spitters that slowly knit their wounds.",
-    effect: sp("spitter", 3, 0.95, 0.3) },
+    effect: sp("spitter", 3, 0.95, 0.15) },
   "2-4": { id: "2-4", pair: [2, 4], name: "Railgun Walker", fx: "spawn", intervalSec: IV,
     blurb: "Extreme range and a massive railgun slug — but it fires rarely and is fragile.",
     effect: sp("railwalker", 1, 1.4) },

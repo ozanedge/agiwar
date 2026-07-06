@@ -46,7 +46,7 @@ function summarize(g: GameState, player: number): Summary {
   const baseHp = Math.round((base.hp / base.maxHp) * 100);
   const arts = g.outposts.filter((a) => a.owner === player).length;
   const neutralArts = g.outposts.filter((a) => a.owner < 0).length;
-  const incomeS = INCOME_PER_TICK * TICK_HZ + playerBonus(g, player).income;
+  const incomeS = INCOME_PER_TICK * TICK_HZ * playerBonus(g, player).income;
   const camp = (id: string) => p.camps.find((c) => c.id === id)!.production.budgetPct;
   const budgets = `attack ${camp("aggressive")}% intel ${camp("recon")}% defense ${camp("defensive")}% builder ${camp("builder")}% turret ${p.turretBudget}%`;
   const inv = INVESTMENTS.map((i) => `${i.label} Lv${p.invest[i.kind]}`).join(", ");
