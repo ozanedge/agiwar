@@ -4,12 +4,12 @@ import type { OutpostBonusKind } from "./types.js";
 export type UnitType =
   // ANTHROPIC (GDI-style) base + ultimate units — durable, powerful, slower.
   | "gunner" | "rocket" | "tank" | "humvee" | "drone" | "turret" | "baseturret"
-  | "jet" | "interceptor" | "wraith" | "gunship" | "dronewing"
+  | "jet" | "interceptor" | "wraith" | "gunship" | "dronewing" | "firejet"
   | "mammoth" | "siege" | "warmech" | "titan"
   | "tesla" | "railwalker" | "spitter" | "spore" | "devourer" | "singularity"
   // OPENAI (Nod-style) base + ultimate units — fast, cheap, fragile.
   | "nod_flamer" | "nod_rocket" | "nod_lighttank" | "nod_buggy" | "nod_bike" | "nod_turret"
-  | "nod_jet" | "nod_interceptor" | "nod_wraith" | "nod_gunship" | "nod_dronewing"
+  | "nod_jet" | "nod_interceptor" | "nod_wraith" | "nod_gunship" | "nod_dronewing" | "nod_firejet"
   | "nod_mammoth" | "nod_siege" | "nod_warmech" | "nod_titan"
   | "nod_tesla" | "nod_railwalker" | "nod_spitter" | "nod_spore" | "nod_devourer" | "nod_singularity";
 
@@ -53,6 +53,12 @@ export interface UnitTypeStats {
   family?: string;
   /** fast fixed-wing flyer: never stops — holds forward momentum and banks into wide sweeping turns. */
   momentum?: boolean;
+  /** air-to-air specialist: can ONLY target jet-family aircraft — ignores ground units, bases, and outposts. */
+  airOnly?: boolean;
+  /** a landed hit destroys the target outright, regardless of its HP or armor. */
+  oneShot?: boolean;
+  /** after EVERY shot this unit must fly home and reload on the airstrip for this many seconds. */
+  rearmSecs?: number;
   /** fires machine-gun bullets: ineffective vs tanks, very ineffective vs aircraft. */
   mg?: boolean;
   /** rocket launcher: extra-effective vs tanks and aircraft. */
@@ -80,6 +86,7 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   wraith:      { label: "Wraith",         maxHp: 55,  moveEvery: 2,  attackEvery: 5, dmg: 14, cost: 0, range: 12 * GRID_SCALE, accuracy: 0.9,  flying: true, momentum: true, summon: true, family: "jet",       blurb: "flying sniper: long range, slow fire" },
   gunship:     { label: "Gunship",        maxHp: 130, moveEvery: 3,  attackEvery: 2, dmg: 5,  cost: 0, range: 7 * GRID_SCALE,  accuracy: 0.85, flying: true, summon: true, family: "gunship",   blurb: "tanky flyer, rapid cannon" },
   dronewing:   { label: "Drone Swarm",    maxHp: 14,  moveEvery: 2,  attackEvery: 4, dmg: 3,  cost: 0, range: 6 * GRID_SCALE,  accuracy: 0.7,  flying: true, summon: true, family: "drone",     blurb: "swarm of small fast flyers" },
+  firejet:     { label: "Fire Jet",       maxHp: 60,  moveEvery: 3,  attackEvery: 3, dmg: 999, cost: 0, range: 4 * GRID_SCALE, accuracy: 0.95, flying: true, momentum: true, summon: true, airOnly: true, oneShot: true, rearmSecs: 30, family: "jet", blurb: "one-shots enemy jets; slow, short range, 30s base reload after every shot" },
   // ARMOR — durable, but slow.
   mammoth:     { label: "Mammoth Tank",   maxHp: 260, moveEvery: 10, attackEvery: 6, dmg: 14, cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.85, summon: true, family: "tank",                  blurb: "juggernaut: huge HP, very slow" },
   siege:       { label: "Siege Crawler",  maxHp: 230, moveEvery: 12, attackEvery: 7, dmg: 22, cost: 0, range: 11 * GRID_SCALE, accuracy: 0.9,  summon: true, family: "tank",                  blurb: "long-range siege, crawls, slow fire" },
@@ -109,6 +116,7 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
   nod_wraith:      { label: "Stealth Bomber",    maxHp: 44,  moveEvery: 2,  attackEvery: 5, dmg: 13, cost: 0, range: 12 * GRID_SCALE, accuracy: 0.9,  flying: true, momentum: true, summon: true, family: "jet",       blurb: "flying sniper: long range, slow fire" },
   nod_gunship:     { label: "Apache Gunship",    maxHp: 104, moveEvery: 3,  attackEvery: 2, dmg: 5,  cost: 0, range: 7 * GRID_SCALE,  accuracy: 0.85, flying: true, summon: true, family: "gunship",   blurb: "tanky flyer, rapid cannon" },
   nod_dronewing:   { label: "Heavy Gunship",     maxHp: 320, moveEvery: 5,  attackEvery: 2, dmg: 8,  cost: 0, range: 8 * GRID_SCALE,  accuracy: 0.85, flying: true, momentum: true, summon: true, family: "gunship",   blurb: "huge armored gunship; big rear-facing autocannon (fires only backward)" },
+  nod_firejet:     { label: "Tesla Jet",         maxHp: 48,  moveEvery: 3,  attackEvery: 3, dmg: 999, cost: 0, range: 4 * GRID_SCALE, accuracy: 0.95, flying: true, momentum: true, summon: true, airOnly: true, oneShot: true, rearmSecs: 30, family: "jet", blurb: "one-shots enemy jets; slow, short range, 30s base reload after every shot" },
   nod_mammoth:     { label: "Tiberium Behemoth", maxHp: 208, moveEvery: 9,  attackEvery: 5, dmg: 13, cost: 0, range: 5 * GRID_SCALE,  accuracy: 0.85, summon: true, family: "tank",                  blurb: "juggernaut: huge HP, slow" },
   nod_siege:       { label: "Artillery Crawler", maxHp: 184, moveEvery: 10, attackEvery: 6, dmg: 21, cost: 0, range: 11 * GRID_SCALE, accuracy: 0.9,  summon: true, family: "tank",                  blurb: "long-range siege, crawls" },
   nod_warmech:     { label: "Cyborg Commando",   maxHp: 136, moveEvery: 6,  attackEvery: 3, dmg: 8,  cost: 0, range: 6 * GRID_SCALE,  accuracy: 0.85, summon: true, family: "mech",                  blurb: "tanky bruiser, sustained fire" },
@@ -123,11 +131,11 @@ export const UNIT_STATS: Record<UnitType, UnitTypeStats> = {
 
 export const UNIT_TYPES: UnitType[] = [
   "gunner", "tank", "humvee", "drone", "turret",
-  "jet", "interceptor", "wraith", "gunship", "dronewing",
+  "jet", "interceptor", "wraith", "gunship", "dronewing", "firejet",
   "mammoth", "siege", "warmech", "titan",
   "tesla", "railwalker", "spitter", "spore", "devourer", "singularity",
   "nod_flamer", "nod_lighttank", "nod_buggy", "nod_bike", "nod_turret",
-  "nod_jet", "nod_interceptor", "nod_wraith", "nod_gunship", "nod_dronewing",
+  "nod_jet", "nod_interceptor", "nod_wraith", "nod_gunship", "nod_dronewing", "nod_firejet",
   "nod_mammoth", "nod_siege", "nod_warmech", "nod_titan",
   "nod_tesla", "nod_railwalker", "nod_spitter", "nod_spore", "nod_devourer", "nod_singularity",
 ];
@@ -171,6 +179,9 @@ export const visionOf = (u: UnitType) => Math.min(VISION_CAP, UNIT_STATS[u].rang
 // Fast jets (the "jet" family) fly too quickly for guns to track — only ANTI-AIR units can target them:
 // other jets (air-to-air), rocket infantry, tesla coils, singularities, and base cannons.
 export const isJetUnit = (t: UnitType): boolean => (UNIT_STATS[t].family ?? t) === "jet";
+// Jets take up airspace: every fixed-wing flyer steers to keep at least one wingspan clear of every
+// other jet, friend or foe (in fine cells — roughly the width of the rendered jet sprite).
+export const JET_WINGSPAN = 3 * GRID_SCALE;
 export const canTargetAir = (t: UnitType): boolean => {
   const f = UNIT_STATS[t].family ?? t;
   return f === "jet" || f === "tesla" || f === "orb" || t === "baseturret" || !!UNIT_STATS[t].rocket;
@@ -195,7 +206,7 @@ export const factionOfUnit = (t: UnitType): Faction => (t.startsWith("nod_") ? "
 
 // Ultimates store the canonical (Anthropic) unit; this maps it to the OpenAI (Nod) counterpart.
 const NOD_ULT: Partial<Record<UnitType, UnitType>> = {
-  jet: "nod_jet", interceptor: "nod_interceptor", wraith: "nod_wraith", gunship: "nod_gunship", dronewing: "nod_dronewing",
+  jet: "nod_jet", interceptor: "nod_interceptor", wraith: "nod_wraith", gunship: "nod_gunship", dronewing: "nod_dronewing", firejet: "nod_firejet",
   mammoth: "nod_mammoth", siege: "nod_siege", warmech: "nod_warmech", titan: "nod_titan",
   tesla: "nod_tesla", railwalker: "nod_railwalker", spitter: "nod_spitter", spore: "nod_spore", devourer: "nod_devourer", singularity: "nod_singularity",
 };

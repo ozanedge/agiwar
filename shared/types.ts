@@ -62,6 +62,7 @@ export interface UnitState {
   regen?: number; // hp regenerated per tick
   disabledUntil?: number; // tick until which the unit is frozen (stasis) — can't move or fire
   repairing?: boolean; // aircraft below 35% HP: broken off to land at the home airstrip and repair
+  rearming?: boolean; // one-shot jets (Fire/Tesla Jet): spent their shot — flying home to reload on the strip
 }
 
 /** A transient weapon-fire event for the client to animate as a flying projectile. Sent in the

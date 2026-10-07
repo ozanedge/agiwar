@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Outpost, OutpostBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, Death, UnitState, ArtifactDrop, UltimateFx } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, bonusFrac, OUTPOST_LEVELS, isJetUnit, canTargetAir, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, bonusFrac, OUTPOST_LEVELS, isJetUnit, canTargetAir, JET_WINGSPAN, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
 import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
 import { modsFor, budgetFor, type ArmyMods } from "../../shared/doctrine.js";
 import { ARTIFACTS, ULTIMATES, ultimateKey } from "../../shared/ultimates.js";
@@ -569,13 +569,17 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
     if (d < bestD) { bestD = d; best = { x, y, owner, ref, unit }; }
   };
   const uAA = canTargetAir(u.unit); // only anti-air units can lock onto fast jets
+  const airHunter = !!UNIT_STATS[u.unit].airOnly; // Fire/Tesla Jet: hunts enemy jets and NOTHING else
   for (const e of g.units) {
     if (e.owner === u.owner || e.hp <= 0) continue;
     if (!uAA && isJetUnit(e.unit)) continue; // jets fly too fast for guns to track
+    if (airHunter && !isJetUnit(e.unit)) continue; // air-to-air specialist ignores everything on the ground
     consider(e.x, e.y, e.owner, e, e);
   }
-  for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b.owner, b);
-  for (const a of g.outposts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy outposts
+  if (!airHunter) {
+    for (const b of g.bases) if (b.owner !== u.owner && b.hp > 0) consider(b.x, b.y, b.owner, b);
+    for (const a of g.outposts) if (a.owner >= 0 && a.owner !== u.owner && a.hp > 0) consider(a.x, a.y, a.owner, a); // siege enemy outposts
+  }
   return best;
 }
 
@@ -654,6 +658,17 @@ function flyMomentum(g: GameState, u: UnitState, tx: number, ty: number) {
   let ax = tx - u.x, ay = ty - u.y;
   const reach = Math.hypot(ax, ay) || 1;
   ax /= reach; ay /= reach; // unit vector toward target
+  // JETS TAKE UP SPACE: every fixed-wing flyer steers to hold at least one wingspan of separation
+  // from every other jet, friend or foe. The push ramps from 0 at a full wingspan to twice the
+  // target pull when touching, so crowded jets peel apart but distant ones fly their mission.
+  for (const f of g.units) {
+    if (f.id === u.id || f.hp <= 0 || !UNIT_STATS[f.unit].momentum) continue;
+    const sx = u.x - f.x, sy = u.y - f.y, d = Math.hypot(sx, sy);
+    if (d >= JET_WINGSPAN) continue;
+    if (d < 1e-6) { const a2 = ((u.id % 8) / 8) * 2 * Math.PI; ax += 2 * Math.cos(a2); ay += 2 * Math.sin(a2); continue; } // coincident — deterministic scatter
+    const w = 2 * (1 - d / JET_WINGSPAN);
+    ax += (sx / d) * w; ay += (sy / d) * w;
+  }
   // only correct inward once actually PAST the border (bias grows with how far off), so a flyer may
   // briefly cross the edge and arc back at its own turn radius instead of banking early / sliding the wall.
   if (u.x < 0) ax += Math.min(2, -u.x / 15);
@@ -744,6 +759,22 @@ function decide(g: GameState, u: UnitState) {
   const canMove = stepBoost > 0;
   const canAttack = (g.tick + u.id) % period(stats.attackEvery) === 0;
 
+  // ONE-SHOT JET REARM (Fire/Tesla Jet): the shot is spent — fly home, land on the airstrip, and
+  // reload for rearmSecs before hunting again. The jet also patches up to full while parked.
+  if (u.rearming && stats.rearmSecs) {
+    const strip = airstripOf(g, u.owner);
+    if (cheb(u.x, u.y, strip.x, strip.y) > 3 * GRID_SCALE) { // still inbound — out of the fight
+      (u as any)._rearmAt = undefined;
+      if (canMove) for (let i = 0; i < stepBoost; i++) (stats.momentum ? flyMomentum(g, u, strip.x, strip.y) : moveToward(g, u, strip.x, strip.y));
+    } else { // parked on the pad — reload (and mend) over exactly rearmSecs
+      if ((u as any)._rearmAt == null) { (u as any)._rearmAt = g.tick; (u as any)._landHp = u.hp; }
+      const t = Math.min(1, (g.tick - (u as any)._rearmAt) / (stats.rearmSecs * TICK_HZ));
+      u.hp = (u as any)._landHp + (u.maxHp - (u as any)._landHp) * t;
+      if (t >= 1) { u.hp = u.maxHp; u.rearming = false; (u as any)._rearmAt = undefined; } // loaded → rejoin the hunt
+    }
+    return;
+  }
+
   // AIRCRAFT REPAIR: drop below 35% HP → break off, fly home to the airstrip, land, and repair to full
   // over REPAIR_SECS, then rejoin. Hysteresis: enter at <35%, leave only once fully repaired.
   if (stats.flying && u.hp < u.maxHp * 0.35) u.repairing = true;
@@ -779,12 +810,16 @@ function decide(g: GameState, u: UnitState) {
   if (stats.momentum) {
     const tgt = isScout ? null : nearestEnemy(g, u);
     const foeBase = g.bases.find((b) => b.owner !== u.owner);
-    let tx = tgt ? tgt.x : foeBase ? foeBase.x : g.bases[u.owner].x;
-    let ty = tgt ? tgt.y : foeBase ? foeBase.y : g.bases[u.owner].y;
+    // air-to-air specialists never strafe the enemy base: with no jet to hunt they circle home airspace.
+    const idleX = stats.airOnly || !foeBase ? g.bases[u.owner].x : foeBase.x;
+    const idleY = stats.airOnly || !foeBase ? g.bases[u.owner].y : foeBase.y;
+    let tx = tgt ? tgt.x : idleX;
+    let ty = tgt ? tgt.y : idleY;
     // STAY BEHIND THE SCREEN: rather than charging the enemy, prefer to loiter just behind our own
     // ground front line so the planes aren't so exposed. Anchor on the friendly mobile ground combatant
     // closest to the enemy and hold a few cells back from it, on our side. (Still fire at anything in range.)
-    if (tgt) {
+    // Jet hunters (airOnly) skip this: their whole job is to charge the enemy jet and land the kill shot.
+    if (tgt && !stats.airOnly) {
       let anchor: UnitState | null = null, bestD = Infinity;
       for (const f of g.units) {
         if (f.owner !== u.owner || f.hp <= 0 || f.id === u.id) continue;
@@ -806,7 +841,10 @@ function decide(g: GameState, u: UnitState) {
       while (off > Math.PI) off -= 2 * Math.PI;
       while (off < -Math.PI) off += 2 * Math.PI;
       const rear = u.unit === "nod_dronewing"; // heavy gunship fires ONLY backward (rear arc); jets fire forward
-      if (rear ? Math.abs(off) >= REAR_ARC : Math.abs(off) <= FLY_FIRE_ARC) atk(tgt); // strafe on the pass, when lined up
+      if (rear ? Math.abs(off) >= REAR_ARC : Math.abs(off) <= FLY_FIRE_ARC) {
+        atk(tgt); // strafe on the pass, when lined up
+        if (canAttack && stats.rearmSecs) u.rearming = true; // one pass, one shot — now home to reload
+      }
     }
     if (canMove) for (let i = 0; i < stepBoost; i++) flyMomentum(g, u, tx, ty);
     return;
@@ -952,7 +990,9 @@ function attack(g: GameState, u: UnitState, target: Target) {
       if (stats.mg) cls = isAir ? 0.1 : isTank ? 0.25 : 1;   // very ineffective vs planes, ineffective vs tanks
       else if (stats.rocket && (isAir || isTank)) cls = 2;    // rockets: extra-effective vs both
     }
-    target.ref.hp -= Math.max(1, dmg * mult * cls * (1 - dr)); // Armor % reduces damage taken, never below 1
+    // ONE-SHOT weapons (Fire/Tesla Jet): a landed hit destroys the target outright — no HP math, no armor.
+    if (stats.oneShot && target.unit) target.ref.hp = 0;
+    else target.ref.hp -= Math.max(1, dmg * mult * cls * (1 - dr)); // Armor % reduces damage taken, never below 1
   }
   if (g.shots.length < 240) g.shots.push({ ax: u.x, ay: u.y, bx: target.x, by: target.y, hit, kind: u.unit, owner: u.owner, scale: u.scale, tid: target.unit?.id }); // cosmetic, capped
 }
