@@ -3,7 +3,7 @@
 // (unitId, tick) so a match is fully reproducible and replayable.
 import type { Outpost, OutpostBonusKind, BehaviorSpec, BaseState, Camp, DoctrineId, FieldGeneral, Shot, Death, UnitState, ArtifactDrop, UltimateFx } from "../../shared/types.js";
 import { PRESET_PROMPTS, PRESET_SPECS, clampSpec } from "../../shared/spec.js";
-import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, bonusFrac, OUTPOST_LEVELS, isJetUnit, canTargetAir, JET_WINGSPAN, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
+import { UNIT_STATS, UnitType, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, UNIT_HP_MULT, bonusFrac, OUTPOST_LEVELS, isJetUnit, canTargetAir, JET_WINGSPAN, footprintOf, occLayerOf, type Faction, type CampRole, FACTION_ROLE_UNIT, FACTION_TURRET, trainableFor, ultUnitFor } from "../../shared/units.js";
 import { terrainAt, heightAt, highGroundBonus } from "../../shared/terrain.js";
 import { modsFor, budgetFor, type ArmyMods } from "../../shared/doctrine.js";
 import { ARTIFACTS, ULTIMATES, ultimateKey } from "../../shared/ultimates.js";
@@ -436,6 +436,8 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
   const jitter = g.units.length;
   const mods = playerMods(g, owner);
   const hp = Math.round(UNIT_STATS[type].maxHp * UNIT_HP_MULT * playerBonus(g, owner).hp * (UNIT_STATS[type].building ? mods.turretHpMult : mods.hpMult));
+  const want = pos ?? { x: Math.max(0, Math.min(GRID_W - 1, base.x + (-2 + (jitter % 5)) * GRID_SCALE)), y: Math.max(0, Math.min(GRID_H - 1, base.y + (owner === 0 ? -1 : 1) * (1 + (jitter % 3)) * GRID_SCALE)) };
+  const spot = freeSpotNear(g, type, 1, want.x, want.y); // never spawn on top of another unit
   g.units.push({
     id: g.nextUnitId++,
     owner,
@@ -443,8 +445,8 @@ export function spawnUnit(g: GameState, owner: number, camp: DoctrineId | null, 
     unit: type,
     dx: 0,
     dy: owner === 0 ? -1 : 1, // start facing the enemy (player 0 marches −gy = up/right on screen)
-    x: pos ? pos.x : Math.max(0, Math.min(GRID_W - 1, base.x + (-2 + (jitter % 5)) * GRID_SCALE)), // lateral spread
-    y: pos ? pos.y : Math.max(0, Math.min(GRID_H - 1, base.y + (owner === 0 ? -1 : 1) * (1 + (jitter % 3)) * GRID_SCALE)), // step out toward the field
+    x: spot.x, // lateral spread around the base, nudged to the nearest free spot
+    y: spot.y,
     hp,
     maxHp: hp,
     overrideUntil: 0,
@@ -585,36 +587,103 @@ function nearestEnemy(g: GameState, u: UnitState): Target | null {
 
 const passable = (g: GameState, x: number, y: number) => x >= 0 && y >= 0 && x < GRID_W && y < GRID_H && g.passGrid[y * GRID_W + x] === 1;
 
-// Occupancy: each unit has SIZE — a footprint radius (in fine cells). Two units must stay at least
-// (footprint_a + footprint_b) cells apart, so bigger units carve out more room and everyone spreads
-// out instead of stacking. `occ` maps each unit's cell → the unit (rebuilt each step, updated
-// incrementally as units move so later movers see it).
-const FOOTPRINT: Record<string, number> = { gunner: 1, humvee: 2, tank: 2, turret: 2, drone: 0 };
-const MAX_FOOT = 2; // largest FOOTPRINT — scan radius bound
-const cellKey = (x: number, y: number) => y * GRID_W + x;
-let occ: Map<number, UnitState> | null = null;
-// would (x,y) put u within (its footprint + the other's footprint) of any OTHER unit? (excludes self)
+// OCCUPANCY: every unit claims a round footprint (shared footprintOf — sized to its sprite) that no
+// other unit in the same layer may enter: ground units block ground units, hovering aircraft block
+// each other in the air, fast jets steer apart by wingspan instead. A bucketed spatial index (any
+// number of units per bucket) is rebuilt each step and updated as units move, so later movers see
+// earlier ones. A move is refused if it would enter OR deepen an overlap, but always allowed when it
+// opens the gap — so a unit that ends up overlapped (spawn, ultimate pull) can always work itself free.
+const BK = 8; // spatial bucket size, fine cells
+const bucketKey = (x: number, y: number) => (Math.floor(y / BK) + 64) * 4096 + (Math.floor(x / BK) + 64);
+let occ: Map<number, UnitState[]>[] | null = null; // [ground, air]
+let occMaxFoot = 1;
+const footOf = (u: UnitState): number => footprintOf(u.unit, u.scale ?? 1);
+const layerOf = (u: UnitState): number => occLayerOf(u.unit);
+function occAdd(u: UnitState) {
+  const L = layerOf(u); if (!occ || L < 0) return;
+  const k = bucketKey(u.x, u.y); let arr = occ[L].get(k); if (!arr) occ[L].set(k, (arr = [])); arr.push(u);
+}
+function occRemove(u: UnitState) {
+  const L = layerOf(u); if (!occ || L < 0) return;
+  const arr = occ[L].get(bucketKey(u.x, u.y)); if (!arr) return; const i = arr.indexOf(u); if (i >= 0) arr.splice(i, 1);
+}
+function buildOcc(g: GameState) {
+  occ = [new Map(), new Map()]; occMaxFoot = 1;
+  for (const u of g.units) { if (u.hp <= 0) continue; occAdd(u); occMaxFoot = Math.max(occMaxFoot, footOf(u)); }
+}
+// visit every other live unit in u's layer whose footprint could touch a footprint centred at (x, y)
+function forNeighbors(u: UnitState, x: number, y: number, fn: (o: UnitState, need: number) => boolean | void): void {
+  const L = layerOf(u); if (!occ || L < 0) return;
+  const fu = footOf(u), reach = fu + occMaxFoot;
+  for (let by = Math.floor((y - reach) / BK); by <= Math.floor((y + reach) / BK); by++)
+    for (let bx = Math.floor((x - reach) / BK); bx <= Math.floor((x + reach) / BK); bx++) {
+      const arr = occ[L].get((by + 64) * 4096 + (bx + 64)); if (!arr) continue;
+      for (const o of arr) { if (o === u || o.hp <= 0) continue; if (fn(o, fu + footOf(o)) === true) return; }
+    }
+}
+// would moving u to (x, y) enter or deepen an overlap with another unit's footprint?
 function unitBlocked(u: UnitState, x: number, y: number): boolean {
-  if (!occ) return false;
-  const Ru = FOOTPRINT[u.unit] ?? 1, reach = Ru + MAX_FOOT;
-  for (let dy = -reach; dy <= reach; dy++) for (let dx = -reach; dx <= reach; dx++) {
-    const other = occ.get(cellKey(x + dx, y + dy));
-    if (!other || other === u) continue;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) < Ru + (FOOTPRINT[other.unit] ?? 1)) return true;
-  }
-  return false;
+  let blocked = false;
+  forNeighbors(u, x, y, (o, need) => {
+    const dx = o.x - x, dy = o.y - y;
+    if (Math.abs(dx) >= need || Math.abs(dy) >= need) return;
+    const dNew = Math.hypot(dx, dy); if (dNew >= need) return;
+    if (dNew <= Math.hypot(o.x - u.x, o.y - u.y) + 1e-9) { blocked = true; return true; } // closer (or no better) inside the footprint
+  });
+  return blocked;
 }
 function placeUnit(u: UnitState, nx: number, ny: number) {
-  if (occ) { occ.delete(cellKey(u.x, u.y)); occ.set(cellKey(nx, ny), u); }
+  const moved = bucketKey(u.x, u.y) !== bucketKey(nx, ny);
+  if (moved) occRemove(u);
   u.x = nx; u.y = ny;
+  if (moved) occAdd(u);
 }
+// SEPARATION: any unit still overlapping a neighbour (fresh spawn, ultimate pull, scale-up) steps one
+// cell straight away from its deepest overlap. Deterministic: the mobile/newer unit of a pair yields.
+function separate(g: GameState) {
+  for (const u of g.units) {
+    if (u.hp <= 0 || UNIT_STATS[u.unit].stationary || layerOf(u) < 0 || (u.disabledUntil ?? 0) > g.tick) continue;
+    let worst = 0, wx = 0, wy = 0;
+    forNeighbors(u, u.x, u.y, (o, need) => {
+      if (!UNIT_STATS[o.unit].stationary && o.id > u.id) return; // the other one yields this pair
+      const dx = u.x - o.x, dy = u.y - o.y, d = Math.hypot(dx, dy), depth = need - d;
+      if (depth > worst) { worst = depth; if (d < 1e-6) { const a = ((u.id * 2654435761) % 360) * (Math.PI / 180); wx = Math.cos(a); wy = Math.sin(a); } else { wx = dx / d; wy = dy / d; } }
+    });
+    if (worst <= 0.05) continue;
+    const ang = Math.atan2(wy, wx);
+    for (const off of [0, 0.785, -0.785, 1.571, -1.571]) { // straight away first, then fan out around obstacles
+      const sx = Math.round(Math.cos(ang + off)), sy = Math.round(Math.sin(ang + off));
+      if (!sx && !sy) continue;
+      const nx = u.x + sx, ny = u.y + sy;
+      if (!inBounds(nx, ny) || (layerOf(u) === 0 && !passable(g, nx, ny)) || unitBlocked(u, nx, ny)) continue;
+      placeUnit(u, nx, ny); break; // nudge only — heading (dx, dy) is left alone so the hull doesn't spin
+    }
+  }
+}
+// nearest spot to (x, y) where a unit of this type/scale fits without overlapping anyone (spawns)
+function freeSpotNear(g: GameState, type: UnitType, scale: number, x: number, y: number): { x: number; y: number } {
+  const L = occLayerOf(type); if (L < 0) return { x, y };
+  const f = footprintOf(type, scale);
+  const fits = (cx: number, cy: number) => inBounds(cx, cy) && (L === 1 || passable(g, cx, cy)) &&
+    g.units.every((o) => o.hp <= 0 || occLayerOf(o.unit) !== L || Math.hypot(o.x - cx, o.y - cy) >= f + footprintOf(o.unit, o.scale ?? 1));
+  if (fits(x, y)) return { x, y };
+  for (let r = 1; r <= 6 * GRID_SCALE; r++) // expanding square rings, scanned in a fixed order (deterministic)
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      if (fits(x + dx, y + dy)) return { x: x + dx, y: y + dy };
+    }
+  return { x, y };
+}
+// edge-to-edge distance to a target (units have bodies — range is measured to the hull, not the centre)
+const reachTo = (u: UnitState, t: { x: number; y: number; unit?: UnitState }) =>
+  Math.max(0, cheb(u.x, u.y, t.x, t.y) - footOf(u) * 0.7 - (t.unit ? footOf(t.unit) * 0.7 : 0));
 
 const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < GRID_W && y < GRID_H;
 const flying = (u: UnitState) => !!UNIT_STATS[u.unit].flying;
-// Flying units (drones) ignore terrain AND ground occupancy — they're in the air.
+// Flying units ignore terrain and the ground layer, but hovering aircraft keep clear of each other (air layer).
 const canEnter = (g: GameState, u: UnitState, x: number, y: number) =>
-  inBounds(x, y) && (flying(u) || (passable(g, x, y) && !unitBlocked(u, x, y)));
-const moveUnit = (u: UnitState, x: number, y: number) => { if (flying(u)) { u.x = x; u.y = y; } else placeUnit(u, x, y); };
+  inBounds(x, y) && (flying(u) || passable(g, x, y)) && !unitBlocked(u, x, y);
+const moveUnit = (u: UnitState, x: number, y: number) => placeUnit(u, x, y);
 
 const tryStep = (g: GameState, u: UnitState, dx: number, dy: number) => {
   if (dx === 0 && dy === 0) return false;
@@ -800,7 +869,7 @@ function decide(g: GameState, u: UnitState) {
   // 0) stationary buildings (turrets): no doctrine — just fire on the nearest enemy in range
   if (stats.stationary) {
     const e = nearestEnemy(g, u);
-    if (e) { u.dx = sign(e.x - u.x); u.dy = sign(e.y - u.y); if (cheb(u.x, u.y, e.x, e.y) <= range) atk(e); } // aim at target
+    if (e) { u.dx = sign(e.x - u.x); u.dy = sign(e.y - u.y); if (reachTo(u, e) <= range) atk(e); } // aim at target
     return;
   }
 
@@ -835,7 +904,7 @@ function decide(g: GameState, u: UnitState) {
       }
     }
     // FORWARD GUNS ONLY: fire only when the target is within a cone ahead of the nose (never behind).
-    if (tgt && cheb(u.x, u.y, tgt.x, tgt.y) <= range) {
+    if (tgt && reachTo(u, tgt) <= range) {
       const hdg = typeof (u as any)._hdg === "number" ? (u as any)._hdg : Math.atan2(u.dy || (u.owner === 0 ? -1 : 1), u.dx || 0.0001);
       let off = Math.atan2(tgt.y - u.y, tgt.x - u.x) - hdg;
       while (off > Math.PI) off -= 2 * Math.PI;
@@ -866,7 +935,7 @@ function decide(g: GameState, u: UnitState) {
     // the same outpost, or a threat closing in), break off and ENGAGE it — close to range and fire —
     // instead of passively channeling across the outpost from an enemy. Clear it, then resume capturing.
     const foe = nearestEnemy(g, u);
-    const foeDist = foe ? cheb(u.x, u.y, foe.x, foe.y) : Infinity;
+    const foeDist = foe ? reachTo(u, foe) : Infinity;
     if (!isScout && foe && foeDist <= 12 * GRID_SCALE) {
       if (foeDist <= range) atk(foe); else mv(foe.x, foe.y);
       return;
@@ -885,7 +954,7 @@ function decide(g: GameState, u: UnitState) {
   }
 
   const enemy = nearestEnemy(g, u);
-  const enemyDist = enemy ? cheb(u.x, u.y, enemy.x, enemy.y) : Infinity;
+  const enemyDist = enemy ? reachTo(u, enemy) : Infinity;
 
   // 2) leashed defenders: only engage intruders near base, else return to guard ring
   if (!isScout && spec.defendRadius != null) {
@@ -969,7 +1038,7 @@ function attack(g: GameState, u: UnitState, target: Target) {
   const b = playerBonus(g, u.owner); // percentage upgrades (multipliers; armor = damage-reduction fraction)
   // ACCURACY: base per-type hit chance, falling off with distance (point-blank reliable, the far
   // edge of range chancy). A little high-ground steadiness bonus rewards the heights.
-  const dist = cheb(u.x, u.y, target.x, target.y);
+  const dist = reachTo(u, target);
   const range = Math.max(1, stats.range * b.range + hgBonus(g, u.x, u.y)); // Optics % + high-ground reach
   const falloff = 1 - 0.45 * Math.min(1, dist / range); // 1.0 → ~0.55 across the range band
   const highSteady = 1 + 0.12 * (groundHeight(g, u.x, u.y) - groundHeight(g, target.x, target.y));
@@ -1067,8 +1136,8 @@ export function step(g: GameState) {
   }
   // occupancy: units have size — mark every unit's cell, then movement avoids occupied cells so no
   // two units stack. Updated incrementally as each unit moves, so the order is consistent.
-  occ = new Map<number, UnitState>();
-  for (const u of g.units) if (!flying(u)) occ.set(cellKey(u.x, u.y), u); // flying units don't occupy the ground
+  buildOcc(g);
+  separate(g); // push apart anything still overlapping (spawns, ultimate pulls, elites that just scaled up)
   flowComputes = 0; // per-tick budget for new dynamic flow fields
   // morale: decay recent losses + booster, then recompute (used by decide() this tick)
   for (const p of g.players) {

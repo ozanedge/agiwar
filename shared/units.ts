@@ -182,6 +182,21 @@ export const isJetUnit = (t: UnitType): boolean => (UNIT_STATS[t].family ?? t) =
 // Jets take up airspace: every fixed-wing flyer steers to keep at least one wingspan clear of every
 // other jet, friend or foe (in fine cells — roughly the width of the rendered jet sprite).
 export const JET_WINGSPAN = 3 * GRID_SCALE;
+// OCCUPANCY: every unit claims a round footprint (radius in fine cells) that no other unit in the same
+// layer may enter — sized to the baked sprite so hulls never visibly overlap. Ground units share the
+// ground layer; hovering aircraft (helos, drones, hover platforms) share the air layer; fast jets keep
+// their own wingspan separation instead. Ultimate elites render at scale², so their footprint follows.
+// radii ≈ the model's half-length in art px ÷ ~6.4 px per fine cell (so hulls never overlap end-to-end)
+const FOOT_FAMILY: Record<string, number> = { gunner: 0.9, humvee: 2.4, tank: 2.7, turret: 2.4, drone: 2.0, gunship: 2.9, mech: 1.8, walker: 2.4, tesla: 2.1, swarmling: 1.0, orb: 2.7, jet: 0 };
+const FOOT_TYPE: Partial<Record<UnitType, number>> = {
+  nod_buggy: 1.7, nod_bike: 1.2, nod_lighttank: 2.6, mammoth: 3.5, nod_mammoth: 3.3, siege: 2.8, nod_siege: 2.3,
+  baseturret: 3.2, nod_turret: 1.8, titan: 2.1, nod_warmech: 1.4, nod_titan: 1.7, nod_railwalker: 2.1, nod_tesla: 2.3,
+  spore: 0.8, nod_spore: 0.8, devourer: 1.6, nod_devourer: 1.6, dronewing: 0.9,
+};
+export const footprintOf = (t: UnitType, scale = 1): number =>
+  Math.min(6, (FOOT_TYPE[t] ?? FOOT_FAMILY[UNIT_STATS[t].family ?? t] ?? 1) * scale * scale);
+/** 0 = ground, 1 = hovering air, -1 = no footprint (fast jets: wingspan steering instead). */
+export const occLayerOf = (t: UnitType): number => (UNIT_STATS[t].momentum ? -1 : UNIT_STATS[t].flying ? 1 : 0);
 export const canTargetAir = (t: UnitType): boolean => {
   const f = UNIT_STATS[t].family ?? t;
   return f === "jet" || f === "tesla" || f === "orb" || t === "baseturret" || !!UNIT_STATS[t].rocket;
