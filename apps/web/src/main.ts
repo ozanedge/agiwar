@@ -5,6 +5,7 @@ import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENT
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
 import { heightAt, elevationAt, elevFromHeight, kindOf, highGroundBonus, CLIFF_SLOPE, type TerrainKind } from "../../../shared/terrain.js";
 import { ARTIFACTS, ULTIMATES, ultimateFor } from "../../../shared/ultimates.js";
+import { Fx, RAMP } from "./fx";
 
 // ?solo on the page URL → the server puts this client straight into a bot match (never paired with a waiting human)
 const WS_URL = ((import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787") + (new URLSearchParams(location.search).has("solo") ? "/?solo" : "");
@@ -46,7 +47,9 @@ app.stage.addChild(world);
 // (expMask) · currently visible = bright terrain (visMask) drawn on top.
 const entityLayer = new Container(); // bases + units, painter-sorted
 entityLayer.sortableChildren = true;
-const fxLayer = new Graphics(); // flying projectiles + impacts, drawn above units
+const fxLayer = new Graphics(); // debris shards + contrails (vector), drawn above units
+const fx = new Fx();              // sprite particle engine: fire, smoke, sparks, tracers, beams, scorch (fx.ts)
+const ufxG = new Graphics(); ufxG.blendMode = "add"; // ultimate-strike FX, additive so it reads as light
 const terrainBright = new Sprite(); // full-bright baked terrain, drawn DIRECTLY (no mask)
 // Soft fog WITHOUT masking the (map-sized) terrain. Masking a huge sprite renders it through a
 // filter into an intermediate texture whose size = the sprite's on-screen bounds; past ~1.4× zoom
@@ -78,7 +81,7 @@ const fogScene = new Container(); // composites fogRT each frame (tinted fill, b
 const fogSprite = new Sprite(); // the fog overlay, drawn directly over the terrain
 let visRT: RenderTexture | null = null, expRT: RenderTexture | null = null, fogRT: RenderTexture | null = null;
 let fogOX = 0, fogOY = 0;
-world.addChild(terrainBright, fogSprite, entityLayer, fxLayer);
+world.addChild(terrainBright, fx.ground, fogSprite, entityLayer, fx.smoke, fxLayer, fx.fire, fx.glow, ufxG); // scorch sits under the fog so it dims with it
 function blobScale(sp: Sprite, gx: number, gy: number, R: number) {
   sp.position.set(isoX(gx, gy) - fogOX, isoY(gx, gy) - fogOY); // world px relative to terrain origin
   sp.scale.set((R * TILE_W * 2 * FADE) / SOFT_PX, (R * TILE_H * 2 * FADE) / SOFT_PX); // iso-squashed disc
@@ -454,7 +457,7 @@ function renderUlts(us: StateMsg["ultimates"]) {
 }
 
 // ---- ULTIMATE EFFECT FX (drawn on fxLayer, after projectiles) ----
-interface Ufx { kind: string; gx: number; gy: number; t0: number; }
+interface Ufx { kind: string; gx: number; gy: number; t0: number; boomed?: boolean; lastFx?: number; }
 const ufxList: Ufx[] = [];
 // every ultimate reads as PURPLE — only the motion (mode) differs between them
 const UFX_STYLE: Record<string, { color: number; mode: string }> = {
@@ -472,39 +475,39 @@ function spawnUfx(s: StateMsg) {
 // a clearly-readable fighter jet pointing along +dir (a swept dart with wings, tail, canopy)
 function drawJet(cx: number, cy: number, dir: number, col: number, a: number) {
   const d = dir;
-  fxLayer.poly([cx - d * 11, cy - 9, cx - d * 4, cy, cx - d * 11, cy]).fill({ color: col, alpha: a * 0.85 }); // upper wing
-  fxLayer.poly([cx - d * 11, cy + 9, cx - d * 4, cy, cx - d * 11, cy]).fill({ color: col, alpha: a * 0.85 }); // lower wing
-  fxLayer.poly([cx - d * 7, cy, cx - d * 11, cy - 5, cx - d * 6, cy ]).fill({ color: col, alpha: a * 0.85 }); // tail fin
-  fxLayer.poly([cx + d * 13, cy, cx - d * 9, cy - 2.6, cx - d * 9, cy + 2.6]).fill({ color: col, alpha: a }); // fuselage
-  fxLayer.circle(cx + d * 4, cy, 1.7).fill({ color: 0xffffff, alpha: a * 0.7 }); // canopy
+  ufxG.poly([cx - d * 11, cy - 9, cx - d * 4, cy, cx - d * 11, cy]).fill({ color: col, alpha: a * 0.85 }); // upper wing
+  ufxG.poly([cx - d * 11, cy + 9, cx - d * 4, cy, cx - d * 11, cy]).fill({ color: col, alpha: a * 0.85 }); // lower wing
+  ufxG.poly([cx - d * 7, cy, cx - d * 11, cy - 5, cx - d * 6, cy ]).fill({ color: col, alpha: a * 0.85 }); // tail fin
+  ufxG.poly([cx + d * 13, cy, cx - d * 9, cy - 2.6, cx - d * 9, cy + 2.6]).fill({ color: col, alpha: a }); // fuselage
+  ufxG.circle(cx + d * 4, cy, 1.7).fill({ color: 0xffffff, alpha: a * 0.7 }); // canopy
 }
 // a clearly-readable gunship/helicopter (fuselage, tail boom + fin, spinning rotor, skids)
 function drawHeli(cx: number, cy: number, col: number, a: number, tick: number) {
-  fxLayer.rect(cx - 19, cy - 1, 13, 2).fill({ color: col, alpha: a }); // tail boom
-  fxLayer.poly([cx - 19, cy - 1, cx - 22, cy - 7, cx - 17, cy + 1]).fill({ color: col, alpha: a }); // tail fin
-  fxLayer.ellipse(cx, cy, 9, 5).fill({ color: col, alpha: a }); // fuselage
-  fxLayer.ellipse(cx + 4, cy - 1, 3.5, 2.4).fill({ color: 0xffffff, alpha: a * 0.45 }); // canopy
-  fxLayer.rect(cx - 0.8, cy - 8, 1.6, 4).fill({ color: col, alpha: a }); // mast
+  ufxG.rect(cx - 19, cy - 1, 13, 2).fill({ color: col, alpha: a }); // tail boom
+  ufxG.poly([cx - 19, cy - 1, cx - 22, cy - 7, cx - 17, cy + 1]).fill({ color: col, alpha: a }); // tail fin
+  ufxG.ellipse(cx, cy, 9, 5).fill({ color: col, alpha: a }); // fuselage
+  ufxG.ellipse(cx + 4, cy - 1, 3.5, 2.4).fill({ color: 0xffffff, alpha: a * 0.45 }); // canopy
+  ufxG.rect(cx - 0.8, cy - 8, 1.6, 4).fill({ color: col, alpha: a }); // mast
   const rx = Math.abs(Math.cos(tick * 0.9)) * 17 + 3; // rotor seen edge-on (length oscillates as it spins)
-  fxLayer.moveTo(cx - rx, cy - 8).lineTo(cx + rx, cy - 8).stroke({ color: col, width: 1.8, alpha: a * 0.75 });
-  fxLayer.rect(cx - 7, cy + 5, 14, 1.3).fill({ color: col, alpha: a * 0.8 }); // skids
+  ufxG.moveTo(cx - rx, cy - 8).lineTo(cx + rx, cy - 8).stroke({ color: col, width: 1.8, alpha: a * 0.75 });
+  ufxG.rect(cx - 7, cy + 5, 14, 1.3).fill({ color: col, alpha: a * 0.8 }); // skids
 }
 // the big PURPLE signature burst (k 0..1) — plays when the strike actually lands
 function magicBurst(x: number, y: number, k: number, phase: number) {
   if (k <= 0) return;
   const cf0 = Math.max(0, 1 - k * 3);
-  fxLayer.circle(x, y, 18 + k * 64).fill({ color: 0x7a1fd0, alpha: 0.2 * (1 - k) });
-  fxLayer.circle(x, y, 8 + k * 70).stroke({ color: 0x9b30ff, width: 6 * (1 - k), alpha: 0.95 * (1 - k) });
-  fxLayer.circle(x, y, 4 + k * 44).stroke({ color: 0xc98bff, width: 3.5 * (1 - k), alpha: 0.9 * (1 - k) });
-  fxLayer.circle(x, y, 24 * cf0).fill({ color: 0x9b30ff, alpha: 0.55 * cf0 });
-  fxLayer.circle(x, y, 11 * cf0).fill({ color: 0xe6c8ff, alpha: 0.9 * cf0 });
+  ufxG.circle(x, y, 18 + k * 64).fill({ color: 0x7a1fd0, alpha: 0.2 * (1 - k) });
+  ufxG.circle(x, y, 8 + k * 70).stroke({ color: 0x9b30ff, width: 6 * (1 - k), alpha: 0.95 * (1 - k) });
+  ufxG.circle(x, y, 4 + k * 44).stroke({ color: 0xc98bff, width: 3.5 * (1 - k), alpha: 0.9 * (1 - k) });
+  ufxG.circle(x, y, 24 * cf0).fill({ color: 0x9b30ff, alpha: 0.55 * cf0 });
+  ufxG.circle(x, y, 11 * cf0).fill({ color: 0xe6c8ff, alpha: 0.9 * cf0 });
   for (let p = 0; p < 12; p++) {
     const ang = (p / 12) * TAU + phase, dist = k * 74, len = (1 - k) * 12;
     const px = x + Math.cos(ang) * dist, py = y + Math.sin(ang) * dist * 0.6;
-    fxLayer.moveTo(px, py).lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len * 0.6).stroke({ color: p % 2 ? 0x9b30ff : 0xc98bff, width: 2.2 * (1 - k), alpha: 0.9 * (1 - k) });
+    ufxG.moveTo(px, py).lineTo(px + Math.cos(ang) * len, py + Math.sin(ang) * len * 0.6).stroke({ color: p % 2 ? 0x9b30ff : 0xc98bff, width: 2.2 * (1 - k), alpha: 0.9 * (1 - k) });
   }
 }
-// draw all active ultimate FX. Called from INSIDE the projectile ticker (after its fxLayer.clear),
+// draw all active ultimate FX. Called from INSIDE the projectile ticker (after its ufxG.clear),
 // so the purple bursts survive the per-frame clear instead of being wiped by it.
 function drawUfx(s: StateMsg, now: number) {
   for (let i = ufxList.length - 1; i >= 0; i--) {
@@ -517,74 +520,100 @@ function drawUfx(s: StateMsg, now: number) {
     const x = isoX(f.gx, f.gy), y = isoY(f.gx, f.gy) - elevAt(f.gx, f.gy, s.seed, s.gridW, s.gridH) - 6;
     const phase = f.gx * 0.7 + f.gy * 1.3;
     const impactK = UFX_IMPACT[st.mode] ?? 0; // 0 = burst plays immediately (effect already at the target)
-    const blast = (R: number, bk: number) => { fxLayer.circle(x, y, R * 0.3 + bk * R).stroke({ color: C, width: 3 * (1 - bk), alpha: 0.8 * (1 - bk) }); };
+    const blast = (R: number, bk: number) => { ufxG.circle(x, y, R * 0.3 + bk * R).stroke({ color: C, width: 3 * (1 - bk), alpha: 0.8 * (1 - bk) }); };
 
     if (st.mode === "jet") {
       const px = x - 560 + k * 1120, py = y - 64; // streaks left→right, passing over the target ~k 0.5
       const fade = Math.min(1, Math.min(k, 1 - k) * 7);
-      fxLayer.moveTo(px - 70, py).lineTo(px - 12, py).stroke({ color: C, width: 2, alpha: 0.22 * fade }); // contrail
+      ufxG.moveTo(px - 70, py).lineTo(px - 12, py).stroke({ color: C, width: 2, alpha: 0.22 * fade }); // contrail
       drawJet(px, py, 1, C, 0.95 * fade);
-      if (k >= 0.4 && k <= 0.5) fxLayer.moveTo(px, py).lineTo(x, y).stroke({ color: 0xe6c8ff, width: 2, alpha: 0.9 }); // missile down
+      if (k >= 0.4 && k <= 0.5) ufxG.moveTo(px, py).lineTo(x, y).stroke({ color: 0xe6c8ff, width: 2, alpha: 0.9 }); // missile down
     } else if (st.mode === "gunship") {
       const gx2 = k < 0.25 ? x - 460 + (k / 0.25) * 460 : k < 0.72 ? x : x + ((k - 0.72) / 0.28) * 460; // in → hover → out
       const gy2 = y - 54;
       const fade = Math.min(1, Math.min(k, 1 - k) * 7);
       drawHeli(gx2, gy2, C, 0.95 * fade, s.tick);
-      if (k >= 0.3 && k <= 0.68) for (let r = 0; r < 2; r++) { const tx = x + (Math.random() - 0.5) * 22; fxLayer.moveTo(gx2, gy2 + 4).lineTo(tx, y).stroke({ color: 0xe6c8ff, width: 1.6, alpha: 0.85 }); } // rains fire
+      if (k >= 0.3 && k <= 0.68) for (let r = 0; r < 2; r++) { const tx = x + (Math.random() - 0.5) * 22; ufxG.moveTo(gx2, gy2 + 4).lineTo(tx, y).stroke({ color: 0xe6c8ff, width: 1.6, alpha: 0.85 }); } // rains fire
     } else if (st.mode === "fall") {
       const t = Math.min(1, k / 0.6), mx = x + 240 - t * 240, my = y - 560 + t * 560; // meteor drops from upper-right
-      if (k < 0.6) { fxLayer.moveTo(mx + 30, my - 46).lineTo(mx, my).stroke({ color: 0xb26bff, width: 4, alpha: 0.9 }); fxLayer.circle(mx, my, 4).fill({ color: 0xe6c8ff, alpha: 0.95 }); }
+      if (k < 0.6) { ufxG.moveTo(mx + 30, my - 46).lineTo(mx, my).stroke({ color: 0xb26bff, width: 4, alpha: 0.9 }); ufxG.circle(mx, my, 4).fill({ color: 0xe6c8ff, alpha: 0.95 }); }
     } else if (st.mode === "beam") {
-      if (k < 0.35) fxLayer.moveTo(x, y - 700).lineTo(x, y).stroke({ color: C, width: 7 * (1 - k * 2.6), alpha: 0.9 }); // orbital column
+      if (k < 0.35) ufxG.moveTo(x, y - 700).lineTo(x, y).stroke({ color: C, width: 7 * (1 - k * 2.6), alpha: 0.9 }); // orbital column
     } else if (st.mode === "bolts") {
-      for (let b = 0; b < 6; b++) { const ang = (b / 6) * TAU + k * 3, r = 8 + k * 30; let px = x, py = y; for (let seg = 1; seg <= 3; seg++) { const rr = (r * seg) / 3, jx = x + Math.cos(ang) * rr + (seg % 2 ? 6 : -6), jy = y + Math.sin(ang) * rr * 0.6; fxLayer.moveTo(px, py).lineTo(jx, jy).stroke({ color: C, width: 1.6 * (1 - k), alpha: 0.85 * (1 - k) }); px = jx; py = jy; } }
+      for (let b = 0; b < 6; b++) { const ang = (b / 6) * TAU + k * 3, r = 8 + k * 30; let px = x, py = y; for (let seg = 1; seg <= 3; seg++) { const rr = (r * seg) / 3, jx = x + Math.cos(ang) * rr + (seg % 2 ? 6 : -6), jy = y + Math.sin(ang) * rr * 0.6; ufxG.moveTo(px, py).lineTo(jx, jy).stroke({ color: C, width: 1.6 * (1 - k), alpha: 0.85 * (1 - k) }); px = jx; py = jy; } }
     } else if (st.mode === "implode") {
-      const r = 44 * (1 - k); fxLayer.circle(x, y, r).stroke({ color: C, width: 2, alpha: 0.8 * (1 - k) });
-      fxLayer.circle(x, y, r * 0.5).stroke({ color: C, width: 1.5, alpha: 0.6 * (1 - k) });
-      fxLayer.circle(x, y, 6 * (1 - Math.abs(k - 0.5) * 2)).fill({ color: 0x1a1024, alpha: 0.7 });
+      const r = 44 * (1 - k); ufxG.circle(x, y, r).stroke({ color: C, width: 2, alpha: 0.8 * (1 - k) });
+      ufxG.circle(x, y, r * 0.5).stroke({ color: C, width: 1.5, alpha: 0.6 * (1 - k) });
+      ufxG.circle(x, y, 6 * (1 - Math.abs(k - 0.5) * 2)).fill({ color: 0x1a1024, alpha: 0.7 });
     } else if (st.mode === "bubble") {
-      const r = 34 * Math.min(1, k * 3); fxLayer.circle(x, y, r).stroke({ color: C, width: 2.5 * (1 - k), alpha: 0.7 * (1 - k) });
-      fxLayer.circle(x, y, r).fill({ color: C, alpha: 0.1 * (1 - k) });
+      const r = 34 * Math.min(1, k * 3); ufxG.circle(x, y, r).stroke({ color: C, width: 2.5 * (1 - k), alpha: 0.7 * (1 - k) });
+      ufxG.circle(x, y, r).fill({ color: C, alpha: 0.1 * (1 - k) });
     } else if (st.mode === "cloud") {
-      for (let p = 0; p < 8; p++) { const ang = (p / 8) * TAU + f.t0, rr = 10 + k * 26; fxLayer.circle(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.6, 5 * (1 - k)).fill({ color: C, alpha: 0.4 * (1 - k) }); }
+      for (let p = 0; p < 8; p++) { const ang = (p / 8) * TAU + f.t0, rr = 10 + k * 26; ufxG.circle(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.6, 5 * (1 - k)).fill({ color: C, alpha: 0.4 * (1 - k) }); }
     } else { // bloom (heal / spawn)
-      fxLayer.circle(x, y, 8 + k * 30).stroke({ color: C, width: 2.5 * (1 - k), alpha: 0.7 * (1 - k) });
-      fxLayer.circle(x, y, 8 + k * 24).fill({ color: C, alpha: 0.12 * (1 - k) });
+      ufxG.circle(x, y, 8 + k * 30).stroke({ color: C, width: 2.5 * (1 - k), alpha: 0.7 * (1 - k) });
+      ufxG.circle(x, y, 8 + k * 24).fill({ color: C, alpha: 0.12 * (1 - k) });
     }
     // SIGNATURE PURPLE BURST at the target — timed to when the strike actually lands
     if (k >= impactK) { const bk = (k - impactK) / (1 - impactK); magicBurst(x, y, bk, phase); blast(40, bk); }
+    if (k >= impactK && !f.boomed) { // the real detonation: purple-hot fireball, shockwave, sparks (or a soft bloom for buffs)
+      f.boomed = true;
+      if (["jet", "gunship", "fall", "beam", "bolts", "implode"].includes(st.mode)) fx.explosion(x, y + 6, st.mode === "fall" || st.mode === "beam" ? 2.2 : 1.6, { ramp: RAMP.purple, smoke: 0.8 });
+      else { fx.flash(x, y, 26, C, 260); fx.ring(x, y + 6, 60, C, 600, 0.6); fx.sparks(x, y, 14, 60, { color: RAMP.purple, up: 90, life: 700 }); }
+    }
+    if ((f.lastFx ?? 0) + 30 < now) { // continuous particle accents while the strike plays
+      f.lastFx = now;
+      if (st.mode === "fall" && k < 0.6) { const t = Math.min(1, k / 0.6), mx = x + 240 - t * 240, my = y - 560 + t * 560; fx.flame(mx, my, 1.6); fx.smokePuff(mx, my, 0.9, { vz: 0, life: 1400, a: 0.4 }); }
+      if (st.mode === "gunship" && k >= 0.3 && k <= 0.68) fx.hitSparks(x + (Math.random() - 0.5) * 24, y + (Math.random() - 0.5) * 10, 1.4, Math.random() < 0.5);
+      if (st.mode === "beam" && k < 0.35) { fx.flame(x + (Math.random() - 0.5) * 10, y, 1.4); fx.part({ tex: fx.T.glow, x, y, life: 120, s0: 22, s1: 30, a0: 0.6, a1: 0, tint: C, squash: 0.5 }); }
+    }
   }
 }
 
 function sendCmd(cmd: unknown) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 connect();
 
-// ---- projectiles: each shot from the server flies with a WEAPON-SPECIFIC look (per firing unit),
-//      then resolves to an impact (hit) or a wide whiff (miss). Animated on the render ticker; cosmetic.
-//   • gunner  — white straight dashed tracer, near-hitscan, tiny spark on hit
-//   • humvee  — rapid warm-amber dashed tracer (light autocannon)
-//   • tank    — slow arcing shell with an ember trail that EXPLODES on impact (fireball + shockwave + debris)
-//   • turret  — smaller explosive autocannon round
-interface ShotStyle { arc: number; travelMult: number; dashed: boolean; core: number; mid: number; glow: number; width: number; explode: boolean; scale: number; dash?: number; gap?: number; alpha?: number; }
-const SHOT_STYLES: Record<string, ShotStyle> = {
-  gunner: { arc: 0, travelMult: 0.5, dashed: true, core: 0xc8ced6, mid: 0xeaf2ff, glow: 0xdfeaff, width: 0.8, explode: false, scale: 0.85, dash: 13, gap: 9, alpha: 0.62 },
-  rocket: { arc: 1.5, travelMult: 1.1, dashed: false, core: 0xffe6b0, mid: 0xff8a3a, glow: 0xff4d10, width: 1.8, explode: true, scale: 1.1 }, // anti-armor rocket
-  nod_rocket: { arc: 1.5, travelMult: 1.1, dashed: false, core: 0xffe6b0, mid: 0xff8a3a, glow: 0xff4d10, width: 1.8, explode: true, scale: 1.1 },
-  humvee: { arc: 0, travelMult: 0.45, dashed: true, core: 0xfff0c0, mid: 0xffd070, glow: 0xffae3a, width: 0.9, explode: false, scale: 0.8, dash: 7, gap: 6 },
-  tank: { arc: 5, travelMult: 1.5, dashed: false, core: 0xffe39a, mid: 0xff7a1a, glow: 0xff2d00, width: 3.2, explode: true, scale: 1.75 },
-  turret: { arc: 2.5, travelMult: 1.1, dashed: false, core: 0xffe39a, mid: 0xff9a2a, glow: 0xff4d10, width: 2.4, explode: true, scale: 1.2 },
-  jet: { arc: 0, travelMult: 2.1, dashed: false, core: 0xfff0c0, mid: 0xff8a3a, glow: 0xff4d10, width: 1.7, explode: true, scale: 1.05 }, // fast straight air-to-ground missile
-  gunship: { arc: 0, travelMult: 1.3, dashed: true, core: 0xfff0c0, mid: 0xffb24a, glow: 0xff7a1a, width: 1.2, explode: false, scale: 0.95, dash: 8, gap: 5, alpha: 0.7 }, // rapid autocannon burst
-  nod_dronewing: { arc: 0, travelMult: 1.4, dashed: true, core: 0xfff0c0, mid: 0xffd070, glow: 0xffae3a, width: 2.0, explode: false, scale: 1.2, dash: 10, gap: 5, alpha: 0.85 }, // heavy gunship: big-caliber rear MG
-  drone: { arc: 0, travelMult: 1.6, dashed: false, core: 0xbfefff, mid: 0x6fd0ff, glow: 0x2f9fe0, width: 1.0, explode: false, scale: 0.7 }, // small cyan energy bolt
-  mech: { arc: 1.4, travelMult: 1.0, dashed: false, core: 0xffe39a, mid: 0xff9a2a, glow: 0xff4d10, width: 2.0, explode: true, scale: 1.0 }, // heavy autocannon shell
-  walker: { arc: 0, travelMult: 3.0, dashed: false, core: 0xeaf6ff, mid: 0x9fd0ff, glow: 0x4090ff, width: 2.6, explode: true, scale: 1.5 }, // hypervelocity railgun slug
-  tesla: { arc: 0, travelMult: 2.6, dashed: true, core: 0xeaffff, mid: 0x9fe8ff, glow: 0x4fb8ff, width: 1.3, explode: false, scale: 0.9, dash: 5, gap: 4, alpha: 0.9 }, // crackling electric arc
-  swarmling: { arc: 2, travelMult: 0.9, dashed: false, core: 0xd6ff9a, mid: 0x8fe04a, glow: 0x4fa01a, width: 1.3, explode: false, scale: 0.85 }, // lobbed acid glob
-  orb: { arc: 0, travelMult: 1.2, dashed: false, core: 0xe6c8ff, mid: 0xb26bff, glow: 0x7a1fd0, width: 2.0, explode: true, scale: 1.2 }, // void bolt
+// ---- WEAPONS: every unit fires a realistic weapon CLASS; the class drives the projectile look, timing,
+// muzzle flash and impact. Particles/beams live in fx.ts (sprite particle engine, additive light).
+type WClass = "mg" | "hmg" | "gatling" | "autocannon" | "cannon" | "heavy" | "artillery" | "rocket" | "mlrs" | "missile" | "flame" | "laser" | "obelisk" | "tesla" | "rail";
+interface Weapon {
+  speed: number; arc: number; burst: number; gap: number; spread: number; // timing: ms-per-cell factor, lob height, rounds per server shot
+  tracer: number; len: number; width: number;                              // projectile look
+  flash: number; smoke: boolean; blast?: boolean;                          // muzzle
+  boom: number;                                                            // explosive impact size (0 = bullets: sparks / dirt)
+  beam?: number; beamW?: number;                                           // instant beam weapons: lifetime ms + width
+}
+const WEAPONS: Record<WClass, Weapon> = {
+  mg:         { speed: 0.5, arc: 0, burst: 3, gap: 55, spread: 5, tracer: 0xffb050, len: 9, width: 1.1, flash: 0.55, smoke: false, boom: 0 },
+  hmg:        { speed: 0.55, arc: 0, burst: 3, gap: 75, spread: 6, tracer: 0xffa040, len: 12, width: 1.5, flash: 0.8, smoke: false, boom: 0 },
+  gatling:    { speed: 0.45, arc: 0, burst: 7, gap: 26, spread: 7, tracer: 0xffc060, len: 11, width: 1.3, flash: 0.9, smoke: false, boom: 0 },
+  autocannon: { speed: 0.6, arc: 1, burst: 2, gap: 120, spread: 4, tracer: 0xffd070, len: 12, width: 1.9, flash: 1.0, smoke: true, boom: 0.35 },
+  cannon:     { speed: 0.75, arc: 2, burst: 1, gap: 0, spread: 0, tracer: 0xffe6a0, len: 16, width: 2.4, flash: 1.6, smoke: true, blast: true, boom: 0.95 },
+  heavy:      { speed: 0.85, arc: 3, burst: 1, gap: 0, spread: 0, tracer: 0xffe6a0, len: 18, width: 3.0, flash: 2.1, smoke: true, blast: true, boom: 1.35 },
+  artillery:  { speed: 2.0, arc: 70, burst: 1, gap: 0, spread: 0, tracer: 0xffd890, len: 6, width: 2.2, flash: 2.4, smoke: true, blast: true, boom: 1.7 },
+  rocket:     { speed: 1.2, arc: 6, burst: 1, gap: 0, spread: 0, tracer: 0xffc060, len: 6, width: 1.8, flash: 0.9, smoke: true, boom: 0.8 },
+  mlrs:       { speed: 1.9, arc: 55, burst: 4, gap: 140, spread: 14, tracer: 0xffc060, len: 6, width: 1.8, flash: 1.2, smoke: true, boom: 1.0 },
+  missile:    { speed: 1.0, arc: 0, burst: 1, gap: 0, spread: 0, tracer: 0xfff0c0, len: 6, width: 1.7, flash: 0.8, smoke: true, boom: 0.85 },
+  flame:      { speed: 0.9, arc: 0, burst: 1, gap: 0, spread: 0, tracer: 0xff9a30, len: 0, width: 0, flash: 0.6, smoke: false, boom: 0 },
+  laser:      { speed: 0, arc: 0, burst: 1, gap: 0, spread: 0, tracer: 0xff5a3a, len: 0, width: 0, flash: 0.7, smoke: false, boom: 0, beam: 280, beamW: 1.4 },
+  obelisk:    { speed: 0, arc: 0, burst: 1, gap: 0, spread: 0, tracer: 0xff3a2a, len: 0, width: 0, flash: 1.4, smoke: false, boom: 0.9, beam: 420, beamW: 2.6 },
+  tesla:      { speed: 0, arc: 0, burst: 1, gap: 0, spread: 0, tracer: 0x8fd8ff, len: 0, width: 0, flash: 0.9, smoke: false, boom: 0, beam: 200, beamW: 1.3 },
+  rail:       { speed: 0, arc: 0, burst: 1, gap: 0, spread: 0, tracer: 0xbfe0ff, len: 0, width: 0, flash: 1.6, smoke: true, boom: 1.0, beam: 320, beamW: 2.0 },
 };
-interface Proj { ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; st: ShotStyle; seed: number; ox: number; oy: number; mox: number; moy: number;
-  homing?: boolean; tid?: number; hx?: number; hy?: number; mh?: number; lastT?: number; boomAt?: number; trail?: number[]; boom?: { x: number; y: number }; lastTgt?: { x: number; y: number }; }
+const WEAPON_OF: Record<string, WClass> = {
+  gunner: "mg", spitter: "mg", nod_spitter: "rocket", rocket: "rocket", nod_rocket: "rocket", nod_bike: "rocket", nod_flamer: "flame",
+  humvee: "hmg", nod_buggy: "hmg", devourer: "hmg", nod_devourer: "rocket", titan: "hmg", nod_titan: "autocannon",
+  turret: "autocannon", nod_turret: "gatling", baseturret: "heavy", warmech: "autocannon", nod_warmech: "cannon",
+  tank: "cannon", nod_lighttank: "cannon", mammoth: "heavy", nod_mammoth: "rail", siege: "artillery", nod_siege: "mlrs",
+  tesla: "tesla", nod_tesla: "laser", railwalker: "rail", nod_railwalker: "obelisk", singularity: "rail", nod_singularity: "heavy",
+  gunship: "autocannon", nod_gunship: "autocannon", nod_dronewing: "hmg", spore: "rocket", nod_spore: "rocket",
+};
+const weaponOf = (kind: string): WClass => WEAPON_OF[kind] ?? ((UNIT_STATS as Record<string, { flying?: boolean }>)[kind]?.flying ? "missile" : "mg");
+interface Proj {
+  w: Weapon; wc: WClass; ax: number; ay: number; bx: number; by: number; t0: number; travel: number; hit: boolean; seed: number;
+  ox: number; oy: number; mox: number; moy: number; baked: boolean; sc: number; air: number; arc: number; tid?: number; homing?: boolean;
+  head?: Sprite; glowS?: Sprite; fired?: boolean; lastPuff?: number; hx?: number; hy?: number; mh?: number; lastT?: number;
+}
 const projectiles: Proj[] = [];
 // visual family for a unit type — several summon types share an art/shot/muzzle family.
 const famOf = (t: string): string => (UNIT_STATS as Record<string, { family?: string }>)[t]?.family ?? t;
@@ -625,15 +654,19 @@ function dashLine(x1: number, y1: number, x2: number, y2: number, dash: number, 
   }
 }
 // ---- DEATH FX: vehicles explode with shrapnel; gunners fall over (handled in reconcileUnits) ----
-interface DeathBlast { gx: number; gy: number; t0: number; scale: number; seed: number; vx: number; vy: number; }
-const deathBlasts: DeathBlast[] = [];
-const DEATH_MS = 1100; // slower-blooming explosion (shockwave/fireball/smoke play out longer)
 const DEATH_BLAST_SCALE: Record<string, number> = { tank: 2.4, turret: 2.1, humvee: 1.6, drone: 1.1, jet: 1.5, gunship: 2.0, mech: 2.0, walker: 1.7, tesla: 1.3, swarmling: 0.9, orb: 1.8 };
 function spawnDeathBlast(gx: number, gy: number, kind: string, uscale = 1, vsx = 0, vsy = 0) {
-  if (deathBlasts.length > 120) return;
-  // bigger units leave a bigger blast — fold the unit's render scale into the base family blast size.
-  const S = (DEATH_BLAST_SCALE[famOf(kind)] ?? 1.4) * (0.6 + 0.4 * uscale);
-  deathBlasts.push({ gx, gy, t0: performance.now(), scale: S, seed: Math.random() * TAU, vx: vsx, vy: vsy });
+  const s = latestState; if (!s) return;
+  const fam = famOf(kind), S = (DEATH_BLAST_SCALE[fam] ?? 1.4) * (0.6 + 0.4 * uscale);
+  const flying = !!(UNIT_STATS as Record<string, { flying?: boolean }>)[kind]?.flying;
+  const x = isoX(gx, gy) + vsx * 0.08, y = isoY(gx, gy) - elevAt(gx, gy, s.seed, s.gridW, s.gridH) - 3 + vsy * 0.08;
+  const z = flying ? (FLY_LIFT[fam] ?? 14) * uscale : 0;
+  const size = S * 0.85;
+  fx.explosion(x, y, size, { air: flying, z, smoke: 1.4, sparks: 1.4 });
+  // heavy hardware cooks off: delayed secondary blasts around the hull
+  const n = fam === "tank" || fam === "mech" || fam === "walker" || fam === "turret" ? 2 : fam === "gunship" || fam === "orb" ? 1 : 0;
+  for (let k = 0; k < n; k++) setTimeout(() => fx.explosion(x + (Math.random() - 0.5) * S * 9, y + (Math.random() - 0.5) * S * 4, size * 0.55, { air: flying, z, scorch: false, dirt: false }), 160 + k * 210 + Math.random() * 120);
+  if (!flying) fx.scorch(x, y, 11 * S, 40000);
   spawnDebris(gx, gy, kind, uscale, S, vsx, vsy); // physics shrapnel: chunky metal + embers flung with gravity/tumble
 }
 
@@ -642,7 +675,7 @@ function spawnDeathBlast(gx: number, gy: number, kind: string, uscale = 1, vsx =
 // its shadow stays at (x, y). Gravity pulls `z` down; on landing it bounces then slides/settles.
 interface Shard { x: number; y: number; z: number; vx: number; vy: number; vz: number; rot: number; vr: number; t0: number; life: number; ember: boolean; size: number; col: number; seed: number; }
 const debris: Shard[] = [];
-const SHARD_COLS = [0x9aa6b2, 0x7b838e, 0x586069, 0x444b54]; // steel greys
+const SHARD_COLS = [0x5a5d61, 0x45484c, 0x34373a, 0x2a2c2f]; // charred steel
 const DEBRIS_TIMESCALE = 0.4; // <1 = slow-motion debris (arcs, fall, tumble all drift through the air slower)
 const FIRE_MS = 3000;         // shrapnel is ablaze for this long, then cools to bare metal
 interface Smoke { x: number; y: number; vx: number; vy: number; t0: number; r: number; }
@@ -656,7 +689,7 @@ function spawnDebris(gx: number, gy: number, kind: string, uscale: number, S: nu
   const z0 = (FLY_LIFT[fam] ?? 0) * uscale; // aircraft burst apart in mid-air, then rain down
   const iv = 1.0; // shards fully carry the unit's own velocity (launched from its moving reference frame)
   const now = performance.now();
-  const metal = Math.min(26, Math.round(9 + S * 6));
+  const metal = Math.min(16, Math.round(5 + S * 4));
   const embers = Math.min(18, Math.round(6 + S * 4));
   for (let i = 0; i < metal + embers; i++) {
     const ember = i >= metal;
@@ -668,14 +701,9 @@ function spawnDebris(gx: number, gy: number, kind: string, uscale: number, S: nu
       vz: (ember ? 90 : 70) + Math.random() * 150 * (0.6 + S * 0.3), // upward launch
       rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 14, // tumble
       t0: now, life: (ember ? 1200 : 4600) + Math.random() * (ember ? 800 : 1200), // burn (3s) + cool + fade
-      ember, size: ember ? 1.3 + Math.random() * 1.4 : (1.6 + Math.random() * 2.4) * (0.7 + S * 0.2),
+      ember, size: ember ? 1.0 + Math.random() * 1.0 : (1.0 + Math.random() * 1.6) * (0.7 + S * 0.15),
       col: SHARD_COLS[i % SHARD_COLS.length], seed: Math.random() * TAU,
     });
-  }
-  // dark grey blast cloud — billows out over the wreck, drifts up, dissipates over 5s
-  const puffs = Math.min(8, Math.round(3 + S * 2));
-  for (let i = 0; i < puffs; i++) {
-    smoke.push({ x: cx + (Math.random() - 0.5) * S * 8, y: cy - z0 * 0.4 + (Math.random() - 0.5) * S * 5, vx: (Math.random() - 0.5) * 10 + vsx * 0.15, vy: -6 - Math.random() * 9 + vsy * 0.15, t0: now, r: S * 3 + Math.random() * S * 3 });
   }
 }
 function drawDebris(now: number, dtMs: number) {
@@ -711,92 +739,138 @@ function drawDebris(now: number, dtMs: number) {
       const P = (px: number, py: number): [number, number] => [sx + (px * c - py * si), sy + (px * si + py * c)];
       const pts = [...P(z, 0), ...P(0.2 * z, 0.7 * z), ...P(-z, 0.3 * z), ...P(-0.4 * z, -0.7 * z)];
       const fire = Math.max(0, 1 - age / FIRE_MS); // 1 → 0 over 3s
-      if (fire > 0) { // flickering flame wrapping the shard, tapering up like a licking fire
-        const fl = 0.6 + 0.4 * Math.sin(now / 45 + d.seed * 9);
-        fxLayer.circle(sx, sy, z * (2.6 + 1.3 * fl) * fire).fill({ color: 0xff5a1a, alpha: 0.2 * fire * a }); // outer flame
-        fxLayer.circle(sx, sy - z * 0.4, z * (1.6 + 0.7 * fl) * fire).fill({ color: 0xffb24a, alpha: 0.42 * fire * a }); // mid
-        fxLayer.circle(sx, sy - z * 0.8, z * 0.9 * fire).fill({ color: 0xffe39a, alpha: 0.7 * fire * a }); // hot tip
-      }
-      const bodyCol = fire > 0 ? lerpColor(d.col, 0xff6a1a, 0.55 * fire) : d.col; // glowing hot, cooling to steel
-      fxLayer.poly(pts).fill({ color: bodyCol, alpha: a }).stroke({ color: fire > 0 ? 0xffd070 : 0xd7dee6, width: 0.5, alpha: 0.5 * a });
+      if (fire > 0 && Math.random() < 0.22) fx.flame(sx, sy, 0.22 + 0.16 * z * fire, 0, 10); // burning chunk: real fire particles
+      if (fire > 0 && d.z > 1 && Math.random() < 0.12) fx.smokePuff(sx, sy, 0.35, { vz: 4, life: 800, a: 0.35 * fire }); // burning chunks trail smoke
+      const bodyCol = fire > 0 ? lerpColor(d.col, 0x9a3a12, 0.45 * fire) : d.col; // glowing hot, cooling to charred steel
+      fxLayer.poly(pts).fill({ color: bodyCol, alpha: a }).stroke({ color: fire > 0 ? 0xff9a40 : 0x8a9096, width: 0.4, alpha: 0.4 * a });
     }
   }
 }
 
+// flying targets are struck at altitude, not at their ground point
+function targetLift(u: StateMsg["units"][number] | undefined): number {
+  if (!u || !(UNIT_STATS as Record<string, { flying?: boolean }>)[u.unit]?.flying) return 0;
+  return unitDims(u).lift * (u.scale ?? 1);
+}
 function spawnShots(s: StateMsg) {
+  const now = performance.now();
+  const byId = new Map(s.units.map((u) => [u.id, u]));
   for (const sh of s.shots ?? []) {
-    if (projectiles.length > 400) break;
+    if (projectiles.length > 520) break;
+    const wc = weaponOf(sh.kind), w = WEAPONS[wc];
     const cells = Math.max(Math.abs(sh.ax - sh.bx), Math.abs(sh.ay - sh.by));
     const fam = famOf(sh.kind);
-    const st = SHOT_STYLES[sh.kind] ?? SHOT_STYLES[fam] ?? SHOT_STYLES.gunner;
-    // a miss veers wide of the target by a few px in a random direction
-    const a = Math.random() * Math.PI * 2, r = 7 + Math.random() * 8;
-    // muzzle offset: push the start to the weapon nozzle — same transform the art uses (rotate the
-    // forward barrel by heading, scale by footprint × render scale, iso-squash y) so the tracer leaves the barrel tip.
+    // muzzle offset: baked sprites carry the exact 3D muzzle anchor; legacy art uses the per-family reach
     const heading = Math.atan2(sh.by - sh.ay, sh.bx - sh.ax) + Math.PI / 4;
     const mLen = (MUZZLE[fam] ?? 0) * (FOOT[fam]?.x ?? 1) * (sh.scale ?? 1);
-    const fly = (FLY_LIFT[fam] ?? 0) * (sh.scale ?? 1); // flying units fire from altitude
+    const fly = (FLY_LIFT[fam] ?? 0) * (sh.scale ?? 1);
     let mox = Math.cos(heading) * mLen, moy = Math.sin(heading) * mLen * 0.62 - fly;
-    const bm = sheets.get(sh.kind)?.j.meta?.muzzle; // baked sprite: exact muzzle anchor from the 3D model
+    const bm = sheets.get(sh.kind)?.j.meta?.muzzle;
     if (bm) {
       const { lift, sc } = unitDims({ unit: sh.kind, scale: sh.scale } as StateMsg["units"][number]), hs = sh.scale ?? 1;
       const p = projModel(bm[0], bm[1], bm[2], Math.atan2(sh.by - sh.ay, sh.bx - sh.ax), sc);
       mox = p.x * hs; moy = (p.y - lift) * hs;
     }
-    // AIRCRAFT fire HOMING MISSILES on a hit: they track the target's live position and explode on it.
-    const homing = !!(UNIT_STATS as Record<string, { flying?: boolean }>)[sh.kind]?.flying && sh.kind !== "nod_dronewing" && sh.hit && sh.tid != null; // heavy gunship fires a big MG, not missiles
-    projectiles.push({
-      ax: sh.ax, ay: sh.ay, bx: sh.bx, by: sh.by, t0: performance.now(),
-      travel: Math.max(40, Math.min(360, 90 + cells * 6) * st.travelMult), hit: sh.hit, st, seed: Math.random() * TAU,
-      ox: sh.hit ? 0 : Math.cos(a) * r, oy: sh.hit ? 0 : Math.sin(a) * r * 0.6,
-      mox, moy,
-      homing, tid: sh.tid, boomAt: -1,
-    });
+    const air = targetLift(sh.tid != null ? byId.get(sh.tid) : undefined);
+    const sc = Math.min(2.2, sh.scale ?? 1);
+    const travel = w.beam ?? Math.max(45, Math.min(460, 70 + cells * 5) * w.speed);
+    const lob = wc === "artillery" || wc === "mlrs" ? w.arc * (0.5 + Math.min(1, cells / 50)) : w.arc;
+    for (let b = 0; b < w.burst; b++) {
+      const a = Math.random() * TAU, r = (sh.hit ? 0 : 7 + Math.random() * 8) + w.spread * Math.random() * (b ? 1 : 0.3);
+      projectiles.push({
+        w, wc, ax: sh.ax, ay: sh.ay, bx: sh.bx, by: sh.by, t0: now + b * w.gap, travel: travel * (1 + (b ? Math.random() * 0.08 : 0)), hit: sh.hit, seed: Math.random() * TAU,
+        ox: Math.cos(a) * r, oy: Math.sin(a) * r * 0.6, mox, moy, baked: !!bm, sc, air, arc: lob, tid: sh.tid,
+        homing: wc === "missile" && sh.hit && sh.tid != null,
+      });
+    }
   }
 }
-// Homing missile: flies from the muzzle and STEERS toward the target unit's LIVE position each frame
-// (curving tracer + exhaust trail), then detonates ON the unit. Returns true when it's finished.
-function updateHomingMissile(s: StateMsg, p: Proj, st: ShotStyle, sx: number, sy: number, ex: number, ey: number, unitById: Map<number, StateMsg["units"][number]> | null, now: number): boolean {
-  // live target screen position (tracks the moving unit); fall back to last-known / the fire-time point
-  const tu = p.tid != null ? unitById?.get(p.tid) : undefined;
-  const tgt = tu
-    ? { x: isoX(tu.x, tu.y), y: isoY(tu.x, tu.y) - elevAt(tu.x, tu.y, s.seed, s.gridW, s.gridH) - 6 }
-    : p.lastTgt ?? { x: ex, y: ey };
-  p.lastTgt = tgt;
-  if (p.hx == null) { p.hx = sx; p.hy = sy; p.mh = Math.atan2(tgt.y - sy, tgt.x - sx); p.trail = []; p.lastT = now; } // launch from the nozzle
-  const dt = Math.min(64, now - (p.lastT ?? now)); p.lastT = now;
+function releaseProj(p: Proj) { if (p.head) fx.give(p.head); if (p.glowS) fx.give(p.glowS); p.head = p.glowS = undefined; }
+// the round arrives: explosive weapons blow up, bullets spark off armor or kick up dirt
+function impact(p: Proj, x: number, y: number) {
+  const w = p.w, air = p.hit && p.air > 0;
+  if (w.boom > 0) {
+    if (p.hit) fx.explosion(x, y + (air ? p.air : 0), w.boom * p.sc, { air, z: air ? p.air : 0, ramp: p.wc === "rail" ? RAMP.plasma : p.wc === "obelisk" ? RAMP.red : undefined });
+    else fx.explosion(x, y, w.boom * 0.7 * p.sc, { smoke: 0.7, sparks: 0.5 });
+  } else if (p.wc === "flame") {
+    if (p.hit) for (let i = 0; i < 5; i++) fx.flame(x + (Math.random() - 0.5) * 6, y + (Math.random() - 0.5) * 3, 0.9 * p.sc);
+  } else fx.hitSparks(x, y, p.sc * (p.wc === "hmg" || p.wc === "gatling" ? 1.2 : 1), p.hit);
+}
+// advance + draw one projectile; true when finished
+function stepProjectile(s: StateMsg, p: Proj, now: number, unitById: Map<number, StateMsg["units"][number]> | null): boolean {
+  const w = p.w, el = now - p.t0;
+  const sx = isoX(p.ax, p.ay) + p.mox, sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - (p.baked ? 0 : 9) + p.moy;
+  const ex = isoX(p.bx, p.by) + p.ox, ey = isoY(p.bx, p.by) - elevAt(p.bx, p.by, s.seed, s.gridW, s.gridH) - 6 + p.oy - (p.hit ? p.air : 0);
+  if (!p.fired) { // muzzle flash (+ the beam itself for instant energy weapons)
+    p.fired = true;
+    const dir = Math.atan2(ey - sy, ex - sx);
+    fx.muzzle(sx, sy, dir, w.flash * p.sc, { smoke: w.smoke, blast: w.blast, color: w.beam ? w.tracer : undefined });
+    if (w.beam) {
+      fx.beam(p.wc === "tesla" ? "tesla" : p.wc === "rail" ? "rail" : "laser", sx, sy, ex, ey, w.tracer, (w.beamW ?? 1.5) * p.sc, w.beam);
+      if (p.wc === "rail" || p.wc === "obelisk") impact(p, ex, ey);
+    }
+  }
+  if (w.beam) return el >= p.travel;
 
-  if ((p.boomAt ?? -1) < 0) {
-    // steer toward the target with a capped turn rate → a homing curve, not an instant snap
+  if (p.homing) { // homing missile: steers toward the target's LIVE position, smoke trail, detonates on contact
+    const tu = p.tid != null ? unitById?.get(p.tid) : undefined;
+    const tgt = tu ? { x: isoX(tu.x, tu.y), y: isoY(tu.x, tu.y) - elevAt(tu.x, tu.y, s.seed, s.gridW, s.gridH) - 6 - targetLift(tu) } : { x: ex, y: ey };
+    if (p.hx == null) { p.hx = sx; p.hy = sy; p.mh = Math.atan2(tgt.y - sy, tgt.x - sx) + (Math.random() - 0.5) * 1.2; p.lastT = now; }
+    const dt = Math.min(64, now - (p.lastT ?? now)); p.lastT = now;
     let diff = Math.atan2(tgt.y - p.hy!, tgt.x - p.hx!) - p.mh!;
     while (diff > Math.PI) diff -= TAU; while (diff < -Math.PI) diff += TAU;
-    const maxTurn = 0.013 * dt; p.mh! += Math.max(-maxTurn, Math.min(maxTurn, diff));
-    const spd = 0.6 * dt; // px/ms — faster than any unit so it always runs the target down
+    const maxTurn = 0.012 * dt; p.mh! += Math.max(-maxTurn, Math.min(maxTurn, diff));
+    const spd = Math.min(0.62, 0.25 + el / 900) * dt; // boosts off the rail
     p.hx! += Math.cos(p.mh!) * spd; p.hy! += Math.sin(p.mh!) * spd;
-    const tr = p.trail!; tr.push(p.hx!, p.hy!); if (tr.length > 18) tr.splice(0, tr.length - 18);
-    // detonate ON the unit: on contact, or a fuse so it always resolves onto the target
-    if (Math.hypot(tgt.x - p.hx!, tgt.y - p.hy!) <= 7 || now - p.t0 > 2400) { p.boomAt = now; p.boom = tgt; }
-    // draw exhaust/tracer trail (fades toward the tail) + a bright hot head
-    const t2 = p.trail!;
-    for (let j = 2; j < t2.length; j += 2) {
-      const f = j / t2.length;
-      fxLayer.moveTo(t2[j - 2], t2[j - 1]).lineTo(t2[j], t2[j + 1]).stroke({ color: st.glow, width: (st.width + 1.4) * f, alpha: 0.5 * f });
-      fxLayer.moveTo(t2[j - 2], t2[j - 1]).lineTo(t2[j], t2[j + 1]).stroke({ color: st.core, width: st.width * f, alpha: 0.9 * f });
+    drawRocketHead(p, p.hx!, p.hy!, p.mh!, now);
+    if (Math.hypot(tgt.x - p.hx!, tgt.y - p.hy!) <= 6 || el > 2600) {
+      fx.explosion(tgt.x, tgt.y + (p.air || 0), w.boom * p.sc, { air: p.air > 0, z: p.air });
+      return true;
     }
-    fxLayer.circle(p.hx!, p.hy!, st.width * 3).fill({ color: st.glow, alpha: 0.3 }); // glow
-    fxLayer.circle(p.hx!, p.hy!, st.width * 1.5).fill({ color: 0xffffff, alpha: 0.95 }); // hot head
     return false;
   }
-  // EXPLOSION centered on the unit itself (shockwave + fireball + flung embers)
-  const b = p.boom!, k = (now - p.boomAt!) / 380;
-  if (k >= 1) return true;
-  fxLayer.circle(b.x, b.y, st.scale * 4 + k * st.scale * 22).stroke({ color: st.glow, width: 3 * (1 - k), alpha: 0.8 * (1 - k) });
-  fxLayer.circle(b.x, b.y, st.scale * 2 + k * st.scale * 13).stroke({ color: st.mid, width: 2 * (1 - k), alpha: 0.7 * (1 - k) });
-  const cf = Math.max(0, 1 - k * 2.2);
-  fxLayer.circle(b.x, b.y, st.scale * 9 * cf).fill({ color: st.mid, alpha: 0.6 * cf });
-  fxLayer.circle(b.x, b.y, st.scale * 6 * cf).fill({ color: st.core, alpha: 0.95 * cf });
-  for (let e = 0; e < 9; e++) { const ang = (e / 9) * TAU + p.seed, dist = k * st.scale * 21; fxLayer.circle(b.x + Math.cos(ang) * dist, b.y + Math.sin(ang) * dist * 0.6, (1 - k) * st.scale * 1.5).fill({ color: e % 2 ? st.core : st.mid, alpha: 0.9 * (1 - k) }); }
+
+  if (p.wc === "flame") { // a roaring tongue of fire licking out from the nozzle to the target
+    if ((p.lastPuff ?? 0) + 14 < now && el < p.travel) {
+      p.lastPuff = now;
+      const lifeS = 0.42, dx = ex - sx, dy = ey - sy;
+      for (let i = 0; i < 2; i++) fx.part({ tex: fx.T.fire[(Math.random() * 3) | 0], layer: "fire", x: sx, y: sy, vx: (dx / lifeS) * (0.75 + Math.random() * 0.3) + (Math.random() - 0.5) * 30, vy: (dy / lifeS) * (0.75 + Math.random() * 0.3) + (Math.random() - 0.5) * 16,
+        vz: 6, drag: 0.4, life: lifeS * 1000, s0: 1.4 * p.sc, s1: 5.5 * p.sc, a0: 1, a1: 0, ramp: RAMP.fire, rot: Math.random() * TAU, vr: 3 });
+    }
+    if (el >= p.travel) { impact(p, ex, ey); return true; }
+    return false;
+  }
+
+  // ballistic: tracer bullets, shells, rockets, artillery
+  const t = Math.min(1, el / p.travel);
+  const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * p.arc;
+  const ang = Math.atan2((ey - sy) - Math.cos(t * Math.PI) * Math.PI * p.arc, ex - sx);
+  if (t >= 1) { impact(p, ex, ey); return true; }
+  if (p.wc === "rocket" || p.wc === "mlrs") drawRocketHead(p, cx, cy, ang, now);
+  else {
+    if (!p.head) { p.head = fx.take(fx.T.streak, w.tracer); p.head.anchor.set(0.88, 0.5); }
+    const len = (w.len + (p.wc === "artillery" ? 0 : 0)) * p.sc;
+    p.head.position.set(cx, cy); p.head.rotation = ang; p.head.scale.set((len * 2) / 64, (w.width * 3 * p.sc) / 16);
+    if (p.wc === "cannon" || p.wc === "heavy" || p.wc === "artillery" || p.wc === "autocannon") {
+      if (!p.glowS) p.glowS = fx.take(fx.T.glow, w.tracer);
+      p.glowS.position.set(cx, cy); p.glowS.scale.set((w.width * 3.2 * p.sc) / 32); p.glowS.alpha = 0.7;
+    }
+    if (p.wc === "artillery" && (p.lastPuff ?? 0) + 45 < now) { p.lastPuff = now; fx.smokePuff(cx, cy, 0.35, { dark: false, vz: 2, life: 900, a: 0.25 }); }
+  }
   return false;
+}
+// rocket/missile head: hot motor flare + glow + a billowing smoke trail laid down behind it
+function drawRocketHead(p: Proj, x: number, y: number, ang: number, now: number) {
+  const w = p.w;
+  if (!p.head) { p.head = fx.take(fx.T.flare, 0xfff2d0); p.glowS = fx.take(fx.T.glow, 0xffa040); }
+  p.head.position.set(x, y); p.head.rotation = ang; p.head.scale.set((3.4 * p.sc) / 32);
+  p.glowS!.position.set(x, y); p.glowS!.scale.set((w.width * 4 * p.sc) / 32); p.glowS!.alpha = 0.55 + 0.25 * Math.sin(now / 25 + p.seed);
+  if ((p.lastPuff ?? 0) + 16 < now) {
+    p.lastPuff = now;
+    const bx = x - Math.cos(ang) * 2, by = y - Math.sin(ang) * 2;
+    fx.smokePuff(bx, by, 0.5 * p.sc, { vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 4, vz: 3, life: 900 + Math.random() * 600, dark: false, a: 0.42 });
+    fx.part({ tex: fx.T.glow, x: bx, y: by, life: 140, s0: 2.2 * p.sc, s1: 0.8 * p.sc, a0: 0.8, a1: 0, ramp: RAMP.hot });
+  }
 }
 // ---- WRAITH WINGTIP WINDSTREAMS: white vortices trailing off the outer wingtips, fading to transparent over 5s ----
 interface WindPuff { x: number; y: number; t0: number; vx: number; vy: number; r: number; col?: number; am?: number; life?: number; }
@@ -916,87 +990,19 @@ function drawWind(now: number) {
 app.ticker.add(() => {
   if (!latestState) return;
   const s = latestState, now = performance.now();
-  emitWind(now); // wraiths keep streaming even when nothing else is on the fx layer
-  const idle = !projectiles.length && !deathBlasts.length && !debris.length && !smoke.length && !ufxList.length && !windPuffs.length && windTrails.size === 0;
-  if (idle) { fxLayer.clear(); return; }
-  fxLayer.clear();
+  fx.update(app.ticker.deltaMS, now); // particles, beams, burning wrecks, scorch fade
+  emitWind(now); // contrails keep streaming even when nothing else is on the fx layer
+  fxLayer.clear(); ufxG.clear();
+  if (!projectiles.length && !debris.length && !ufxList.length && !windPuffs.length && windTrails.size === 0) return;
   drawWind(now); // contrails first, under projectiles/explosions
   const unitById = projectiles.some((p) => p.homing) ? new Map(s.units.map((u) => [u.id, u])) : null; // live target lookup for homing missiles
   for (let i = projectiles.length - 1; i >= 0; i--) {
-    const p = projectiles[i], st = p.st;
-    const el = now - p.t0;
-    const impactMs = st.explode ? 380 : 130;
-    const sx = isoX(p.ax, p.ay) + p.mox, sy = isoY(p.ax, p.ay) - elevAt(p.ax, p.ay, s.seed, s.gridW, s.gridH) - 9 + p.moy;
-    const ex = isoX(p.bx, p.by) + p.ox, ey = isoY(p.bx, p.by) - elevAt(p.bx, p.by, s.seed, s.gridW, s.gridH) - 6 + p.oy;
-    if (p.homing) { if (updateHomingMissile(s, p, st, sx, sy, ex, ey, unitById, now)) projectiles.splice(i, 1); continue; }
-    if (el >= p.travel + impactMs) { projectiles.splice(i, 1); continue; }
-    if (el < p.travel) {
-      const t = el / p.travel, tt = Math.max(0, t - 0.16);
-      const cx = sx + (ex - sx) * t, cy = sy + (ey - sy) * t - Math.sin(t * Math.PI) * st.arc;
-      if (st.dashed) {
-        // skinny long-dashed straight tracer streaking out from the muzzle to the current head
-        const dash = st.dash ?? 12, gap = st.gap ?? 8, a = st.alpha ?? 0.95;
-        dashLine(sx, sy, cx, cy, dash, gap, { color: st.glow, width: st.width + 0.7, alpha: a * 0.15 }); // faint glow
-        dashLine(sx, sy, cx, cy, dash, gap, { color: st.core, width: st.width, alpha: a }); // crisp skinny dashes
-        fxLayer.circle(cx, cy, st.width * 1.1).fill({ color: st.core, alpha: a }); // small head
-      } else {
-        // arcing shell with a fiery ember trail
-        const px = sx + (ex - sx) * tt, py = sy + (ey - sy) * tt - Math.sin(tt * Math.PI) * st.arc;
-        fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: st.glow, width: st.width * 1.5, alpha: 0.35 });
-        fxLayer.moveTo(px, py).lineTo(cx, cy).stroke({ color: st.mid, width: st.width, alpha: 0.9 });
-        fxLayer.circle(cx, cy, st.scale * 1.7).fill({ color: st.core, alpha: 0.95 }); // hot round
-        fxLayer.circle(cx, cy, st.scale * 3).fill({ color: st.glow, alpha: 0.26 }); // bloom
-      }
-    } else {
-      const k = (el - p.travel) / impactMs; // 0→1 impact progress
-      if (st.explode) {
-        if (p.hit) {
-          // EXPLOSION: shockwave rings + fireball + flung embers + lingering smoke
-          fxLayer.circle(ex, ey, st.scale * 4 + k * st.scale * 22).stroke({ color: st.glow, width: 3 * (1 - k), alpha: 0.8 * (1 - k) });
-          fxLayer.circle(ex, ey, st.scale * 2 + k * st.scale * 13).stroke({ color: st.mid, width: 2 * (1 - k), alpha: 0.7 * (1 - k) });
-          const cf = Math.max(0, 1 - k * 2.2); // fireball flashes then dies fast
-          fxLayer.circle(ex, ey, st.scale * 9 * cf).fill({ color: st.mid, alpha: 0.6 * cf });
-          fxLayer.circle(ex, ey, st.scale * 6 * cf).fill({ color: st.core, alpha: 0.95 * cf });
-          for (let e = 0; e < 9; e++) { // ember debris
-            const ang = (e / 9) * TAU + p.seed, dist = k * st.scale * 21;
-            fxLayer.circle(ex + Math.cos(ang) * dist, ey + Math.sin(ang) * dist * 0.6, (1 - k) * st.scale * 1.5).fill({ color: e % 2 ? st.core : st.mid, alpha: 0.9 * (1 - k) });
-          }
-          fxLayer.circle(ex, ey - k * 4, st.scale * 5 + k * st.scale * 12).fill({ color: 0x141210, alpha: 0.16 * (1 - k) }); // smoke
-        } else {
-          fxLayer.circle(ex, ey, st.scale * 3 + k * 9).stroke({ color: st.mid, width: 1.4 * (1 - k), alpha: 0.4 * (1 - k) }); // ground burst
-          fxLayer.circle(ex, ey, st.scale * 3 + k * 11).fill({ color: 0x141210, alpha: 0.12 * (1 - k) }); // dust
-        }
-      } else if (p.hit) {
-        // bullet hit: small bright spark + a few flung sparks
-        fxLayer.circle(ex, ey, 2 + k * 7).stroke({ color: st.core, width: 1.2 * (1 - k), alpha: 0.8 * (1 - k) });
-        fxLayer.circle(ex, ey, 2.5 * (1 - k)).fill({ color: st.core, alpha: 0.95 * (1 - k) });
-        for (let e = 0; e < 4; e++) { const ang = (e / 4) * TAU + p.seed, len = (1 - k) * 7; fxLayer.moveTo(ex, ey).lineTo(ex + Math.cos(ang) * len, ey + Math.sin(ang) * len * 0.6).stroke({ color: st.core, width: 1, alpha: 0.7 * (1 - k) }); }
-      } else {
-        fxLayer.circle(ex, ey, 3 + k * 5).stroke({ color: st.mid, width: 1, alpha: 0.3 * (1 - k) }); // whiff puff
-      }
-    }
-  }
-  // vehicle DEATH explosions: shockwave + fireball + SHRAPNEL (steel + ember streaks flung outward) + smoke
-  for (let i = deathBlasts.length - 1; i >= 0; i--) {
-    const d = deathBlasts[i], el = now - d.t0;
-    if (el >= DEATH_MS) { deathBlasts.splice(i, 1); continue; }
-    const k = el / DEATH_MS, S = d.scale;
-    const drift = Math.min(el / 1000, 0.7); // the blast carries the unit's momentum, then air-brakes
-    const x = isoX(d.gx, d.gy) + d.vx * drift, y = isoY(d.gx, d.gy) - elevAt(d.gx, d.gy, s.seed, s.gridW, s.gridH) - 6 + d.vy * drift;
-    fxLayer.circle(x, y, S * 5 + k * S * 30).stroke({ color: 0xff6a1a, width: 3 * (1 - k), alpha: 0.8 * (1 - k) }); // shockwave
-    fxLayer.circle(x, y, S * 3 + k * S * 18).stroke({ color: 0xffd23a, width: 2 * (1 - k), alpha: 0.6 * (1 - k) });
-    const cf = Math.max(0, 1 - k * 2.4); // fireball flashes then dies
-    fxLayer.circle(x, y, S * 10 * cf).fill({ color: 0xff7a1a, alpha: 0.6 * cf });
-    fxLayer.circle(x, y, S * 6 * cf).fill({ color: 0xffe39a, alpha: 0.95 * cf });
-    for (let p = 0; p < 14; p++) { // shrapnel streaks
-      const ang = (p / 14) * TAU + d.seed + p * 0.7, sp = 0.5 + (p % 3) * 0.3, dist = k * S * 34 * sp, len = (1 - k) * S * 5;
-      const x1 = x + Math.cos(ang) * dist, y1 = y + Math.sin(ang) * dist * 0.6;
-      fxLayer.moveTo(x1, y1).lineTo(x1 + Math.cos(ang) * len, y1 + Math.sin(ang) * len * 0.6).stroke({ color: p % 2 ? 0x9aa6b2 : 0xffb24a, width: 1.4 * (1 - k), alpha: 0.9 * (1 - k) });
-    }
-    fxLayer.circle(x, y - k * 6, S * 5 + k * S * 14).fill({ color: 0x16130f, alpha: 0.18 * (1 - k) }); // smoke
+    const p = projectiles[i];
+    if (now < p.t0) continue; // later rounds of a burst
+    if (stepProjectile(s, p, now, unitById)) { releaseProj(p); projectiles.splice(i, 1); }
   }
   drawDebris(now, app.ticker.deltaMS); // physics shrapnel: arcs up/out, tumbles, falls, settles
-  if (ufxList.length) drawUfx(s, now); // ULTIMATE FX drawn last, on the freshly-cleared layer
+  if (ufxList.length) drawUfx(s, now); // ULTIMATE FX
 });
 
 // gunners fall over and die: keep the unit's art briefly and tip it over, fading, then drop it.
@@ -1005,6 +1011,7 @@ const dyingUnits: Dying[] = [];
 const DEATH_FALL_MS = 650;
 function startFallOver(v: UnitView) {
   v.topG?.clear(); // no hp bar on a corpse
+  fx.dirt(v.holder.x, v.holder.y, 0.5, 3);
   dyingUnits.push({ holder: v.holder, t0: performance.now() });
 }
 app.ticker.add(() => {
@@ -1038,6 +1045,7 @@ function leaveWreck(v: UnitView) {
   if (v.spinner && Math.random() < 0.75) v.spinner.tint = CHAR;
   if (v.legsG && Math.random() < 0.75) v.legsG.tint = CHAR;
   v.holder.eventMode = "none"; // dead: no hover/click
+  { const S = DEATH_BLAST_SCALE[famOf(v.u.unit)] ?? 1.4; fx.burn(v.holder.x, v.holder.y - 3, 0.5 + S * 0.22, 7000 + S * 1500); } // the husk keeps burning
   if (wrecks.length > 40) { wrecks[0].holder.destroy({ children: true }); wrecks.shift(); } // cap
   wrecks.push({ holder: v.holder, t0: performance.now() });
 }
@@ -2721,6 +2729,7 @@ window.addEventListener("pointerup", () => {
 // DEV-only: window.__agi.focus("tank", 4) centers the camera on the first visible unit of a type (art review).
 if ((import.meta as any).env?.DEV) (window as any).__agi = {
   types: () => [...new Set([...unitViews.values()].map((e) => e.u.unit))],
+  fxCount: () => (fx as any).parts.length,
   stateTypes: () => [...new Set((latestState?.units ?? []).map((u) => u.unit))],
   inspect(type: string) {
     const e = [...unitViews.values()].reverse().find((v) => v.u.unit === type); if (!e) return null;
