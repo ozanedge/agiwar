@@ -1,12 +1,13 @@
 // agiwar web client: renders the server-authoritative snapshot and sends sparse commands.
-import { Application, Container, Graphics, RenderTexture, Sprite, Text, Texture } from "pixi.js";
+import { Application, Assets, Container, Graphics, Rectangle, RenderTexture, Sprite, Text, Texture } from "pixi.js";
 import type { Camp, DoctrineId, FieldGeneral, ServerMsg, StateMsg, UnitState } from "../../../shared/types.js";
 import { UNIT_STATS, TRAINABLE, VISION_MULT, VISION_CAP, BASE_VISION, INVESTMENTS, investCost, GRID_SCALE, bonusFrac, type UnitType, type Faction, FACTIONS, FACTION_META, FACTION_ROLE_UNIT, ultUnitFor } from "../../../shared/units.js";
 import { ARMY_DOCTRINES, modsFor } from "../../../shared/doctrine.js";
 import { heightAt, elevationAt, elevFromHeight, kindOf, highGroundBonus, CLIFF_SLOPE, type TerrainKind } from "../../../shared/terrain.js";
 import { ARTIFACTS, ULTIMATES, ultimateFor } from "../../../shared/ultimates.js";
 
-const WS_URL = (import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787";
+// ?solo on the page URL → the server puts this client straight into a bot match (never paired with a waiting human)
+const WS_URL = ((import.meta as any).env?.VITE_WS_URL ?? "ws://localhost:8787") + (new URLSearchParams(location.search).has("solo") ? "/?solo" : "");
 const MM_SECONDS = 60; // how long we look for a live opponent before single-player (matches server)
 // Skynetops mission-control palette. Primary color = SIDE (yours cyan, enemy danger-red);
 // doctrine is shown as an accent outline.
@@ -735,13 +736,20 @@ function spawnShots(s: StateMsg) {
     const heading = Math.atan2(sh.by - sh.ay, sh.bx - sh.ax) + Math.PI / 4;
     const mLen = (MUZZLE[fam] ?? 0) * (FOOT[fam]?.x ?? 1) * (sh.scale ?? 1);
     const fly = (FLY_LIFT[fam] ?? 0) * (sh.scale ?? 1); // flying units fire from altitude
+    let mox = Math.cos(heading) * mLen, moy = Math.sin(heading) * mLen * 0.62 - fly;
+    const bm = sheets.get(sh.kind)?.j.meta?.muzzle; // baked sprite: exact muzzle anchor from the 3D model
+    if (bm) {
+      const { lift, sc } = unitDims({ unit: sh.kind, scale: sh.scale } as StateMsg["units"][number]), hs = sh.scale ?? 1;
+      const p = projModel(bm[0], bm[1], bm[2], Math.atan2(sh.by - sh.ay, sh.bx - sh.ax), sc);
+      mox = p.x * hs; moy = (p.y - lift) * hs;
+    }
     // AIRCRAFT fire HOMING MISSILES on a hit: they track the target's live position and explode on it.
     const homing = !!(UNIT_STATS as Record<string, { flying?: boolean }>)[sh.kind]?.flying && sh.kind !== "nod_dronewing" && sh.hit && sh.tid != null; // heavy gunship fires a big MG, not missiles
     projectiles.push({
       ax: sh.ax, ay: sh.ay, bx: sh.bx, by: sh.by, t0: performance.now(),
       travel: Math.max(40, Math.min(360, 90 + cells * 6) * st.travelMult), hit: sh.hit, st, seed: Math.random() * TAU,
       ox: sh.hit ? 0 : Math.cos(a) * r, oy: sh.hit ? 0 : Math.sin(a) * r * 0.6,
-      mox: Math.cos(heading) * mLen, moy: Math.sin(heading) * mLen * 0.62 - fly,
+      mox, moy,
       homing, tid: sh.tid, boomAt: -1,
     });
   }
@@ -814,7 +822,15 @@ function artPointWorld(e: UnitView, ax: number, ay: number): { x: number; y: num
   const hs = u.scale ?? 1;
   return { x: e.holder.x + (rx + 1.6 * sc) * hs, y: e.holder.y + (ry * 0.62 - (lift + H * 1.25 * sc)) * hs };
 }
+// baked-sprite equivalent: a model-space anchor (forward x, up y, lateral z) → world px.
+function modelPointWorld(e: UnitView, x: number, y: number, z: number): { x: number; y: number } {
+  const { lift, sc } = unitDims(e.u), hs = e.u.scale ?? 1;
+  const p = projModel(x, y, z, Math.atan2(e.u.dy, e.u.dx), sc);
+  return { x: e.holder.x + p.x * hs, y: e.holder.y + (p.y - lift) * hs };
+}
 function wingtipWorld(e: UnitView, sign: number): { x: number; y: number } {
+  const wt = e.sheet?.j.meta?.wingtip;
+  if (wt) return modelPointWorld(e, wt[0], wt[1], sign * wt[2]);
   if (e.u.unit === "interceptor") return artPointWorld(e, ITC_WINGTIP.x, sign * ITC_WINGTIP.y); // real sprite wingtip
   const sh = planeSharp(e.u.unit);
   return artPointWorld(e, planeTipX(sh), sign * planeSpan(sh));
@@ -829,7 +845,7 @@ function emitWind(now: number) {
       const h = Math.atan2(e.u.dy, e.u.dx) + Math.PI / 4;
       const fx = Math.cos(h), fy = Math.sin(h), perpx = -fy, perpy = fx;
       for (const s of [-1, 1]) {
-        const p = artPointWorld(e, -3, s * 13); // outside wing tip
+        const p = e.sheet?.j.meta?.wingtip ? wingtipWorld(e, s) : artPointWorld(e, -3, s * 13); // outside wing tip
         windPuffs.push({ x: p.x, y: p.y, t0: now, vx: perpx * s * 5 - fx * 6, vy: perpy * s * 5 - fy * 6, r: 3.0 });
       }
       while (windPuffs.length > WIND_MAX) windPuffs.shift();
@@ -845,7 +861,7 @@ function emitWind(now: number) {
       continue;
     }
     if (famOf(type) !== "jet") continue; // only planes stream
-    if (isDartShape(type)) { // Fighter Jet + Banshee: ONE contrail centered behind the tail
+    if (isDartShape(type) && !e.sheet?.j.meta?.wingtip) { // Fighter Jet + Banshee: ONE contrail centered behind the tail
       const p = artPointWorld(e, -8.5, 0);
       const key = `${e.u.id}:c`;
       let tr = windTrails.get(key);
@@ -853,7 +869,7 @@ function emitWind(now: number) {
       tr.pts.push({ x: p.x, y: p.y, t0: now });
       continue;
     }
-    const fast = planeSharp(type) >= 0.5; // interceptor → skinny wingtip lines; wide-body wraith → bubbles
+    const fast = planeSharp(type) >= 0.5 || isDartShape(type); // interceptor → skinny wingtip lines; wide-body wraith → bubbles
     for (const sign of [-1, 1]) {
       const p = wingtipWorld(e, sign);
       if (fast) {
@@ -2081,7 +2097,7 @@ const GLOW_OWN = 0x37e07a, GLOW_ENEMY = 0xff4646; // ground-glow: allied = green
 
 // CHEAP per-tick bits (cleared + redrawn each state — a handful of shapes). The expensive z-stack
 // geometry below is built ONCE and only rotated, so we don't churn thousands of Graphics per second.
-function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
+function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg, baked = false) {
   g.clear();
   const { fp, rad } = unitDims(u);
   const ult = u.scale != null; // ULTIMATE-spawned unit → bright purple ring (below)
@@ -2089,20 +2105,23 @@ function drawUnitBase(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
   const body = factionColorOf(u, s); // faction color (for the turret pedestal)
   // soft DIRECTIONAL contact shadow (key light upper-left → shadow falls down-right), layered for a
   // blurred penumbra → tight contact core, so the unit reads as grounded rather than a flat disc.
-  g.ellipse(2.4, 5, 13 * fp.x, 5.2 * fp.y).fill({ color: 0x000000, alpha: 0.14 }); // outer penumbra
-  g.ellipse(1.4, 4, 10 * fp.x, 4.2 * fp.y).fill({ color: 0x000000, alpha: 0.2 });
-  g.ellipse(0.6, 3, 7.5 * fp.x, 3.2 * fp.y).fill({ color: 0x000000, alpha: 0.26 }); // contact core
+  if (!baked) { // baked sprites carry their own rendered shadow
+    g.ellipse(2.4, 5, 13 * fp.x, 5.2 * fp.y).fill({ color: 0x000000, alpha: 0.14 }); // outer penumbra
+    g.ellipse(1.4, 4, 10 * fp.x, 4.2 * fp.y).fill({ color: 0x000000, alpha: 0.2 });
+    g.ellipse(0.6, 3, 7.5 * fp.x, 3.2 * fp.y).fill({ color: 0x000000, alpha: 0.26 }); // contact core
+  }
   if (isHoverTank(u.unit)) g.ellipse(0, 4, rad * 1.05, rad * 0.5).fill({ color: 0x6fd2ff, alpha: 0.13 }); // hover glow beneath the chassis
   // ALLEGIANCE GROUND GLOW — every unit (allied = green, enemy = red)
-  g.ellipse(0, 1, rad + 13, (rad + 13) * 0.5).fill({ color: glow, alpha: ult ? 0.22 : 0.14 });
-  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: glow, alpha: ult ? 0.32 : 0.22 });
+  const ga = baked ? 0.75 : 1; // baked sprites: a touch softer so the hardware reads first
+  g.ellipse(0, 1, rad + 13, (rad + 13) * 0.5).fill({ color: glow, alpha: (ult ? 0.22 : 0.14) * ga });
+  g.ellipse(0, 1, rad + 6, (rad + 6) * 0.5).fill({ color: glow, alpha: (ult ? 0.32 : 0.22) * ga });
   // ULTIMATE units: a bright PURPLE ring around the outside (both armies)
   if (ult) {
     const PR = 0xc24bff, pulse = 0.5 + 0.5 * Math.sin(s.tick / 5), rr = rad + 14 + 2 * pulse;
     g.ellipse(0, 1, rr + 3, (rr + 3) * 0.5).fill({ color: PR, alpha: 0.1 + 0.08 * pulse }); // soft halo
     g.ellipse(0, 1, rr, rr * 0.5).stroke({ color: PR, width: 2.8, alpha: 0.95 }); // crisp bright ring
   }
-  if (famOf(u.unit) === "turret") g.ellipse(0, 3, 12, 6.5).fill(tint(body, -0.3)).stroke(UNIT_LN);
+  if (famOf(u.unit) === "turret" && !baked) g.ellipse(0, 3, 12, 6.5).fill(tint(body, -0.3)).stroke(UNIT_LN);
   if (pinned && pinned.id === u.id) g.ellipse(0, 1, rad + 9, (rad + 9) * 0.5).stroke({ color: 0xffffff, width: 1.5, alpha: 0.85 }); // selection ring
 }
 function drawUnitTop(g: Graphics, u: StateMsg["units"][number], s: StateMsg) {
@@ -2143,10 +2162,91 @@ function drawRunLegs(g: Graphics, side: number, phase: number, moving: boolean) 
   leg(Math.sin(phase + Math.PI), 1.3); // right leg (anti-phase)
 }
 
+// ---- BAKED UNIT SPRITES ----
+// Pre-rendered 3D sprite sheets (apps/web/baker → public/units): each unit type is rendered from the
+// game's exact iso camera at DIRS headings (+ animation frames for walkers), loaded lazily the first
+// time the type appears. Until its sheet arrives a unit uses the legacy vector art, then swaps.
+interface SheetFrame { x: number; y: number; w: number; h: number; tx: number; ty: number; page: number }
+interface SheetJson {
+  type: string; res: number; dirs: number; frames: number; w: number; h: number; ax: number; ay: number; flyer: boolean;
+  pages: string[]; f: SheetFrame[]; sf?: SheetFrame[]; spages?: string[]; sw?: number; sh?: number;
+  meta?: { rotor?: [number, number, number, number]; wingtip?: [number, number, number]; muzzle?: [number, number, number]; walk?: [number, number] };
+}
+interface UnitSheet { j: SheetJson; tex: Texture[]; shadow: Texture[] | null }
+const UNIT_BASE = `${(import.meta as any).env?.BASE_URL ?? "/"}units/`;
+const sheets = new Map<string, UnitSheet>();
+const sheetLoading = new Set<string>();
+let bakedTypes: Set<string> | null = null;
+fetch(UNIT_BASE + "manifest.json").then((r) => (r.ok ? r.json() : { types: [] })).then((m) => { bakedTypes = new Set(m.types); }).catch(() => { bakedTypes = new Set(); });
+function sheetFor(type: string): UnitSheet | null {
+  const hit = sheets.get(type);
+  if (hit || !bakedTypes?.has(type) || sheetLoading.has(type)) return hit ?? null;
+  sheetLoading.add(type);
+  (async () => {
+    const j: SheetJson = await (await fetch(UNIT_BASE + type + ".json")).json();
+    const load = (names: string[]) => Promise.all(names.map((n) => Assets.load<Texture>({ src: UNIT_BASE + n, data: { autoGenerateMipmaps: true, scaleMode: "linear" } })));
+    const pages = await load(j.pages), spages = j.spages ? await load(j.spages) : null;
+    const mk = (f: SheetFrame, src: Texture[], W: number, H: number) => new Texture({ source: src[f.page].source, frame: new Rectangle(f.x, f.y, f.w, f.h), orig: new Rectangle(0, 0, W, H), trim: new Rectangle(f.tx, f.ty, f.w, f.h) });
+    sheets.set(type, { j, tex: j.f.map((f) => mk(f, pages, j.w, j.h)), shadow: spages && j.sf ? j.sf.map((f) => mk(f, spages, j.sw ?? j.w, j.sh ?? j.h)) : null });
+  })().catch((e) => console.warn("unit sheet", type, e));
+  return null;
+}
+const sheetDir = (sh: UnitSheet, u: { dx: number; dy: number }) => { const D = sh.j.dirs; return ((Math.round((Math.atan2(u.dy, u.dx) / TAU) * D) % D) + D) % D; };
+// project an art-space model point (forward x, lateral z, up y) at grid heading θ into holder-local px
+// (true 2:1 dimetric, the camera the sheets were baked with).
+function projModel(x: number, y: number, z: number, th: number, sc: number): { x: number; y: number } {
+  const X = x * Math.cos(th) - z * Math.sin(th), Z = x * Math.sin(th) + z * Math.cos(th);
+  return { x: ((X - Z) / Math.SQRT2) * sc, y: (0.35355 * (X + Z) - 0.86603 * y) * sc };
+}
+// helicopter rotor for baked gunships: dark composite blades + soft motion disc (spun by the ticker)
+function drawRotorBaked(g: Graphics, r: number) {
+  g.circle(0, 0, r).fill({ color: 0x1a1d20, alpha: 0.16 });
+  g.circle(0, 0, r).stroke({ color: 0x0c0e10, width: 0.8, alpha: 0.22 });
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * TAU, c = Math.cos(a), sn = Math.sin(a);
+    g.poly([c * 1.2 - sn * 0.9, sn * 1.2 + c * 0.9, c * r - sn * 0.7, sn * r + c * 0.7, c * r + sn * 0.7, sn * r - c * 0.7, c * 1.2 + sn * 0.9, sn * 1.2 - c * 0.9]).fill({ color: 0x16191c, alpha: 0.78 });
+  }
+  g.circle(0, 0, 1.4).fill(0x2a2e33);
+}
+interface SpriteArt { root: Container; rotors: Graphics[]; baseG: Graphics; topG: Graphics; spinner: Graphics | null; legsG: Graphics | null; spr: Sprite; shadowSpr: Sprite | null; sheet: UnitSheet }
+function spriteArt(u: StateMsg["units"][number], s: StateMsg, sh: UnitSheet): SpriteArt {
+  const cont = new Container();
+  const { lift, sc } = unitDims(u);
+  const baseG = new Graphics(); drawUnitBase(baseG, u, s, true); cont.addChild(baseG);
+  const k = sc / sh.j.res; // legacy art scaled by unit scale twice (footprint × holder) — keep the same on-screen size
+  let shadowSpr: Sprite | null = null;
+  if (sh.shadow) { // flyers: baked ground shadow, offset along the key light by altitude
+    shadowSpr = new Sprite(sh.shadow[sheetDir(sh, u)]); shadowSpr.anchor.set(sh.j.ax, sh.j.ay); shadowSpr.scale.set(k * (sh.j.w / (sh.j.sw ?? sh.j.w))); shadowSpr.alpha = 0.85;
+    shadowSpr.position.set(lift * 0.55, lift * 0.3); cont.addChild(shadowSpr);
+  }
+  const spr = new Sprite(sh.tex[sheetDir(sh, u)]); spr.anchor.set(sh.j.ax, sh.j.ay); spr.scale.set(k); spr.y = -lift; cont.addChild(spr);
+  let spinner: Graphics | null = null;
+  const rotor = sh.j.meta?.rotor;
+  if (rotor) {
+    const w = new Container(); w.scale.set(1, 0.5);
+    spinner = new Graphics(); drawRotorBaked(spinner, rotor[3] * sc); w.addChild(spinner); cont.addChild(w);
+  }
+  const topG = new Graphics(); drawUnitTop(topG, u, s); cont.addChild(topG);
+  return { root: cont, rotors: [spr as unknown as Graphics], baseG, topG, spinner, legsG: null, spr, shadowSpr, sheet: sh };
+}
+function updateSpriteArt(v: UnitView, u: StateMsg["units"][number]) {
+  const sh = v.sheet!, d = sheetDir(sh, u), f = (v.anim ?? 0) * sh.j.dirs + d;
+  if (v.spr && v.spr.texture !== sh.tex[f]) v.spr.texture = sh.tex[f];
+  if (v.shadowSpr && sh.shadow) v.shadowSpr.texture = sh.shadow[d];
+  const rotor = sh.j.meta?.rotor;
+  if (rotor && v.spinner) { // rotor hub follows heading (it sits fore/aft of the model origin)
+    const { lift, sc } = unitDims(u);
+    const p = projModel(rotor[0], rotor[1], rotor[2], Math.atan2(u.dy, u.dx), sc);
+    v.spinner.parent!.position.set(p.x, p.y - lift);
+  }
+}
+
 // Build a unit's STATIC art once (z-stack volume geometry + base/top placeholders). Returns the root
 // container plus the rotatable layer graphics so the per-tick update can spin them to face heading
 // without rebuilding geometry. A persistent holder carries the (eased) world position.
-function unitArt(u: StateMsg["units"][number], s: StateMsg): { root: Container; rotors: Graphics[]; baseG: Graphics; topG: Graphics; spinner: Graphics | null; legsG: Graphics | null } {
+function unitArt(u: StateMsg["units"][number], s: StateMsg): { root: Container; rotors: Graphics[]; baseG: Graphics; topG: Graphics; spinner: Graphics | null; legsG: Graphics | null; spr?: Sprite; shadowSpr?: Sprite | null; sheet?: UnitSheet } {
+  const sh = sheetFor(u.unit);
+  if (sh) return spriteArt(u, s, sh);
   const cont = new Container();
   const ult = u.scale != null; // ULTIMATE-spawned unit → purple accents + purple ring (in drawUnitBase)
   const side = factionColorOf(u, s); // body = faction color (Anthropic orange / OpenAI light grey)
@@ -2198,14 +2298,14 @@ function unitArt(u: StateMsg["units"][number], s: StateMsg): { root: Container; 
 // Cheap per-state refresh of an existing unit's art: rotate the prebuilt layers to the new heading
 // and redraw only the small base/top graphics. No geometry rebuild → no per-frame allocation churn.
 function updateUnitArt(v: UnitView, u: StateMsg["units"][number], s: StateMsg) {
-  const heading = Math.atan2(u.dy, u.dx) + Math.PI / 4;
-  for (const r of v.rotors) r.rotation = heading;
-  if (v.baseG) drawUnitBase(v.baseG, u, s);
+  if (v.sheet) updateSpriteArt(v, u);
+  else { const heading = Math.atan2(u.dy, u.dx) + Math.PI / 4; for (const r of v.rotors) r.rotation = heading; }
+  if (v.baseG) drawUnitBase(v.baseG, u, s, !!v.sheet);
   if (v.topG) drawUnitTop(v.topG, u, s);
 }
 
 // ---- smooth unit movement: a persistent holder per unit id, eased toward the latest server cell ----
-interface UnitView { holder: Container; art: Container | null; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; spinner: Graphics | null; legsG: Graphics | null; phase: number; pgx: number; pgy: number; vsx: number; vsy: number; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
+interface UnitView { holder: Container; art: Container | null; spr?: Sprite | null; shadowSpr?: Sprite | null; sheet?: UnitSheet | null; anim?: number; rotors: Graphics[]; baseG: Graphics | null; topG: Graphics | null; spinner: Graphics | null; legsG: Graphics | null; phase: number; pgx: number; pgy: number; vsx: number; vsy: number; gx: number; gy: number; tgx: number; tgy: number; vr: number; u: StateMsg["units"][number]; }
 const unitViews = new Map<number, UnitView>();
 const transientFx: Container[] = []; // bases/outposts/rally — rebuilt each state (no interpolation)
 
@@ -2235,7 +2335,8 @@ function reconcileUnits(s: StateMsg) {
       placeHolder(e, s); // place new units immediately (no glide from origin)
     }
     e.u = u; e.tgx = u.x; e.tgy = u.y; // server position is the glide target
-    if (!e.art) { const a = unitArt(u, s); e.art = a.root; e.rotors = a.rotors; e.baseG = a.baseG; e.topG = a.topG; e.spinner = a.spinner; e.legsG = a.legsG; e.holder.addChild(a.root); } // build geometry ONCE
+    if (e.art && !e.sheet && sheets.has(u.unit)) { e.art.destroy({ children: true }); e.art = null; } // baked sheet just arrived → swap legacy art for the sprite
+    if (!e.art) { const a = unitArt(u, s); e.art = a.root; e.rotors = a.rotors; e.baseG = a.baseG; e.topG = a.topG; e.spinner = a.spinner; e.legsG = a.legsG; e.spr = a.spr ?? null; e.shadowSpr = a.shadowSpr ?? null; e.sheet = a.sheet ?? null; e.holder.addChild(a.root); } // build geometry ONCE
     updateUnitArt(e, u, s); // cheap per-state refresh: rotate to heading + redraw hp/ring (no rebuild)
     e.holder.scale.set(u.scale ?? 1); // ULTIMATE elites (mammoth/titan/crawler) render big
     e.holder.alpha = (u.disabledUntil ?? 0) > s.tick ? 0.55 : 1; // frozen by a Stasis Field
@@ -2283,6 +2384,13 @@ app.ticker.add(() => {
     e.vsy += (nvy - e.vsy) * 0.2;
     e.pgx = e.gx; e.pgy = e.gy;
     if (e.spinner) e.spinner.rotation += ROTOR_SPD * (dt / 16.67);
+    const walk = e.sheet?.j.meta?.walk;
+    if (walk && e.spr) { // baked walk cycle: stride while gliding, idle pose when stopped
+      const moving = moved > 0.02;
+      if (moving) e.phase += RUN_RATE * dt * 0.32;
+      const nf = moving ? walk[0] + (Math.floor(e.phase) % walk[1]) : 0;
+      if (nf !== e.anim) { e.anim = nf; updateSpriteArt(e, e.u); }
+    }
     if (e.legsG) {
       const moving = moved > 0.02;
       if (moving) { // stride while gliding
@@ -2609,3 +2717,21 @@ window.addEventListener("pointerup", () => {
 });
 
 
+
+// DEV-only: window.__agi.focus("tank", 4) centers the camera on the first visible unit of a type (art review).
+if ((import.meta as any).env?.DEV) (window as any).__agi = {
+  types: () => [...new Set([...unitViews.values()].map((e) => e.u.unit))],
+  stateTypes: () => [...new Set((latestState?.units ?? []).map((u) => u.unit))],
+  inspect(type: string) {
+    const e = [...unitViews.values()].reverse().find((v) => v.u.unit === type); if (!e) return null;
+    const sp = e.spr;
+    return { sheet: !!e.sheet, spr: !!sp, tex: sp ? [sp.texture.width, sp.texture.height, sp.texture.frame.width, sp.texture.source?.width] : null, vis: sp?.visible, alpha: sp?.alpha, worldAlpha: sp?.groupAlpha, pos: sp ? [sp.x, sp.y, sp.scale.x] : null, parentKids: e.art?.children.length, holderKids: e.holder.children.length, destroyed: sp?.destroyed, anchor: sp ? [sp.anchor.x, sp.anchor.y] : null, bounds: sp ? sp.getBounds().rectangle : null };
+  },
+  focus(type?: string, scale = 3) {
+    const e = [...unitViews.values()].reverse().find((v) => !type || v.u.unit === type || (type === "enemy" && v.u.owner !== latestState?.you)); // newest first (dev spawns)
+    if (!e) return false;
+    cam.scale = scale; world.scale.set(scale);
+    world.x = app.screen.width / 2 - e.holder.x * scale; world.y = app.screen.height / 2 - e.holder.y * scale;
+    return true;
+  },
+};

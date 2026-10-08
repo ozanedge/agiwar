@@ -5,7 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Camp, ClientMsg, ServerMsg } from "../../shared/types.js";
 import { GameState, GRID_W, GRID_H, INCOME_PER_TICK, applyArmyDoctrine, applyFieldOrder, clearFieldOrder, computeVisibleState, visibleShots, visibleDeaths, visibleUfx, forgeUltimate, boosterCost, newGame, playerBonus, spawnUnit, setFaction, step } from "./sim.js";
 import { ULTIMATES } from "../../shared/ultimates.js";
-import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE, type Faction, FACTIONS, FACTION_TURRET, trainableFor } from "../../shared/units.js";
+import { UNIT_STATS, INVESTMENTS, investCost, GRID_SCALE, type Faction, type UnitType, FACTIONS, FACTION_TURRET, trainableFor } from "../../shared/units.js";
 import { isPassable } from "../../shared/terrain.js";
 import { compilePolicy } from "./compiler.js";
 import { FieldGeneralRunner, createFieldGeneral } from "./fieldgeneral.js";
@@ -19,6 +19,10 @@ const NET_HZ = Number(process.env.NET_HZ ?? 5); // broadcast rate (<= TICK_HZ) �
 const NET_EVERY = Math.max(1, Math.round(TICK_HZ / NET_HZ));
 const COOLDOWN_MS = Number(process.env.COOLDOWN_MS ?? 3 * 60 * 1000); // 3-minute prompt cooldown
 const BOT_WAIT_MS = Number(process.env.BOT_WAIT_MS ?? 60_000); // wait this long for a human, then fall back to a bot
+// DEV art review: DEV_SPAWN=tank,nod_jet,… spawns those unit types for every human at battle start (defensive camp, near base).
+const DEV_SPAWN = (process.env.DEV_SPAWN ?? "").split(",").map((t) => t.trim()).filter((t) => t in UNIT_STATS) as UnitType[];
+// DEV_ENEMY=… spawns those types for the opponent just beyond the DEV_SPAWN grid (aggressive), so a fight starts at once.
+const DEV_ENEMY = (process.env.DEV_ENEMY ?? "").split(",").map((t) => t.trim()).filter((t) => t in UNIT_STATS) as UnitType[];
 const DOCTRINE_WAIT_MS = Number(process.env.DOCTRINE_WAIT_MS ?? 20_000); // backstop: auto-start if a human hasn't picked a doctrine (client picker is 15s)
 const BUILD_RADIUS = Number(process.env.BUILD_RADIUS ?? 32 * GRID_SCALE); // buildings must be placed within this many tiles of your base
 
@@ -156,6 +160,18 @@ function startMatch(room: Room) {
   for (let i = 0; i < room.chosen.length; i++) if (human[i] && !room.chosen[i]) { seed(room.game, i, false); room.chosen[i] = true; }
   room.started = true;
   if (room.startTimer) { clearTimeout(room.startTimer); room.startTimer = null; }
+  for (const m of room.members) DEV_SPAWN.forEach((t, i) => { // laid out in a grid out in the open, in front of the base
+    const b = room.game.bases[m.player], dir = m.player === 0 ? -1 : 1;
+    const x = Math.max(0, Math.min(GRID_W - 1, Math.round(b.x + ((i % 6) - 2.5) * 4 * GRID_SCALE)));
+    const y = Math.max(0, Math.min(GRID_H - 1, Math.round(b.y + dir * (12 + Math.floor(i / 6) * 4) * GRID_SCALE)));
+    spawnUnit(room.game, m.player, null, t, { x, y });
+  });
+  for (const m of room.members) DEV_ENEMY.forEach((t, i) => {
+    const b = room.game.bases[m.player], dir = m.player === 0 ? -1 : 1, foe = 1 - m.player;
+    const x = Math.max(0, Math.min(GRID_W - 1, Math.round(b.x + ((i % 6) - 2.5) * 4 * GRID_SCALE)));
+    const y = Math.max(0, Math.min(GRID_H - 1, Math.round(b.y + dir * (30 + Math.floor(i / 6) * 4) * GRID_SCALE)));
+    spawnUnit(room.game, foe, "aggressive", t, { x, y });
+  });
   for (const m of room.members) send(m.ws, { type: "notice", level: "info", text: "▸ Doctrine locked — battle begins." });
   console.log(`[room ${room.id}] battle begins`);
 }
@@ -197,9 +213,12 @@ function tickRoom(room: Room) {
 }
 
 const wss = new WebSocketServer({ port: PORT });
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // ?solo → straight into a bot match, never paired with a waiting human (dev/testing clients)
+  const solo = new URL(req.url ?? "/", "http://localhost").searchParams.has("solo");
+  if (solo) createRoom([ws], true);
   // matchmaking: pair with a waiting human, else wait briefly then fall back to a bot room
-  if (waiting && waiting.ws !== ws && waiting.ws.readyState === WebSocket.OPEN) {
+  else if (waiting && waiting.ws !== ws && waiting.ws.readyState === WebSocket.OPEN) {
     clearTimeout(waiting.timer);
     const other = waiting.ws;
     waiting = null;
